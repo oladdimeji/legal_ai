@@ -184,17 +184,113 @@ Raw prompt: "${prompt}"`;
     res.json(await db.getCases(ownership(req)));
   });
 
+  app.get("/api/cases/:id", async (req, res) => {
+    const matter = await db.getCaseById(req.params.id, ownership(req));
+    if (!matter) return res.status(404).json({ error: "Matter not found" });
+    return res.json(matter);
+  });
+
   app.post("/api/cases", async (req, res) => {
     try {
-      const { name, description } = req.body;
-      if (!name) {
-        return res.status(400).json({ error: "Case name is required" });
+      const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
+      const description = typeof req.body.description === "string" ? req.body.description.trim() : "";
+      const startingNote = typeof req.body.startingNote === "string" ? req.body.startingNote.trim() : "";
+      const startingDocument = req.body.startingDocument &&
+        typeof req.body.startingDocument.title === "string" &&
+        typeof req.body.startingDocument.text === "string" &&
+        req.body.startingDocument.title.trim() && req.body.startingDocument.text.trim()
+        ? { title: req.body.startingDocument.title.trim(), text: req.body.startingDocument.text.trim() }
+        : null;
+      const libraryDocumentIds: string[] = Array.isArray(req.body.libraryDocumentIds)
+        ? req.body.libraryDocumentIds.filter((id: unknown): id is string => typeof id === "string")
+        : [];
+      if (!name || !description) {
+        return res.status(400).json({ error: "Matter name and assignment description are required" });
       }
-      const newCase = await db.createCase(name, description || "", ownership(req));
+      if (!startingNote && !startingDocument && libraryDocumentIds.length === 0) {
+        return res.status(400).json({ error: "At least one starting input is required" });
+      }
+      const requestOwnership = ownership(req);
+      if (!(await db.validateFirmLibraryDocuments(libraryDocumentIds, requestOwnership))) {
+        return res.status(404).json({ error: "Firm Library starting document not found" });
+      }
+      const newCase = await db.createCase(name, description, requestOwnership, {
+        clientName: typeof req.body.clientName === "string" ? req.body.clientName.trim() : null,
+        clientEmail: typeof req.body.clientEmail === "string" ? req.body.clientEmail.trim() : null,
+      });
+      if (startingNote) {
+        await db.uploadDocument(
+          `Starting instruction — ${name}`, startingNote, requestOwnership,
+          null, null, newCase.id, "Starting Instruction", "Lawyer"
+        );
+      }
+      if (startingDocument) {
+        await db.uploadDocument(
+          startingDocument.title, startingDocument.text, requestOwnership,
+          null, null, newCase.id, "Matter Upload", "Lawyer"
+        );
+      }
+      for (const documentId of Array.from(new Set(libraryDocumentIds))) {
+        await db.linkLibraryDocument(newCase.id, documentId, "Starting Input", requestOwnership);
+      }
+      await db.touchCase(newCase.id, requestOwnership);
       res.status(201).json(newCase);
     } catch (err: any) {
       res.status(ownedErrorStatus(err)).json({ error: err.message });
     }
+  });
+
+  app.put("/api/cases/:id", async (req, res) => {
+    try {
+      const matter = await db.updateCase(req.params.id, req.body, ownership(req));
+      if (!matter) return res.status(404).json({ error: "Matter not found" });
+      return res.json(matter);
+    } catch (err: any) {
+      return res.status(/invalid matter status/i.test(err.message) ? 400 : ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/cases/:id/sources", async (req, res) => {
+    const matter = await db.getCaseById(req.params.id, ownership(req));
+    if (!matter) return res.status(404).json({ error: "Matter not found" });
+    return res.json(await db.getCaseSources(req.params.id, ownership(req)));
+  });
+
+  app.post("/api/cases/:id/sources", async (req, res) => {
+    try {
+      const requestOwnership = ownership(req);
+      const matter = await db.getCaseById(req.params.id, requestOwnership);
+      if (!matter) return res.status(404).json({ error: "Matter not found" });
+      if (typeof req.body.libraryDocumentId === "string") {
+        const linked = await db.linkLibraryDocument(
+          matter.id, req.body.libraryDocumentId, "Manual", requestOwnership
+        );
+        if (!linked) return res.status(404).json({ error: "Firm Library document not found" });
+        await db.touchCase(matter.id, requestOwnership);
+        return res.status(201).json({ linked: true });
+      }
+      const text = typeof req.body.text === "string" ? req.body.text.trim() : "";
+      const title = typeof req.body.title === "string" ? req.body.title.trim() : "";
+      if (!text) return res.status(400).json({ error: "Source content is required" });
+      const sourceType = req.body.sourceType === "Starting Instruction" ? "Starting Instruction" : "Matter Upload";
+      const document = await db.uploadDocument(
+        title || (sourceType === "Starting Instruction" ? "Matter instruction" : "Matter source"),
+        text, requestOwnership, null, null, matter.id, sourceType, "Lawyer"
+      );
+      await db.touchCase(matter.id, requestOwnership);
+      return res.status(201).json(document);
+    } catch (err: any) {
+      return res.status(ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
+  app.delete("/api/cases/:caseId/sources/:documentId", async (req, res) => {
+    const removed = await db.deleteDocument(
+      req.params.documentId, ownership(req), req.params.caseId
+    );
+    if (!removed) return res.status(404).json({ error: "Matter Source not found" });
+    await db.touchCase(req.params.caseId, ownership(req));
+    return res.json({ success: true });
   });
 
   // Documents Library

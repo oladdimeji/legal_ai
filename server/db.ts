@@ -187,15 +187,19 @@ class DatabaseService {
     sourceUrl: string | null = null,
     driveId: string | null = null,
     caseId: string | null = null,
-    firmId: string
+    firmId: string,
+    sourceType = caseId ? "Matter Upload" : "Firm Library Document",
+    origin = "Lawyer"
   ): Promise<Document> {
     const docId = `doc_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const uploadedAt = new Date().toISOString();
 
     await this.query(
-      `INSERT INTO documents (id, firm_id, case_id, title, source_url, drive_id, extracted_text, section, uploaded_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-      [docId, firmId, caseId, title, sourceUrl, driveId, text, section, uploadedAt]
+      `INSERT INTO documents
+        (id, firm_id, case_id, title, source_url, drive_id, extracted_text, section, uploaded_at,
+         source_type, origin, processing_state)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'Processing')`,
+      [docId, firmId, caseId, title, sourceUrl, driveId, text, section, uploadedAt, sourceType, origin]
     );
 
     // Paragraph splitting
@@ -221,6 +225,14 @@ class DatabaseService {
         console.error(`Embedding generation failed for document ${docId}, chunk ${i}; chunk left unindexed.`, error);
       }
     }
+    const indexed = await this.query(
+      "SELECT COUNT(*)::int AS count FROM document_chunks WHERE document_id = $1",
+      [docId]
+    );
+    await this.query(
+      "UPDATE documents SET processing_state = $1 WHERE id = $2 AND firm_id = $3",
+      [Number(indexed[0]?.count || 0) > 0 || paragraphs.length === 0 ? "Ready" : "Needs Attention", docId, firmId]
+    );
 
     return {
       id: docId,
@@ -337,7 +349,7 @@ class DatabaseService {
 
   public async getCases(context: OwnershipContext): Promise<Case[]> {
     return await this.query(
-      "SELECT * FROM cases WHERE firm_id = $1 ORDER BY created_at DESC",
+      "SELECT * FROM cases WHERE firm_id = $1 ORDER BY COALESCE(last_activity_at, created_at) DESC",
       [context.firmId]
     );
   }
@@ -350,45 +362,54 @@ class DatabaseService {
     return rows[0];
   }
 
-  public async createCase(name: string, description: string, context: OwnershipContext): Promise<Case> {
-    const caseId = `case_${Date.now()}`;
+  public async createCase(
+    name: string,
+    description: string,
+    context: OwnershipContext,
+    details: { clientName?: string | null; clientEmail?: string | null } = {}
+  ): Promise<Case> {
+    const caseId = `case_${randomUUID()}`;
     const createdAt = new Date().toISOString();
 
     await this.query(
-      `INSERT INTO cases (id, firm_id, name, description, created_at)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [caseId, context.firmId, name, description, createdAt]
+      `INSERT INTO cases
+        (id, firm_id, name, description, created_at, status, client_name, client_email,
+         updated_at, last_activity_at)
+       VALUES ($1, $2, $3, $4, $5, 'Open', $6, $7, $5, $5)`,
+      [caseId, context.firmId, name, description, createdAt, details.clientName || null, details.clientEmail || null]
     );
 
     const newCase: Case = {
       id: caseId,
       firm_id: context.firmId,
       name,
-      description,
-      created_at: createdAt
+      description, created_at: createdAt, status: "Open",
+      client_name: details.clientName || null, client_email: details.clientEmail || null,
+      updated_at: createdAt, last_activity_at: createdAt,
     };
 
     try {
       console.log(`Auto-attaching documents for case: "${name}" based on description context...`);
       const searchResults = description
-        ? await this.vectorSearch(description, "wide", context, 3)
+        ? await this.vectorSearch(`${name}\n${description}`, "wide", context, 3)
         : [];
       
       const attachedDocIds = new Set<string>();
       for (const chunk of searchResults) {
+        if (chunk.similarity < 0.45) continue;
         const doc = await this.getDocumentById(chunk.document_id, context, null);
         if (doc && !attachedDocIds.has(doc.id)) {
           attachedDocIds.add(doc.id);
           await this.query(
-            `INSERT INTO case_documents (case_id, document_id)
-             SELECT c.id, d.id
+            `INSERT INTO case_documents (case_id, document_id, link_origin, added_at)
+             SELECT c.id, d.id, 'AI Suggested', $4
              FROM cases c
              JOIN documents d ON d.id = $2
              WHERE c.id = $1 AND c.firm_id = $3
                AND d.firm_id = $3 AND d.case_id IS NULL
                AND d.is_generated_draft_duplicate = FALSE
              ON CONFLICT DO NOTHING`,
-            [caseId, doc.id, context.firmId]
+            [caseId, doc.id, context.firmId, createdAt]
           );
           console.log(`Auto-attached document: "${doc.title}" (Score: ${chunk.similarity.toFixed(4)})`);
         }
@@ -398,6 +419,79 @@ class DatabaseService {
     }
 
     return newCase;
+  }
+
+  public async updateCase(
+    id: string,
+    changes: Partial<Case>,
+    context: OwnershipContext
+  ): Promise<Case | undefined> {
+    const allowedStatuses = new Set(["Open", "Waiting for Client", "On Hold", "Closed"]);
+    if (changes.status && !allowedStatuses.has(changes.status)) throw new Error("Invalid Matter status");
+    const now = new Date().toISOString();
+    const rows = await this.query(
+      `UPDATE cases SET
+         name = COALESCE($1, name), client_name = $2, client_email = $3,
+         matter_type = $4, jurisdiction = $5, preliminary_objectives = $6,
+         status = COALESCE($7, status), matter_type_suggested = COALESCE($8, matter_type_suggested),
+         jurisdiction_suggested = COALESCE($9, jurisdiction_suggested),
+         objectives_suggested = COALESCE($10, objectives_suggested), updated_at = $11,
+         last_activity_at = $11
+       WHERE id = $12 AND firm_id = $13 RETURNING *`,
+      [changes.name ?? null, changes.client_name ?? null, changes.client_email ?? null,
+       changes.matter_type ?? null, changes.jurisdiction ?? null,
+       changes.preliminary_objectives ?? null, changes.status ?? null,
+       changes.matter_type_suggested ?? null, changes.jurisdiction_suggested ?? null,
+       changes.objectives_suggested ?? null, now, id, context.firmId]
+    );
+    return rows[0];
+  }
+
+  public async validateFirmLibraryDocuments(ids: string[], context: OwnershipContext): Promise<boolean> {
+    if (ids.length === 0) return true;
+    const unique = Array.from(new Set(ids));
+    const rows = await this.query(
+      `SELECT id FROM documents WHERE id = ANY($1::text[]) AND firm_id = $2
+       AND case_id IS NULL AND is_generated_draft_duplicate = FALSE`,
+      [unique, context.firmId]
+    );
+    return rows.length === unique.length;
+  }
+
+  public async linkLibraryDocument(
+    caseId: string, documentId: string, linkOrigin: "Manual" | "Starting Input", context: OwnershipContext
+  ): Promise<boolean> {
+    const rows = await this.query(
+      `INSERT INTO case_documents (case_id, document_id, link_origin, added_at)
+       SELECT c.id, d.id, $4, $5 FROM cases c JOIN documents d ON d.id = $2
+       WHERE c.id = $1 AND c.firm_id = $3 AND d.firm_id = $3 AND d.case_id IS NULL
+         AND d.is_generated_draft_duplicate = FALSE
+       ON CONFLICT (case_id, document_id) DO UPDATE SET link_origin = EXCLUDED.link_origin
+       RETURNING document_id`,
+      [caseId, documentId, context.firmId, linkOrigin, new Date().toISOString()]
+    );
+    return rows.length === 1;
+  }
+
+  public async getCaseSources(caseId: string, context: OwnershipContext): Promise<Document[]> {
+    return await this.query(
+      `SELECT d.*, CASE WHEN d.case_id = $2 THEN NULL ELSE cd.link_origin END AS link_origin,
+        COALESCE(cd.added_at, d.uploaded_at) AS date_added
+       FROM cases c
+       JOIN documents d ON d.firm_id = c.firm_id
+       LEFT JOIN case_documents cd ON cd.case_id = c.id AND cd.document_id = d.id
+       WHERE c.id = $2 AND c.firm_id = $1 AND d.is_generated_draft_duplicate = FALSE
+         AND (d.case_id = c.id OR (d.case_id IS NULL AND cd.document_id IS NOT NULL))
+       ORDER BY COALESCE(cd.added_at, d.uploaded_at) DESC`,
+      [context.firmId, caseId]
+    );
+  }
+
+  public async touchCase(caseId: string, context: OwnershipContext): Promise<void> {
+    await this.query(
+      "UPDATE cases SET last_activity_at = $1, updated_at = $1 WHERE id = $2 AND firm_id = $3",
+      [new Date().toISOString(), caseId, context.firmId]
+    );
   }
 
   public async getDocuments(context: OwnershipContext, caseId: string | null): Promise<Document[]> {
@@ -463,7 +557,9 @@ class DatabaseService {
     context: OwnershipContext,
     sourceUrl: string | null = null,
     driveId: string | null = null,
-    caseId: string | null = null
+    caseId: string | null = null,
+    sourceType?: string,
+    origin = "Lawyer"
   ): Promise<Document> {
     if (caseId && !(await this.getCaseById(caseId, context))) {
       throw new Error("Matter not found");
@@ -499,7 +595,9 @@ class DatabaseService {
       sourceUrl,
       driveId,
       caseId,
-      context.firmId
+      context.firmId,
+      sourceType || (caseId ? "Matter Upload" : "Firm Library Document"),
+      origin
     );
   }
 

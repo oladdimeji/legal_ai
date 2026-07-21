@@ -4,6 +4,7 @@ import AssistantView from "./components/AssistantView";
 import FirmLibraryView from "./components/FirmLibraryView";
 import MattersView from "./components/MattersView";
 import SettingsView from "./components/SettingsView";
+import MatterWorkspaceView from "./components/MatterWorkspaceView";
 import DraftEditorView from "./components/DraftEditorView";
 import HistoryView from "./components/HistoryView";
 import AuthView from "./components/AuthView";
@@ -57,7 +58,11 @@ export default function App() {
   const handleOpenMatter = (matterId: string) => {
     setActiveCaseId(matterId);
     setActiveThreadId(null);
-    setActiveTab("assistant");
+    setActiveTab("matter");
+  };
+
+  const handleMatterChange = (matter: Case) => {
+    setCases((current) => current.map((item) => item.id === matter.id ? matter : item));
   };
 
   const handleNavigateToDrafts = (draftId: string) => {
@@ -138,6 +143,8 @@ export default function App() {
         {activeTab === "matters" && <MattersView matters={cases} onRefresh={fetchCases} onOpenMatter={handleOpenMatter} />}
 
         {activeTab === "library" && <FirmLibraryView />}
+
+        {activeTab === "matter" && activeCaseId && <MatterWorkspaceView matterId={activeCaseId} onBack={() => setActiveTab("matters")} onMatterChange={handleMatterChange} />}
 
         {activeTab === "drafts" && (
           <DraftEditorView 

@@ -130,3 +130,28 @@ Verification:
 - `npm run build`: passed.
 - Static/manual inspection confirmed distinct navigation routes and Firm Library requests remain fixed to `caseId=null`/General (`wide`) scope.
 - Phase 4 has not been included in this commit; its stricter starting-input creation flow remains next.
+
+## Phase 4 — Matter Core
+
+Status: Complete.
+
+Implemented:
+
+- Migration 005 adds nullable Matter details, suggestion flags, updated/activity timestamps, Source metadata, link origin/date metadata, and ownership-path activity indexes.
+- Existing Matter and Source records were backfilled non-destructively; preserved ambiguous documents and redundant links were not converted or deleted.
+- Matters support card/list layouts, name/client search, and last-activity/created/name sorting.
+- Matter creation requires a name, assignment description, and at least one note, pasted document, or selected Firm Library document before insertion.
+- Automatic Firm Library matching searches only the authenticated Firm Library using Matter name plus assignment, links at most three results above a similarity threshold, and labels links `AI Suggested` without copying.
+- Matter workspace contains exactly Overview, Matter Intelligence, Sources, Work Product, and Collaboration tabs; later-phase tabs remain inert placeholders.
+- Overview supports the approved details, four manual statuses, and visibly suggested field confirmation/edit/removal.
+- Sources provides one owned list with type/origin/date/state metadata, search, add, preview, and context-safe removal. Removing a Firm Library Source deletes only its link.
+- Compatible `/api/cases` routes remain; new detail/update and Matter Source routes enforce authenticated workspace ownership.
+
+Verification:
+
+- Migration 005 applied exactly once to the configured PostgreSQL validation database.
+- Live validation rejected a no-input Matter without inserting it, created an owned Matter with a starting note/link, updated Overview, denied a foreign account, and preserved the Firm Library document after unlink.
+- Existing rows received activity timestamps; two ambiguous draft-like documents and at least the six retained redundant links remain preserved.
+- `npm test`: passed, 14/14 tests.
+- `npm run lint`: passed.
+- `npm run build`: passed.

@@ -40,20 +40,20 @@ Rollback/failure: revert only the Phase 3 frontend commit; no data/schema state 
 
 ### Checklist
 
-- [ ] Add migration 005 for nullable Matter details (`client_name`, `client_email`, `matter_type`, `jurisdiction`, `preliminary_objectives`), suggestion flags, `updated_at`, and `last_activity_at`.
-- [ ] Extend migration 005 with Source metadata on documents (`source_type`, `origin`, `processing_state`) and link metadata on `case_documents` (`link_origin`, `added_at`), using safe defaults/backfill only.
-- [ ] Modify `server/db.ts` with owned Matter search/list/detail/update/create methods, status validation, last-activity updates, high-relevance Firm Library matching, owned link/unlink, and unified Source queries.
-- [ ] Modify `server.ts` with compatible Matter detail/update routes, stricter create validation, Source add/list/unlink routes, and owned suggestion confirm/edit/remove operations.
-- [ ] Extend `src/types.ts` for Matter metadata, suggestions, Sources, link origin, and processing state.
-- [ ] Expand `src/components/MattersView.tsx` with card/list modes, name/client search, allowed sorting, and the validated create form.
-- [ ] Create `src/components/MatterWorkspaceView.tsx` with Overview, Matter Intelligence placeholder, Sources, Work Product placeholder, and Collaboration placeholder tabs.
-- [ ] Create `src/components/MatterOverview.tsx` for the six approved fields, manual status, and confirm/edit/remove suggestion controls.
-- [ ] Create `src/components/MatterSources.tsx` for compact Source search/add/preview/remove and direct-vs-linked removal semantics.
-- [ ] Reuse Firm Library selection and document upload/paste paths for the required starting input.
-- [ ] Ensure creation fails before inserting a Matter unless assignment description and one starting input are present.
-- [ ] Store pasted starting notes as owned direct Matter Source documents; upload inputs through the existing embedding path; link selected Firm Library inputs without copying.
-- [ ] Label automatic links `AI Suggested`, use a bounded similarity threshold/count, and never generate Intelligence during creation.
-- [ ] Add migration/query/route tests for validation, statuses, owned update, matching SQL, Source classification, and unlink semantics.
+- [x] Add migration 005 for nullable Matter details (`client_name`, `client_email`, `matter_type`, `jurisdiction`, `preliminary_objectives`), suggestion flags, `updated_at`, and `last_activity_at`.
+- [x] Extend migration 005 with Source metadata on documents (`source_type`, `origin`, `processing_state`) and link metadata on `case_documents` (`link_origin`, `added_at`), using safe defaults/backfill only.
+- [x] Modify `server/db.ts` with owned Matter search/list/detail/update/create methods, status validation, last-activity updates, high-relevance Firm Library matching, owned link/unlink, and unified Source queries.
+- [x] Modify `server.ts` with compatible Matter detail/update routes, stricter create validation, Source add/list/unlink routes, and owned suggestion confirm/edit/remove operations.
+- [x] Extend `src/types.ts` for Matter metadata, suggestions, Sources, link origin, and processing state.
+- [x] Expand `src/components/MattersView.tsx` with card/list modes, name/client search, allowed sorting, and the validated create form.
+- [x] Create `src/components/MatterWorkspaceView.tsx` with Overview, Matter Intelligence placeholder, Sources, Work Product placeholder, and Collaboration placeholder tabs.
+- [x] Create `src/components/MatterOverview.tsx` for the six approved fields, manual status, and confirm/edit/remove suggestion controls.
+- [x] Create `src/components/MatterSources.tsx` for compact Source search/add/preview/remove and direct-vs-linked removal semantics.
+- [x] Reuse Firm Library selection and document upload/paste paths for the required starting input.
+- [x] Ensure creation fails before inserting a Matter unless assignment description and one starting input are present.
+- [x] Store pasted starting notes as owned direct Matter Source documents; upload inputs through the existing embedding path; link selected Firm Library inputs without copying.
+- [x] Label automatic links `AI Suggested`, use a bounded similarity threshold/count, and never generate Intelligence during creation.
+- [x] Add migration/query/route tests for validation, statuses, owned update, matching SQL, Source classification, and unlink semantics.
 
 Backfill: existing Matters receive safe `Open`/existing status, timestamps derived from creation/activity, nullable detail fields, and existing direct documents/links receive non-destructive Source defaults. No ambiguous document or redundant link is rewritten.  
 Reusable capabilities: current Case APIs/types, upload/embedding, vector search, preview, and Matter-scoped document list/delete.

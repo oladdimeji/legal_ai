@@ -186,6 +186,69 @@ const migrations: Migration[] = [
       await client.query("CREATE INDEX IF NOT EXISTS drafts_case_id_idx ON drafts(case_id)");
     },
   },
+  {
+    version: 5,
+    name: "matter_core_and_sources",
+    async run(client) {
+      await client.query("ALTER TABLE cases ADD COLUMN IF NOT EXISTS client_name TEXT");
+      await client.query("ALTER TABLE cases ADD COLUMN IF NOT EXISTS client_email TEXT");
+      await client.query("ALTER TABLE cases ADD COLUMN IF NOT EXISTS matter_type TEXT");
+      await client.query("ALTER TABLE cases ADD COLUMN IF NOT EXISTS jurisdiction TEXT");
+      await client.query("ALTER TABLE cases ADD COLUMN IF NOT EXISTS preliminary_objectives TEXT");
+      await client.query(
+        "ALTER TABLE cases ADD COLUMN IF NOT EXISTS matter_type_suggested BOOLEAN NOT NULL DEFAULT FALSE"
+      );
+      await client.query(
+        "ALTER TABLE cases ADD COLUMN IF NOT EXISTS jurisdiction_suggested BOOLEAN NOT NULL DEFAULT FALSE"
+      );
+      await client.query(
+        "ALTER TABLE cases ADD COLUMN IF NOT EXISTS objectives_suggested BOOLEAN NOT NULL DEFAULT FALSE"
+      );
+      await client.query("ALTER TABLE cases ADD COLUMN IF NOT EXISTS updated_at TEXT");
+      await client.query("ALTER TABLE cases ADD COLUMN IF NOT EXISTS last_activity_at TEXT");
+      await client.query(`
+        UPDATE cases
+        SET updated_at = COALESCE(updated_at, created_at),
+            last_activity_at = COALESCE(last_activity_at, created_at)
+        WHERE updated_at IS NULL OR last_activity_at IS NULL
+      `);
+
+      await client.query(
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_type TEXT NOT NULL DEFAULT 'Matter Upload'"
+      );
+      await client.query(
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS origin TEXT NOT NULL DEFAULT 'Lawyer'"
+      );
+      await client.query(
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS processing_state TEXT NOT NULL DEFAULT 'Ready'"
+      );
+      await client.query(`
+        UPDATE documents
+        SET source_type = CASE
+          WHEN case_id IS NULL THEN 'Firm Library Document'
+          ELSE 'Matter Upload'
+        END
+        WHERE source_type = 'Matter Upload'
+      `);
+
+      await client.query(
+        "ALTER TABLE case_documents ADD COLUMN IF NOT EXISTS link_origin TEXT NOT NULL DEFAULT 'Legacy Link'"
+      );
+      await client.query("ALTER TABLE case_documents ADD COLUMN IF NOT EXISTS added_at TEXT");
+      await client.query(`
+        UPDATE case_documents cd
+        SET added_at = COALESCE(cd.added_at, d.uploaded_at)
+        FROM documents d
+        WHERE d.id = cd.document_id AND cd.added_at IS NULL
+      `);
+      await client.query(
+        "CREATE INDEX IF NOT EXISTS cases_firm_activity_idx ON cases(firm_id, last_activity_at DESC)"
+      );
+      await client.query(
+        "CREATE INDEX IF NOT EXISTS case_documents_case_added_idx ON case_documents(case_id, added_at DESC)"
+      );
+    },
+  },
 ];
 
 export async function runMigrations(pool: Pool): Promise<void> {

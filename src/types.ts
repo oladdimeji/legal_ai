@@ -20,6 +20,10 @@ export interface Document {
   extracted_text: string;
   section: string; // category, e.g. "Corporate Law", "Litigation", "IP", "Draft"
   uploaded_at: string;
+  source_type?: "Starting Instruction" | "Matter Upload" | "Firm Library Document" | "Client Submission" | "External Legal Source" | "External Web Source";
+  origin?: string;
+  processing_state?: "Processing" | "Ready" | "Needs Attention";
+  link_origin?: "Manual" | "AI Suggested" | "Starting Input" | "Legacy Link" | null;
 }
 
 export interface DocumentChunk {
@@ -36,6 +40,16 @@ export interface Case {
   description: string;
   created_at: string;
   status?: "Open" | "Waiting for Client" | "On Hold" | "Closed";
+  client_name?: string | null;
+  client_email?: string | null;
+  matter_type?: string | null;
+  jurisdiction?: string | null;
+  preliminary_objectives?: string | null;
+  matter_type_suggested?: boolean;
+  jurisdiction_suggested?: boolean;
+  objectives_suggested?: boolean;
+  updated_at?: string;
+  last_activity_at?: string;
 }
 
 export interface CaseDocument {
