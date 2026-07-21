@@ -22,11 +22,12 @@ async function startServer() {
   const app = express();
   app.use(express.json());
 
-  // Automatically preseed and generate embeddings on startup
+  // Demo data is opt-in and never deletes or resets existing records.
   try {
-    await db.preseedIfEmpty();
+    await db.seedDemoDataIfEnabled();
   } catch (err) {
-    console.error("Failed to preseed database:", err);
+    console.error("Database initialization or explicit demo seeding failed:", err);
+    throw err;
   }
 
   // --- API ROUTES ---

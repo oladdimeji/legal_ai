@@ -1,6 +1,7 @@
 import pg from "pg";
 import { Document, DocumentChunk, Case, Thread, Message, Draft, Citation } from "../src/types.js";
 import { callModel } from "./model.js";
+import { runMigrations } from "./migrations.js";
 
 const { Pool } = pg;
 
@@ -88,170 +89,9 @@ class DatabaseService {
 
   private async ensureSchema() {
     if (this.isSchemaInitialized) return;
-
-    const pool = getPool();
-    const client = await pool.connect();
-    try {
-      // 1. Enable Vector Extension
-      await client.query("CREATE EXTENSION IF NOT EXISTS vector");
-
-      // 2. Firm table
-      await client.query(`
-        CREATE TABLE IF NOT EXISTS firm (
-          id TEXT PRIMARY KEY,
-          name TEXT NOT NULL
-        );
-      `);
-
-      // 3. Users table (renamed from 'user' to avoid reserved keyword clash)
-      await client.query(`
-        CREATE TABLE IF NOT EXISTS users (
-          id TEXT PRIMARY KEY,
-          firm_id TEXT REFERENCES firm(id),
-          name TEXT NOT NULL,
-          email TEXT NOT NULL
-        );
-      `);
-
-      // 4. Cases table
-      await client.query(`
-        CREATE TABLE IF NOT EXISTS cases (
-          id TEXT PRIMARY KEY,
-          firm_id TEXT REFERENCES firm(id),
-          name TEXT NOT NULL,
-          description TEXT,
-          created_at TEXT NOT NULL
-        );
-      `);
-
-      // 5. Documents table
-      await client.query(`
-        CREATE TABLE IF NOT EXISTS documents (
-          id TEXT PRIMARY KEY,
-          firm_id TEXT REFERENCES firm(id),
-          case_id TEXT REFERENCES cases(id),
-          title TEXT NOT NULL,
-          source_url TEXT,
-          drive_id TEXT,
-          extracted_text TEXT NOT NULL,
-          section TEXT NOT NULL,
-          uploaded_at TEXT NOT NULL
-        );
-      `);
-
-      // 6. Document Chunks table (with real 768-dimensional vector type)
-      await client.query(`
-        CREATE TABLE IF NOT EXISTS document_chunks (
-          id TEXT PRIMARY KEY,
-          document_id TEXT REFERENCES documents(id) ON DELETE CASCADE,
-          chunk_text TEXT NOT NULL,
-          embedding vector(768)
-        );
-      `);
-
-      // Migrate existing column if it was created with 3072 dimensions
-      try {
-        await client.query(`DROP INDEX IF EXISTS document_chunks_hnsw_idx`);
-        await client.query(`
-          DO $$
-          BEGIN
-            -- Ensure column is vector(768)
-            IF EXISTS (
-              SELECT 1 FROM information_schema.columns 
-              WHERE table_name = 'document_chunks' 
-              AND column_name = 'embedding' 
-              AND udt_name = 'vector'
-            ) THEN
-              ALTER TABLE document_chunks ALTER COLUMN embedding TYPE vector(768);
-            END IF;
-          END $$;
-        `);
-      } catch (e) {
-        console.warn("Attempted to alter embedding dimension to 768, proceeding:", e);
-      }
-
-      // 7. Similarity HNSW index for real pgvector cosine operations
-      await client.query(`
-        CREATE INDEX IF NOT EXISTS document_chunks_hnsw_idx 
-        ON document_chunks USING hnsw (embedding vector_cosine_ops);
-      `);
-
-      // 8. Case Documents junction table
-      await client.query(`
-        CREATE TABLE IF NOT EXISTS case_documents (
-          case_id TEXT REFERENCES cases(id) ON DELETE CASCADE,
-          document_id TEXT REFERENCES documents(id) ON DELETE CASCADE,
-          PRIMARY KEY (case_id, document_id)
-        );
-      `);
-
-      // 9. Threads table
-      await client.query(`
-        CREATE TABLE IF NOT EXISTS threads (
-          id TEXT PRIMARY KEY,
-          user_id TEXT REFERENCES users(id),
-          case_id TEXT REFERENCES cases(id) ON DELETE CASCADE,
-          scope TEXT NOT NULL,
-          title TEXT NOT NULL,
-          created_at TEXT NOT NULL
-        );
-      `);
-
-      // 10. Messages table
-      await client.query(`
-        CREATE TABLE IF NOT EXISTS messages (
-          id TEXT PRIMARY KEY,
-          thread_id TEXT REFERENCES threads(id) ON DELETE CASCADE,
-          role TEXT NOT NULL,
-          content TEXT NOT NULL,
-          citations JSONB NOT NULL DEFAULT '[]'::jsonb,
-          steps JSONB,
-          created_at TEXT NOT NULL
-        );
-      `);
-
-      // 11. Drafts table
-      await client.query(`
-        CREATE TABLE IF NOT EXISTS drafts (
-          id TEXT PRIMARY KEY,
-          thread_id TEXT REFERENCES threads(id) ON DELETE CASCADE,
-          case_id TEXT REFERENCES cases(id) ON DELETE CASCADE,
-          title TEXT NOT NULL,
-          content TEXT NOT NULL,
-          created_at TEXT NOT NULL
-        );
-      `);
-
-      // Seed Default firm if empty
-      const firmRes = await client.query("SELECT id FROM firm WHERE id = 'firm_123'");
-      if (firmRes.rowCount === 0) {
-        await client.query("INSERT INTO firm (id, name) VALUES ('firm_123', 'Sterling & Croft LLP')");
-      }
-
-      // Seed Default user if empty
-      const userRes = await client.query("SELECT id FROM users WHERE id = 'user_456'");
-      if (userRes.rowCount === 0) {
-        await client.query("INSERT INTO users (id, firm_id, name, email) VALUES ('user_456', 'firm_123', 'Oladimeji', 'oladimeji@workpodd.com')");
-      }
-
-      // Seed Default cases if empty
-      const casesRes = await client.query("SELECT id FROM cases");
-      if (casesRes.rowCount === 0) {
-        await client.query(`
-          INSERT INTO cases (id, firm_id, name, description, created_at) VALUES 
-          ('case_tech_employment', 'firm_123', 'California Tech Non-Compete Review', 'Analysis of non-compete agreements and trade secret protection for engineering staff.', $1),
-          ('case_ip_fair_use', 'firm_123', 'Creative Content Fair Use Evaluation', 'Dispute surrounding documentary footage and copyright fair use limits under Section 107.', $1)
-        `, [new Date().toISOString()]);
-      }
-
-      this.isSchemaInitialized = true;
-      console.log("Supabase Postgres schema initialization verified successfully.");
-    } catch (err) {
-      console.error("Error setting up schema:", err);
-      throw err;
-    } finally {
-      client.release();
-    }
+    await runMigrations(getPool());
+    this.isSchemaInitialized = true;
+    console.log("PostgreSQL migrations verified successfully.");
   }
 
   private async query(text: string, params?: any[]): Promise<any[]> {
@@ -261,31 +101,59 @@ class DatabaseService {
     return res.rows;
   }
 
-  public async preseedIfEmpty(): Promise<void> {
-    // Check if we have successfully embedded document chunks
-    const chunkRows = await this.query("SELECT COUNT(*)::int as count FROM document_chunks");
-    if (chunkRows[0] && chunkRows[0].count > 0) {
-      console.log(`Database already has ${chunkRows[0].count} embedded document chunks. Skipping preseed.`);
+  public async seedDemoDataIfEnabled(): Promise<void> {
+    if (process.env.SEED_DEMO_DATA !== "true") {
+      console.log("Demo data seeding is disabled.");
       return;
     }
 
-    console.log("Database chunks empty. Clearing stale/partially seeded records before clean run...");
-    await this.query("DELETE FROM document_chunks");
-    await this.query("DELETE FROM case_documents");
-    await this.query("DELETE FROM documents");
+    const createdAt = new Date().toISOString();
+    await this.query(
+      "INSERT INTO firm (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING",
+      ["firm_123", "Sterling & Croft LLP"]
+    );
+    await this.query(
+      `INSERT INTO users (id, firm_id, name, email)
+       VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO NOTHING`,
+      ["user_456", "firm_123", "Oladimeji", "oladimeji@workpodd.com"]
+    );
+    await this.query(
+      `INSERT INTO cases (id, firm_id, name, description, created_at) VALUES
+       ($1, $3, $4, $5, $7), ($2, $3, $6, $8, $7)
+       ON CONFLICT (id) DO NOTHING`,
+      [
+        "case_tech_employment",
+        "case_ip_fair_use",
+        "firm_123",
+        "California Tech Non-Compete Review",
+        "Analysis of non-compete agreements and trade secret protection for engineering staff.",
+        "Creative Content Fair Use Evaluation",
+        createdAt,
+        "Dispute surrounding documentary footage and copyright fair use limits under Section 107.",
+      ]
+    );
 
-    console.log("Pre-seeding database with legal documents and generating embeddings...");
+    console.log("Explicit demo seeding enabled; adding only missing demo documents.");
     for (const seed of SEED_DOCUMENTS) {
+      const existing = await this.query(
+        `SELECT id FROM documents
+         WHERE firm_id = $1 AND title = $2 AND case_id IS NOT DISTINCT FROM $3
+         LIMIT 1`,
+        ["firm_123", seed.title, seed.case_id]
+      );
+      if (existing.length > 0) continue;
+
       await this.addDocumentInternal(
         seed.title,
         seed.extracted_text,
         seed.section,
         seed.source_url,
         null,
-        seed.case_id
+        seed.case_id,
+        "firm_123"
       );
     }
-    console.log("Pre-seeding completed successfully!");
+    console.log("Explicit demo seeding completed without deleting existing data.");
   }
 
   private async addDocumentInternal(
@@ -294,16 +162,17 @@ class DatabaseService {
     section: string,
     sourceUrl: string | null = null,
     driveId: string | null = null,
-    caseId: string | null = null
+    caseId: string | null = null,
+    explicitFirmId: string | null = null
   ): Promise<Document> {
     const docId = `doc_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    const firm = await this.getFirm();
+    const firmId = explicitFirmId || (await this.getFirm()).id;
     const uploadedAt = new Date().toISOString();
 
     await this.query(
       `INSERT INTO documents (id, firm_id, case_id, title, source_url, drive_id, extracted_text, section, uploaded_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-      [docId, firm.id, caseId, title, sourceUrl, driveId, text, section, uploadedAt]
+      [docId, firmId, caseId, title, sourceUrl, driveId, text, section, uploadedAt]
     );
 
     if (caseId) {
@@ -323,31 +192,24 @@ class DatabaseService {
     console.log(`Generating embeddings for ${paragraphs.length} chunks of "${title}"...`);
     for (let i = 0; i < paragraphs.length; i++) {
       const chunkText = paragraphs[i];
-      let embedding: number[] = [];
       try {
-        embedding = await callModel("embedding", [], {
+        const embedding = await callModel("embedding", [], {
           textToEmbed: chunkText
         }) as number[];
+        const vectorStr = `[${embedding.join(",")}]`;
+        await this.query(
+          `INSERT INTO document_chunks (id, document_id, chunk_text, embedding)
+           VALUES ($1, $2, $3, $4)`,
+          [`chunk_${docId}_${i}`, docId, chunkText, vectorStr]
+        );
       } catch (error) {
-        console.error(`Error generating embedding for chunk ${i}:`, error);
-        // Fallback to random normalized vector
-        embedding = Array.from({ length: 768 }, () => Math.random() - 0.5);
-        const magnitude = Math.sqrt(embedding.reduce((sum, val) => sum + val * val, 0));
-        embedding = embedding.map((val) => val / magnitude);
+        console.error(`Embedding generation failed for document ${docId}, chunk ${i}; chunk left unindexed.`, error);
       }
-
-      const vectorStr = `[${embedding.join(",")}]`;
-
-      await this.query(
-        `INSERT INTO document_chunks (id, document_id, chunk_text, embedding)
-         VALUES ($1, $2, $3, $4)`,
-        [`chunk_${docId}_${i}`, docId, chunkText, vectorStr]
-      );
     }
 
     return {
       id: docId,
-      firm_id: firm.id,
+      firm_id: firmId,
       case_id: caseId,
       title,
       source_url: sourceUrl,
@@ -633,15 +495,6 @@ class DatabaseService {
       `INSERT INTO drafts (id, thread_id, case_id, title, content, created_at)
        VALUES ($1, $2, $3, $4, $5, $6)`,
       [draftId, threadId, caseId, title, content, createdAt]
-    );
-
-    await this.addDocumentInternal(
-      `Draft: ${title}`,
-      content,
-      "Drafts & Memorandums",
-      null,
-      null,
-      caseId
     );
 
     return {
