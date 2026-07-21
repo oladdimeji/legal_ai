@@ -92,6 +92,10 @@ export interface Message {
   citations: Citation[];
   steps: ResearchStep[] | null; // log when deep research is run
   created_at: string;
+  metadata?: {
+    suggestions?: string[];
+    [key: string]: unknown;
+  };
 }
 
 export interface Draft {

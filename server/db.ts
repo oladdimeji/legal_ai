@@ -1161,7 +1161,36 @@ class DatabaseService {
     return rows.map((m) => ({
       ...m,
       citations: typeof m.citations === "string" ? JSON.parse(m.citations) : m.citations,
-      steps: typeof m.steps === "string" ? JSON.parse(m.steps) : m.steps
+      steps: typeof m.steps === "string" ? JSON.parse(m.steps) : m.steps,
+      metadata: typeof m.metadata === "string" ? JSON.parse(m.metadata) : m.metadata
+    }));
+  }
+
+  public async getRecentMessages(
+    threadId: string,
+    context: OwnershipContext,
+    limit = 12
+  ): Promise<Message[]> {
+    const rows = await this.query(
+      `SELECT * FROM (
+         SELECT m.* FROM messages m
+         JOIN threads t ON t.id = m.thread_id
+         WHERE m.thread_id = $1 AND t.user_id = $2
+           AND (
+             t.case_id IS NULL OR EXISTS (
+               SELECT 1 FROM cases c WHERE c.id = t.case_id AND c.firm_id = $3
+             )
+           )
+         ORDER BY m.created_at DESC
+         LIMIT $4
+       ) recent ORDER BY created_at ASC`,
+      [threadId, context.userId, context.firmId, limit]
+    );
+    return rows.map((m) => ({
+      ...m,
+      citations: typeof m.citations === "string" ? JSON.parse(m.citations) : m.citations,
+      steps: typeof m.steps === "string" ? JSON.parse(m.steps) : m.steps,
+      metadata: typeof m.metadata === "string" ? JSON.parse(m.metadata) : m.metadata,
     }));
   }
 
@@ -1171,14 +1200,15 @@ class DatabaseService {
     content: string,
     context: OwnershipContext,
     citations: Citation[] = [],
-    steps: any[] | null = null
+    steps: any[] | null = null,
+    metadata: Record<string, unknown> = {}
   ): Promise<Message> {
     const msgId = `msg_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const createdAt = new Date().toISOString();
 
     const inserted = await this.query(
-      `INSERT INTO messages (id, thread_id, role, content, citations, steps, created_at)
-       SELECT $1, t.id, $3, $4, $5, $6, $7
+      `INSERT INTO messages (id, thread_id, role, content, citations, steps, created_at, metadata)
+       SELECT $1, t.id, $3, $4, $5, $6, $7, $10::jsonb
        FROM threads t
        WHERE t.id = $2 AND t.user_id = $8
          AND (
@@ -1197,6 +1227,7 @@ class DatabaseService {
         createdAt,
         context.userId,
         context.firmId,
+        JSON.stringify(metadata),
       ]
     );
     if (inserted.length !== 1) throw new Error("Thread not found");
@@ -1208,7 +1239,8 @@ class DatabaseService {
       content,
       citations,
       steps,
-      created_at: createdAt
+      created_at: createdAt,
+      metadata,
     };
   }
 
@@ -1240,7 +1272,8 @@ class DatabaseService {
     return {
       ...m,
       citations: typeof m.citations === "string" ? JSON.parse(m.citations) : m.citations,
-      steps: typeof m.steps === "string" ? JSON.parse(m.steps) : m.steps
+      steps: typeof m.steps === "string" ? JSON.parse(m.steps) : m.steps,
+      metadata: typeof m.metadata === "string" ? JSON.parse(m.metadata) : m.metadata
     };
   }
 

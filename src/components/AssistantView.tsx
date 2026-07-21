@@ -3,14 +3,14 @@ import { createPortal } from "react-dom";
 import { 
   MessageSquare, Send, Sparkles, Search, Library, AlertCircle, 
   ChevronDown, ChevronUp, FileText, Check, Paperclip, RefreshCw, 
-  ExternalLink, BookOpen, Copy, Download, Pencil, X, Briefcase, 
+  ExternalLink, BookOpen, Copy, Pencil, X, Briefcase, 
   Folder, Globe, ThumbsUp, ThumbsDown,
   Bold, Italic, Underline, Strikethrough, List, ListOrdered,
   AlignLeft, AlignCenter, AlignRight, Scissors,
   Clipboard, Undo2, Redo2, Save, Link as LinkIcon
 } from "lucide-react";
-import Markdown from "react-markdown";
-import { Case, Thread, Message, Citation, Scope, Draft, ResearchStep } from "../types";
+import { Case, Thread, Message, Citation, ResearchStep } from "../types";
+import FormattedMarkdown from "./FormattedMarkdown";
 
 interface AssistantViewProps {
   cases: Case[];
@@ -139,6 +139,9 @@ export default function AssistantView({
   const [enableCourtListener, setEnableCourtListener] = useState(false);
   const [enableGovInfo, setEnableGovInfo] = useState(false);
   const [filesAndSourcesOpen, setFilesAndSourcesOpen] = useState(false);
+  const [temporaryFiles, setTemporaryFiles] = useState<Array<{ filename: string; text: string; status: "ready" | "extracting" | "error"; error?: string }>>([]);
+  const [fileExtracting, setFileExtracting] = useState(false);
+  const [improving, setImproving] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -346,7 +349,10 @@ export default function AssistantView({
           forceDeepResearch: deepResearchEnabled,
           enableWebSearch,
           enableCourtListener,
-          enableGovInfo
+          enableGovInfo,
+          temporaryFiles: temporaryFiles
+            .filter((file) => file.status === "ready")
+            .map(({ filename, text }) => ({ filename, text }))
         })
       });
       
@@ -357,6 +363,7 @@ export default function AssistantView({
 
       // Refresh messages with updated thread state
       fetchMessages(currentThreadId);
+      setTemporaryFiles([]);
     } catch (err: any) {
       console.error("Error processing request:", err);
       const errAssistantMsg: Message = {
@@ -377,9 +384,9 @@ export default function AssistantView({
   // Enhance / Improve Prompt using AI
   const handleImprovePrompt = async () => {
     const rawPrompt = inputValue.trim();
-    if (!rawPrompt) return;
+    if (!rawPrompt || improving) return;
 
-    setLoading(true);
+    setImproving(true);
     try {
       const res = await fetch("/api/improve-prompt", {
         method: "POST",
@@ -393,7 +400,41 @@ export default function AssistantView({
     } catch (err) {
       console.error("Failed to improve prompt:", err);
     } finally {
-      setLoading(false);
+      setImproving(false);
+    }
+  };
+
+  const handleTemporaryFiles = async (files: FileList | null) => {
+    if (!files?.length) return;
+    const pending = Array.from(files).map((file) => ({
+      filename: file.name,
+      text: "",
+      status: "extracting" as const,
+    }));
+    setTemporaryFiles((current) => [...current, ...pending]);
+    setFileExtracting(true);
+    const form = new FormData();
+    Array.from(files).forEach((file) => form.append("files", file));
+    try {
+      const response = await fetch("/api/extract-files", { method: "POST", body: form });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "File extraction failed");
+      setTemporaryFiles((current) => [
+        ...current.filter((file) => file.status === "ready"),
+        ...data.files.map((file: { filename: string; text: string }) => ({
+          filename: file.filename,
+          text: file.text,
+          status: "ready" as const,
+        })),
+      ]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "File extraction failed";
+      setTemporaryFiles((current) => [
+        ...current.filter((file) => file.status === "ready"),
+        ...pending.map((file) => ({ ...file, status: "error" as const, error: message })),
+      ]);
+    } finally {
+      setFileExtracting(false);
     }
   };
 
@@ -493,81 +534,6 @@ export default function AssistantView({
     });
   };
 
-  // Dynamic context-driven follow-up suggestions generator
-  const getFollowUpSuggestions = (content: string): string[] => {
-    const text = content.toLowerCase();
-    
-    if (text.includes("16600") || text.includes("non-compete") || text.includes("restrained from engaging")) {
-      return [
-        "Are there exemptions for LLC partners or business sales?",
-        "What are the employer notice requirements under SB 699?",
-        "How does BPC 17200 apply to unlawful non-competes?",
-        "What are the remedies available to employees under AB 1076?"
-      ];
-    }
-    
-    if (text.includes("fair use") || text.includes("copyright act") || text.includes("section 107")) {
-      return [
-        "How is the 'transformative' factor weighted in fair use?",
-        "Does commercial intent automatically disqualify fair use?",
-        "Can fair use protect unpublished manuscript drafts?",
-        "What is the market effect evaluation under the fourth factor?"
-      ];
-    }
-    
-    if (text.includes("executive privilege") || text.includes("nixon") || text.includes("presidential")) {
-      return [
-        "Is executive privilege recognized for civil subpoenas?",
-        "Who can assert presidential privilege besides the President?",
-        "How do courts conduct in camera reviews of privileged tapes?",
-        "Does executive privilege apply to transition team communications?"
-      ];
-    }
-    
-    if (text.includes("rule 403") || text.includes("unfair prejudice") || text.includes("probative value")) {
-      return [
-        "What constitutes 'unfair' prejudice under Rule 403?",
-        "Can a judge exclude evidence solely for wasting time?",
-        "How is the balance of probative value versus prejudice reviewed on appeal?",
-        "Does cumulative evidence rule out key corroborating witness testimonies?"
-      ];
-    }
-    
-    if (text.includes("fourteenth amendment") || text.includes("due process") || text.includes("equal protection")) {
-      return [
-        "What is the difference between procedural and substantive due process?",
-        "How does the Equal Protection Clause apply to state-level entities?",
-        "What standards of scrutiny apply to Fourteenth Amendment claims?",
-        "How does the incorporation doctrine apply the Bill of Rights to states?"
-      ];
-    }
-
-    if (text.includes("patent") || text.includes("infringement")) {
-      return [
-        "What is the statutory defense of prior commercial use?",
-        "How are reasonable royalty damages calculated in patent cases?",
-        "What is the standard for proving willful patent infringement?",
-        "Can an abstract software algorithm be patented under Section 101?"
-      ];
-    }
-
-    if (text.includes("contract") || text.includes("agreement") || text.includes("breach")) {
-      return [
-        "What is the difference between material and minor breach?",
-        "Are oral modifications valid if the contract requires written ones?",
-        "How do courts interpret ambiguous terms in commercial contracts?",
-        "What are the prerequisites for claiming specific performance?"
-      ];
-    }
-
-    return [
-      "What are the immediate next steps to protect the client's interests?",
-      "Are there any specific jurisdictional or venue limitations to consider?",
-      "What key evidence or documentation should be gathered first?",
-      "How have federal appellate courts recently ruled on this specific issue?"
-    ];
-  };
-
   const handleGenerateDraft = async (messageId: string) => {
     setDraftingMessageId(messageId);
     setDraftInstructions("");
@@ -601,109 +567,22 @@ export default function AssistantView({
     }
   };
 
-  // Parse text using react-markdown to support full formatting and custom citation links
   const renderMessageTextWithCitations = (text: string, citationsList: Citation[]) => {
     if (!text) return null;
-
-    const findCitation = (rawId: string) => {
-      const trimmed = rawId.trim();
-      let citation = citationsList.find((c) => c.id === trimmed || c.id === `cit_${trimmed}`);
-      if (!citation && !isNaN(Number(trimmed))) {
-        citation = citationsList[Number(trimmed) - 1];
-      }
-      return citation;
-    };
-
-    const preprocessed = text.replace(/\[([^\]]+)\]/g, (match, inner) => {
-      const items = inner.split(",");
-      const formattedCitations: string[] = [];
-      let isAllCitations = true;
-
-      for (const item of items) {
-        const trimmed = item.trim();
-        const isCitPattern = /^cit_\d+$/.test(trimmed) || /^\d+$/.test(trimmed);
-        
-        if (isCitPattern) {
-          const cit = findCitation(trimmed);
-          if (cit) {
-            formattedCitations.push(`[${cit.id}](#${cit.id})`);
-          } else {
-            isAllCitations = false;
-            break;
-          }
-        } else {
-          isAllCitations = false;
-          break;
-        }
-      }
-
-      if (isAllCitations && formattedCitations.length > 0) {
-        return formattedCitations.join("");
-      }
-      return match;
-    });
-
     return (
-      <div className="prose max-w-none text-zinc-800 leading-relaxed space-y-3 font-sans select-text text-sm md:text-[14.5px]">
-        <Markdown
-          components={{
-            a: ({ href, children, ...props }: any) => {
-              if (href && href.startsWith("#cit_")) {
-                const citationId = href.replace("#", "");
-                const citation = citationsList.find((c) => c.id === citationId);
-                if (citation) {
-                  const lastUserQuery = [...messages].reverse().find(m => m.role === "user")?.content || "";
-                  return (
-                    <span className="inline-block">
-                      <button
-                        type="button"
-                        onMouseEnter={(e) => {
-                          const rect = e.currentTarget.getBoundingClientRect();
-                          const lastUserQuery = [...messages].reverse().find(m => m.role === "user")?.content || "";
-                          setHoveredCitation({ citation, rect, lastUserQuery });
-                        }}
-                        onMouseLeave={() => {
-                          setHoveredCitation(null);
-                        }}
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          setCitationPanelSource(citation);
-                          setActiveMessageCitations(citationsList);
-                        }}
-                        className="text-xs text-zinc-500 hover:text-zinc-800 hover:underline font-mono font-semibold align-super cursor-pointer select-none transition-all focus:outline-none ml-0.5"
-                      >
-                        [{citationId.replace("cit_", "")}]
-                      </button>
-                    </span>
-                  );
-                }
-              }
-              return (
-                <a
-                  href={href}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-zinc-950 underline hover:text-zinc-600 transition-all font-semibold"
-                  {...props}
-                >
-                  {children}
-                </a>
-              );
-            },
-            li: ({ children }: any) => <li className="list-disc pl-1 ml-4 my-1.5 text-sm md:text-[14.5px]">{children}</li>,
-            ul: ({ children }: any) => <ul className="my-2.5 space-y-1.5">{children}</ul>,
-            ol: ({ children }: any) => <ol className="list-decimal pl-1 ml-4 my-2.5 space-y-1.5">{children}</ol>,
-            p: ({ children }: any) => <p className="mb-2.5 last:mb-0 leading-relaxed text-sm md:text-[14.5px]">{children}</p>,
-            strong: ({ children }: any) => <strong className="font-semibold text-zinc-950 text-sm md:text-[14.5px]">{children}</strong>,
-            h1: ({ children }: any) => <h1 className="text-lg font-bold text-zinc-950 mt-5 mb-2.5">{children}</h1>,
-            h2: ({ children }: any) => <h2 className="text-base font-bold text-zinc-950 mt-4 mb-2">{children}</h2>,
-            h3: ({ children }: any) => <h3 className="text-sm font-bold text-zinc-950 mt-3 mb-1.5">{children}</h3>,
-          }}
-        >
-          {preprocessed}
-        </Markdown>
-      </div>
+      <FormattedMarkdown
+        content={text}
+        citations={citationsList}
+        onCitationHover={(citation, rect) => {
+          const lastUserQuery = [...messages].reverse().find(m => m.role === "user")?.content || "";
+          setHoveredCitation({ citation, rect, lastUserQuery });
+        }}
+        onCitationLeave={() => setHoveredCitation(null)}
+        onCitationClick={(citation, all) => {
+          setCitationPanelSource(citation);
+          setActiveMessageCitations(all);
+        }}
+      />
     );
   };  // Reusable Ask Bar Form component
   const renderAskBarForm = () => {
@@ -711,7 +590,7 @@ export default function AssistantView({
       <form onSubmit={handleAsk} className="w-full relative flex flex-col select-none">
         <div className="w-full border border-zinc-200 focus-within:border-zinc-400 rounded-lg bg-white p-3 transition-all flex flex-col gap-2.5">
           {/* Selected Files / Sources Chips Bar at the top of the container */}
-          {(enableWebSearch || enableCourtListener || enableGovInfo) && (
+          {(enableWebSearch || enableCourtListener || enableGovInfo || temporaryFiles.length > 0) && (
             <div className="flex flex-wrap gap-2 select-none pb-2 border-b border-zinc-100 animate-fade-in" id="attached-chips-row">
               {enableWebSearch && (
                 <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 bg-zinc-50 text-zinc-600 rounded-full text-xs font-mono border border-zinc-200 animate-fade-in">
@@ -723,17 +602,24 @@ export default function AssistantView({
               {enableCourtListener && (
                 <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 bg-zinc-50 text-zinc-600 rounded-full text-xs font-mono border border-zinc-200 animate-fade-in">
                   <Library className="h-3 w-3 shrink-0 text-zinc-450" />
-                  <span>CourtListener (Simulated)</span>
+                  <span>CourtListener</span>
                   <button type="button" onClick={() => setEnableCourtListener(false)} className="hover:text-zinc-900 font-bold ml-1 text-[10px] focus:outline-none cursor-pointer">✕</button>
                 </span>
               )}
               {enableGovInfo && (
                 <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 bg-zinc-50 text-zinc-600 rounded-full text-xs font-mono border border-zinc-200 animate-fade-in">
                   <FileText className="h-3 w-3 shrink-0 text-zinc-450" />
-                  <span>GovInfo (Simulated)</span>
+                  <span>GovInfo</span>
                   <button type="button" onClick={() => setEnableGovInfo(false)} className="hover:text-zinc-900 font-bold ml-1 text-[10px] focus:outline-none cursor-pointer">✕</button>
                 </span>
               )}
+              {temporaryFiles.map((file, index) => (
+                <span key={`${file.filename}-${index}`} className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 bg-zinc-50 rounded-full text-xs font-mono border animate-fade-in ${file.status === "error" ? "text-red-700 border-red-200" : "text-zinc-600 border-zinc-200"}`}>
+                  <FileText className={`h-3 w-3 shrink-0 ${file.status === "extracting" ? "animate-pulse" : ""}`} />
+                  <span className="max-w-44 truncate">{file.status === "extracting" ? `Extracting ${file.filename}` : file.status === "error" ? file.error || file.filename : file.filename}</span>
+                  <button type="button" onClick={() => setTemporaryFiles((current) => current.filter((_, i) => i !== index))} className="hover:text-zinc-900 font-bold ml-1 text-[10px] focus:outline-none cursor-pointer">X</button>
+                </span>
+              ))}
             </div>
           )}
 
@@ -837,7 +723,7 @@ export default function AssistantView({
                         >
                           <div className="flex items-center gap-2.5">
                             <Library className="h-4 w-4 text-blue-600 shrink-0" />
-                            <span>CourtListener Case Law (Simulated)</span>
+                            <span>CourtListener Case Law</span>
                           </div>
                           <div className={`w-4 h-4 rounded border flex items-center justify-center ${enableCourtListener ? "bg-blue-600 border-blue-600 text-white" : "border-zinc-300 bg-white"}`}>
                             {enableCourtListener && <Check className="h-3 w-3" />}
@@ -855,13 +741,31 @@ export default function AssistantView({
                         >
                           <div className="flex items-center gap-2.5">
                             <FileText className="h-4 w-4 text-purple-600 shrink-0" />
-                            <span>GovInfo Legislative Library (Simulated)</span>
+                            <span>GovInfo Legislative Library</span>
                           </div>
                           <div className={`w-4 h-4 rounded border flex items-center justify-center ${enableGovInfo ? "bg-purple-600 border-purple-600 text-white" : "border-zinc-300 bg-white"}`}>
                             {enableGovInfo && <Check className="h-3 w-3" />}
                           </div>
                         </button>
                       </div>
+                    </div>
+
+                    <div className="border-t border-zinc-100 pt-3">
+                      <span className="text-[10px] font-mono uppercase text-zinc-400 font-bold block mb-2 tracking-wider">Temporary File Attachments</span>
+                      <label className="flex cursor-pointer items-center justify-between rounded-md border border-zinc-200 bg-white px-3 py-2 text-xs text-zinc-700 hover:bg-zinc-50 hover:text-zinc-950 hover:border-zinc-300 transition-all">
+                        <span className="flex items-center gap-2.5"><Paperclip className="h-4 w-4" />Add PDF, DOCX, or TXT</span>
+                        <input
+                          type="file"
+                          className="sr-only"
+                          multiple
+                          accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain"
+                          onChange={(event) => {
+                            void handleTemporaryFiles(event.target.files);
+                            event.currentTarget.value = "";
+                          }}
+                        />
+                      </label>
+                      {fileExtracting && <p className="mt-2 text-[10px] font-mono uppercase text-zinc-400">Extracting files...</p>}
                     </div>
                   </div>,
                   document.body
@@ -872,13 +776,13 @@ export default function AssistantView({
               <button
                 type="button"
                 onClick={handleImprovePrompt}
-                disabled={!inputValue.trim() || loading}
+                disabled={!inputValue.trim() || improving}
                 id="btn-improve-query"
                 className="flex items-center gap-1 px-2 py-1 text-xs font-mono font-bold text-zinc-600 hover:text-zinc-950 border border-zinc-200 rounded-md bg-white transition-all disabled:opacity-50 cursor-pointer shadow-xs hover:border-zinc-300"
                 title="Optimize query with legal-grade framing"
               >
-                <Sparkles className="h-3.5 w-3.5 text-zinc-800 animate-pulse" />
-                <span>Improve</span>
+                <Sparkles className={`h-3.5 w-3.5 text-zinc-800 ${improving ? "animate-spin" : ""}`} />
+                <span>{improving ? "Improving..." : "Improve"}</span>
               </button>
             </div>
 
@@ -899,12 +803,12 @@ export default function AssistantView({
 
               <button
                 type="submit"
-                disabled={!inputValue.trim() || loading}
+                disabled={!inputValue.trim() || loading || fileExtracting}
                 id="btn-submit-ask"
                 className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-mono uppercase font-bold text-white bg-zinc-950 hover:bg-zinc-900 border border-zinc-950 rounded shadow-xs disabled:opacity-40 transition-all cursor-pointer"
               >
-                Ask
-                <Send className="h-3 w-3" />
+                {loading ? "Sending..." : "Ask"}
+                {loading ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
               </button>
             </div>
           </div>
@@ -943,7 +847,7 @@ export default function AssistantView({
             }`}
           >
             <Library className="h-4 w-4 text-blue-600" />
-            <span>CourtListener (Simulated)</span>
+            <span>CourtListener</span>
             {enableCourtListener && <Check className="h-3.5 w-3.5 ml-0.5 text-blue-700" />}
           </button>
 
@@ -957,7 +861,7 @@ export default function AssistantView({
             }`}
           >
             <FileText className="h-4 w-4 text-purple-600" />
-            <span>GovInfo Library (Simulated)</span>
+            <span>GovInfo Library</span>
             {enableGovInfo && <Check className="h-3.5 w-3.5 ml-0.5 text-purple-700" />}
           </button>
         </div>
@@ -1118,7 +1022,7 @@ export default function AssistantView({
                           )}
 
                           {/* Body Text */}
-                          <div className="whitespace-pre-wrap font-sans font-normal leading-relaxed text-zinc-900">
+                          <div className="font-sans font-normal leading-relaxed text-zinc-900">
                             {renderMessageTextWithCitations(m.content, m.citations)}
                           </div>
 
@@ -1191,26 +1095,6 @@ export default function AssistantView({
                                   <span>Copy</span>
                                 </button>
 
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    const blob = new Blob([m.content], { type: "text/markdown;charset=utf-8;" });
-                                    const url = URL.createObjectURL(blob);
-                                    const link = document.createElement("a");
-                                    link.href = url;
-                                    link.setAttribute("download", `AI_Response_${m.id}.md`);
-                                    document.body.appendChild(link);
-                                    link.click();
-                                    document.body.removeChild(link);
-                                  }}
-                                  id={`action-export-${m.id}`}
-                                  className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-mono font-medium text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 rounded transition-colors"
-                                  title="Export to Markdown File"
-                                >
-                                  <Download className="h-3.5 w-3.5" />
-                                  <span>Export</span>
-                                </button>
-
                                 {/* Rewrite action button - restricted to latest assistant message */}
                                 {m.id === lastAssistantMessageId && (
                                   <button
@@ -1247,11 +1131,11 @@ export default function AssistantView({
                     </div>
 
                     {/* Follow-up Suggestions (Pills) - Lifecycle restricted to latest assistant response */}
-                    {isLastMessage && m.role === "assistant" && !loading && (
+                    {isLastMessage && m.role === "assistant" && !loading && Array.isArray(m.metadata?.suggestions) && m.metadata.suggestions.length > 0 && (
                       <div className="mt-4 flex flex-col gap-2 pl-2 animate-fade-in select-none" id="follow-up-suggestions-container">
                         <span className="text-[10px] font-mono font-semibold uppercase tracking-wider text-zinc-400">Suggested Follow-ups:</span>
                         <div className="flex flex-wrap gap-2">
-                          {getFollowUpSuggestions(m.content).map((suggestion, idx) => (
+                          {m.metadata.suggestions.map((suggestion, idx) => (
                             <button
                               key={idx}
                               type="button"
@@ -1401,30 +1285,7 @@ export default function AssistantView({
               />
             ) : (
               <div className="flex-1 p-6 overflow-y-auto prose prose-zinc max-w-none text-sm select-text">
-                <Markdown
-                  components={{
-                    a: ({ href, children, ...props }: any) => (
-                      <a
-                        href={href}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-zinc-950 underline hover:text-zinc-600 transition-all font-semibold"
-                        {...props}
-                      >
-                        {children}
-                      </a>
-                    ),
-                    li: ({ children }: any) => <li className="list-disc pl-1 ml-4 my-1 text-zinc-850 leading-relaxed">{children}</li>,
-                    ul: ({ children }: any) => <ul className="my-2 space-y-1">{children}</ul>,
-                    ol: ({ children }: any) => <ol className="list-decimal pl-1 ml-4 my-2 space-y-1">{children}</ol>,
-                    p: ({ children }: any) => <p className="mb-2.5 last:mb-0 leading-relaxed text-zinc-850">{children}</p>,
-                    strong: ({ children }: any) => <strong className="font-semibold text-zinc-950">{children}</strong>,
-                    h1: ({ children }: any) => <h1 className="text-base font-bold text-zinc-950 mt-4 mb-2">{children}</h1>,
-                    h2: ({ children }: any) => <h2 className="text-sm font-bold text-zinc-950 mt-3 mb-1.5">{children}</h2>,
-                  }}
-                >
-                  {sideEditorContent}
-                </Markdown>
+                <FormattedMarkdown content={sideEditorContent} />
               </div>
             )}
           </div>

@@ -376,6 +376,18 @@ const migrations: Migration[] = [
       );
     },
   },
+  {
+    version: 10,
+    name: "assistant_message_metadata",
+    async run(client) {
+      await client.query(
+        "ALTER TABLE messages ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb"
+      );
+      await client.query(
+        "CREATE INDEX IF NOT EXISTS messages_thread_created_idx ON messages(thread_id, created_at)"
+      );
+    },
+  },
 ];
 
 export async function runMigrations(pool: Pool): Promise<void> {

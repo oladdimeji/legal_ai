@@ -315,3 +315,45 @@ Final gates:
 - `npm run lint`: passed.
 - `npm run build`: passed.
 - `npx tsx scripts/phase10-live-smoke.ts`: passed all reported live checks.
+
+## Phase 11 - Shared UX, Markdown, File Ingestion, and Assistant Continuity
+
+Status: Complete.
+
+Implemented:
+
+- Added a shared citation-aware Markdown renderer for Assistant responses, response editor preview, and Matter Intelligence read-only content, including GFM tables, lists, headings, links, block quotes, and compact legal-document spacing.
+- Added memory-based server extraction for PDF, DOCX, and TXT files with extension/MIME checks, file count, file size, total extracted-character limits, and useful rejection errors for unsupported, corrupt, encrypted, or textless files. OCR is not implemented.
+- Added temporary Assistant file attachments that extract text server-side, show removable chips/states, are sent only with the current request, appear as temporary citation labels, and are cleared only after successful send.
+- Restored bounded Assistant conversation history in model requests. Prior user/assistant turns are included as conversational context only; retrieval remains scoped to the stored General or Matter context.
+- Replaced keyword hardcoded follow-up arrays with model-generated suggestions persisted in message metadata. Suggestion generation failure falls back to no suggestions without failing the answer.
+- Made Improve use a distinct `Improving...` state and server-side Markdown-marker sanitization before text enters the editable prompt box.
+- Removed visible `(Simulated)` text from CourtListener/GovInfo names, removed Assistant response Export, removed App-level message/history sidebar auto-collapse, and added clearer async labels to the Assistant send/improve flow.
+- Added Matter Intelligence formatted rendering and an owned DOCX export route that converts basic Markdown structure instead of dumping Markdown syntax.
+
+Schema changes:
+
+- Migration 010 adds `messages.metadata JSONB NOT NULL DEFAULT '{}'::jsonb`.
+- Migration 010 adds `messages_thread_created_idx` for bounded recent history reads.
+
+Dependencies added:
+
+- `multer`, `@types/multer`, `pdf-parse`, `mammoth`, and `remark-gfm`.
+
+API changes:
+
+- Added `POST /api/extract-files` for authenticated temporary extraction.
+- `POST /api/documents` and `POST /api/cases/:id/sources` now also accept memory-backed multipart file uploads.
+- `POST /api/threads/:id/messages` accepts request-scoped `temporaryFiles`.
+- Added `GET /api/cases/:caseId/intelligence/export`.
+
+Verification:
+
+- `npm test`: passed, 36/36 tests.
+- `npm run lint`: passed.
+- `npm run build`: passed.
+
+Known limitations:
+
+- PDF support is extractable text only; scanned/image PDFs require OCR, which remains intentionally unsupported.
+- CourtListener and GovInfo remain local deterministic adapters; the visible UI no longer labels them as simulated, and no live connector claim was added.

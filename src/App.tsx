@@ -83,12 +83,6 @@ export default function App() {
     setIsSidebarCollapsed(false); // Restore sidebar when starting a completely fresh chat
   };
 
-  const handleMessagesChange = (count: number) => {
-    if (count > 0 && activeTab === "assistant") {
-      setIsSidebarCollapsed(true); // Auto-collapse once a conversation has started
-    }
-  };
-
   const handleLogout = async () => {
     try {
       await fetch("/api/auth/logout", { method: "POST" });
@@ -140,7 +134,7 @@ export default function App() {
             setActiveCaseId={setActiveCaseId}
             activeThreadId={activeThreadId}
             setActiveThreadId={setActiveThreadId}
-            onMessagesChange={handleMessagesChange}
+            onMessagesChange={() => undefined}
             onNavigateToDrafts={handleNavigateToDrafts}
           />
         )}
@@ -159,7 +153,6 @@ export default function App() {
               setActiveCaseId(thread.case_id);
               setActiveThreadId(thread.id);
               setActiveTab("assistant");
-              setIsSidebarCollapsed(true);
             }}
           />
         )}

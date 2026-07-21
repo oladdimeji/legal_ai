@@ -1,6 +1,7 @@
 import express from "express";
 import type { NextFunction, Request, Response } from "express";
 import path from "path";
+import multer from "multer";
 import { createServer as createViteServer } from "vite";
 import { db } from "./server/db.js";
 import type { OwnershipContext } from "./server/db.js";
@@ -8,7 +9,9 @@ import { callModel, MODEL_CONFIGS } from "./server/model.js";
 import { CourtListenerAdapter } from "./server/connectors/courtlistener.js";
 import { GovInfoAdapter } from "./server/connectors/govinfo.js";
 import { Document, Citation, Message, Draft, ResearchStep } from "./src/types.js";
-import { Document as DocxDocument, Packer, Paragraph, TextRun, HeadingLevel } from "docx";
+import { Packer } from "docx";
+import { extractUploads, MAX_FILE_COUNT, MAX_FILE_SIZE_BYTES } from "./server/fileExtraction.js";
+import { markdownToDocxDocument } from "./server/docxMarkdown.js";
 import {
   SESSION_COOKIE_NAME,
   SESSION_TTL_MS,
@@ -26,6 +29,10 @@ const PORT = 3000;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const SIMILARITY_THRESHOLD = 0.65;
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_FILE_SIZE_BYTES, files: MAX_FILE_COUNT },
+});
 
 interface AuthenticatedRequest extends Request {
   auth?: {
@@ -49,6 +56,62 @@ function ownedErrorStatus(error: unknown): number {
 
 function cleanSourceText(text: string): string {
   return text.replace(/\[cit_\d+\]/g, "");
+}
+
+function sanitizePlainEditableText(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, (block) => block.replace(/```[a-z]*|```/gi, ""))
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^\s*[-*+]\s+/gm, "")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/\*([^*]+)\*/g, "$1")
+    .replace(/__([^_]+)__/g, "$1")
+    .replace(/_([^_]+)_/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1 ($2)")
+    .trim();
+}
+
+function boundedConversation(messages: Message[], maxChars = 12000): Message[] {
+  const selected: Message[] = [];
+  let used = 0;
+  for (const message of [...messages].reverse()) {
+    const content = message.content.slice(0, 2500);
+    if (used + content.length > maxChars && selected.length >= 4) break;
+    selected.unshift({ ...message, content });
+    used += content.length;
+  }
+  return selected;
+}
+
+async function generateFollowUpSuggestions(history: Message[], answer: string): Promise<string[]> {
+  try {
+    const context = boundedConversation(history, 6000)
+      .map((message) => `${message.role.toUpperCase()}: ${message.content}`)
+      .join("\n\n");
+    const prompt = `Generate 3 or 4 concise follow-up questions for a lawyer based on this actual conversation and latest answer.
+Return strict JSON: {"suggestions":["..."]}. Do not use generic canned questions.
+
+CONVERSATION:
+${context}
+
+LATEST ANSWER:
+${answer.slice(0, 5000)}`;
+    const result = await callModel("classify-complexity", [{ role: "user", content: prompt }], {
+      responseMimeType: "application/json",
+      temperature: 0.2,
+    });
+    const parsed = JSON.parse(result.text);
+    const suggestions = Array.isArray(parsed.suggestions) ? parsed.suggestions : [];
+    return suggestions
+      .filter((item: unknown): item is string => typeof item === "string")
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .slice(0, 4);
+  } catch (error) {
+    console.error("Follow-up suggestion generation failed:", error);
+    return [];
+  }
 }
 
 async function startServer() {
@@ -177,9 +240,7 @@ async function startServer() {
       portalTokenHash(req.params.token), req.params.draftId
     );
     if (!draft) return res.status(404).json({ error: "Shared Work Product not found" });
-    const paragraphs = [new Paragraph({ text: draft.title, heading: HeadingLevel.HEADING_1 })];
-    for (const line of draft.content.split("\n")) paragraphs.push(new Paragraph({ children: [new TextRun(line)] }));
-    const buffer = await Packer.toBuffer(new DocxDocument({ sections: [{ children: paragraphs }] }));
+    const buffer = await Packer.toBuffer(markdownToDocxDocument(draft.title, draft.content));
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
     res.setHeader("Content-Disposition", `attachment; filename="${draft.title.replace(/[^a-z0-9]/gi, "_")}.docx"`);
     return res.send(buffer);
@@ -288,15 +349,33 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
       const enhancePrompt = `You are an elite senior legal advisor. 
 Transform the following raw question or thought into a professional, precise, structured, and formal legal-grade research query. 
 Incorporate standard legal terminology, specify statutory frameworks or jurisdictional queries where appropriate, and ensure it remains clear and succinct for search retrieval.
-Output ONLY the final enhanced text, do not add conversational pleasantries or explanation.
+Output ONLY plain editable text. Do not use Markdown headings, bold, italics, bullet markers, code fences, or tables. Preserve ordinary legal punctuation and numbered prose only when numbering is substantively useful.
 
 Raw prompt: "${prompt}"`;
 
       const result = await callModel("classify-complexity", [{ role: "user", content: enhancePrompt }]);
-      res.json({ improved: result.text.trim() });
+      res.json({ improved: sanitizePlainEditableText(result.text) });
     } catch (err: any) {
       console.error("Error improving prompt:", err);
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/extract-files", upload.array("files", MAX_FILE_COUNT), async (req, res) => {
+    try {
+      const files = (req.files || []) as Express.Multer.File[];
+      const extracted = await extractUploads(files);
+      return res.json({
+        files: extracted.map((file) => ({
+          filename: file.filename,
+          text: file.text,
+          extension: file.extension,
+          mimeType: file.mimeType,
+          characterCount: file.text.length,
+        })),
+      });
+    } catch (err: any) {
+      return res.status(400).json({ error: err.message || "File extraction failed" });
     }
   });
 
@@ -377,7 +456,7 @@ Raw prompt: "${prompt}"`;
     return res.json(await db.getCaseSources(req.params.id, ownership(req)));
   });
 
-  app.post("/api/cases/:id/sources", async (req, res) => {
+  app.post("/api/cases/:id/sources", upload.array("files", 1), async (req, res) => {
     try {
       const requestOwnership = ownership(req);
       const matter = await db.getCaseById(req.params.id, requestOwnership);
@@ -389,6 +468,18 @@ Raw prompt: "${prompt}"`;
         if (!linked) return res.status(404).json({ error: "Firm Library document not found" });
         await db.touchCase(matter.id, requestOwnership);
         return res.status(201).json({ linked: true });
+      }
+      const files = (req.files || []) as Express.Multer.File[];
+      if (files.length > 0) {
+        const [file] = await extractUploads(files);
+        const title = typeof req.body.title === "string" && req.body.title.trim()
+          ? req.body.title.trim()
+          : file.filename;
+        const document = await db.uploadDocument(
+          title, file.text, requestOwnership, null, null, matter.id, "Matter Upload", "Lawyer"
+        );
+        await db.touchCase(matter.id, requestOwnership);
+        return res.status(201).json(document);
       }
       const text = typeof req.body.text === "string" ? req.body.text.trim() : "";
       const title = typeof req.body.title === "string" ? req.body.title.trim() : "";
@@ -467,6 +558,21 @@ ${sourceText}`;
     }
   });
 
+  app.get("/api/cases/:caseId/intelligence/export", async (req, res) => {
+    try {
+      const record = await db.getMatterIntelligence(req.params.caseId, ownership(req));
+      const matter = await db.getCaseById(req.params.caseId, ownership(req));
+      if (!record || !matter) return res.status(404).json({ error: "Matter Intelligence not found" });
+      const buffer = await Packer.toBuffer(markdownToDocxDocument(`${matter.name} Matter Intelligence`, record.content));
+      const safeTitle = `${matter.name}_matter_intelligence`.replace(/[^a-z0-9]/gi, "_").toLowerCase();
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+      res.setHeader("Content-Disposition", `attachment; filename="${safeTitle}.docx"`);
+      return res.send(buffer);
+    } catch (err: any) {
+      return res.status(ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
   app.get("/api/cases/:caseId/collaboration", async (req, res) => {
     try {
       return res.json(await db.getCollaboration(req.params.caseId, ownership(req)));
@@ -538,9 +644,22 @@ ${sourceText}`;
   });
 
   // Upload/create Document
-  app.post("/api/documents", async (req, res) => {
+  app.post("/api/documents", upload.array("files", 1), async (req, res) => {
     try {
       const { title, text, sourceUrl, driveId, caseId } = req.body;
+      const files = (req.files || []) as Express.Multer.File[];
+      if (files.length > 0) {
+        const [file] = await extractUploads(files);
+        const newDoc = await db.uploadDocument(
+          typeof title === "string" && title.trim() ? title.trim() : file.filename,
+          file.text,
+          ownership(req),
+          sourceUrl || null,
+          driveId || null,
+          caseId || null
+        );
+        return res.status(201).json(newDoc);
+      }
       if (!title || !text) {
         return res.status(400).json({ error: "Title and text content are required" });
       }
@@ -634,6 +753,11 @@ ${sourceText}`;
   app.post("/api/threads/:id/messages", async (req, res) => {
     const threadId = req.params.id;
     const { content, forceDeepResearch, enableWebSearch, enableCourtListener, enableGovInfo } = req.body;
+    const temporaryFiles: Array<{ filename: string; text: string }> = Array.isArray(req.body.temporaryFiles)
+      ? req.body.temporaryFiles
+          .filter((file: any) => typeof file?.filename === "string" && typeof file?.text === "string")
+          .map((file: any) => ({ filename: file.filename.slice(0, 180), text: file.text.slice(0, 30000) }))
+      : [];
 
     if (!content) {
       return res.status(400).json({ error: "Message content is required" });
@@ -645,9 +769,15 @@ ${sourceText}`;
       if (!thread) {
         return res.status(404).json({ error: "Thread not found" });
       }
+      const priorHistory = await db.getRecentMessages(threadId, requestOwnership, 12);
 
       // Save user message first
       const userMessage = await db.addMessage(threadId, "user", content, requestOwnership);
+      const conversationHistory = boundedConversation([...priorHistory, userMessage], 12000);
+      const conversationContext = conversationHistory
+        .map((message) => `${message.role.toUpperCase()}: ${message.content}`)
+        .join("\n\n");
+      const retrievalQuery = [...conversationHistory.filter((m) => m.role === "user").slice(-3).map((m) => m.content), content].join("\n");
 
       const scope = thread.case_id || "wide";
 
@@ -738,7 +868,7 @@ Query: "${content}"`;
           }
           
           // Vector Search Chunks with similarity threshold
-          const allLocalChunks = await db.vectorSearch(subQ, scope, requestOwnership, 2);
+          const allLocalChunks = await db.vectorSearch(`${subQ}\n${retrievalQuery}`.slice(0, 4000), scope, requestOwnership, 2);
           const localChunks = allLocalChunks.filter(c => c.similarity >= SIMILARITY_THRESHOLD);
           
           // Connectors Query
@@ -785,8 +915,18 @@ Query: "${content}"`;
             stepCitations.push(`[${cit.id}] ${cit.title} (${cit.sourceName})`);
           });
 
+          for (const file of temporaryFiles) {
+            const cit = registerCitation({
+              type: "workspace",
+              title: file.filename,
+              textSnippet: cleanSourceText(file.text.slice(0, 1200)),
+              sourceName: "Temporary File Attachment"
+            });
+            stepCitations.push(`[${cit.id}] ${cit.title} (Temporary File Attachment)`);
+          }
+
           // Generate sub-step note via AI (using cheaper/lighter model)
-          const contextText = localChunks.map(c => c.chunk_text).concat(clResults.map(r => r.textSnippet), giResults.map(r => r.textSnippet)).join("\n\n");
+          const contextText = localChunks.map(c => c.chunk_text).concat(clResults.map(r => r.textSnippet), giResults.map(r => r.textSnippet), temporaryFiles.map((f) => f.text.slice(0, 4000))).join("\n\n");
           let subNote = "";
           try {
             const noteResult = await callModel("summarize-subquestion", [
@@ -831,6 +971,9 @@ Do not invent anything. If the sources do not provide an answer, state that info
 
 Gathered legal references to use and reference:
 ${totalGatheredContext || "No internal document matches."}
+
+Prior conversation for resolving follow-up references only. This is not a legal source:
+${conversationContext || "No prior conversation."}
 
 Primary Question: "${content}"
 
@@ -911,7 +1054,7 @@ ${citationInstSearch}`;
 
         // Perform parallel lookups
         const [allLocalChunks, clResults, giResults] = await Promise.all([
-          db.vectorSearch(content, scope, requestOwnership, 3),
+          db.vectorSearch(retrievalQuery.slice(0, 4000), scope, requestOwnership, 3),
           enableCourtListener ? CourtListenerAdapter.query(content) : Promise.resolve([]),
           enableGovInfo ? GovInfoAdapter.query(content) : Promise.resolve([])
         ]);
@@ -953,6 +1096,15 @@ ${citationInstSearch}`;
           });
         });
 
+        for (const file of temporaryFiles) {
+          registerCitation({
+            type: "workspace",
+            title: file.filename,
+            textSnippet: cleanSourceText(file.text.slice(0, 1200)),
+            sourceName: "Temporary File Attachment"
+          });
+        }
+
         const totalGatheredContext = citations
           .map((c) => `[${c.id}] Source: ${c.sourceName} - ${c.title}\nText Snippet: ${c.textSnippet}`)
           .join("\n\n");
@@ -976,6 +1128,9 @@ Stay strict, professional, objective, and use clear legal logic.
 
 Provided Sources:
 ${totalGatheredContext || "No internal document matches."}
+
+Prior conversation for resolving follow-up references only. This is not a legal source:
+${conversationContext || "No prior conversation."}
 
 Legal Question: "${content}"
 
@@ -1052,13 +1207,15 @@ ${citationInstSearch}`;
       }
 
       // Save assistant message with aggregated citations and steps
+      const suggestions = await generateFollowUpSuggestions([...conversationHistory], finalContent);
       const assistantMessage = await db.addMessage(
         threadId,
         "assistant",
         finalContent,
         requestOwnership,
         citations,
-        researchSteps
+        researchSteps,
+        { suggestions }
       );
 
       res.status(201).json({
@@ -1243,94 +1400,7 @@ INSTRUCTIONS:
         return res.status(404).json({ error: "Work Product not found" });
       }
 
-      // Parse the markdown draft to lines for a simple clean DOCX document
-      const lines = draft.content.split("\n");
-      const paragraphs: Paragraph[] = [];
-
-      // Add a clean header
-      paragraphs.push(
-        new Paragraph({
-          text: draft.title,
-          heading: HeadingLevel.HEADING_1,
-          spacing: { after: 200 }
-        })
-      );
-
-      // Simple markdown parser to docx paragraphs
-      lines.forEach((line) => {
-        const trimmed = line.trim();
-        if (trimmed.startsWith("# ")) {
-          paragraphs.push(
-            new Paragraph({
-              text: trimmed.replace("# ", ""),
-              heading: HeadingLevel.HEADING_1,
-              spacing: { before: 240, after: 120 }
-            })
-          );
-        } else if (trimmed.startsWith("## ")) {
-          paragraphs.push(
-            new Paragraph({
-              text: trimmed.replace("## ", ""),
-              heading: HeadingLevel.HEADING_2,
-              spacing: { before: 200, after: 100 }
-            })
-          );
-        } else if (trimmed.startsWith("### ")) {
-          paragraphs.push(
-            new Paragraph({
-              text: trimmed.replace("### ", ""),
-              heading: HeadingLevel.HEADING_3,
-              spacing: { before: 160, after: 80 }
-            })
-          );
-        } else if (trimmed) {
-          // Standard text paragraph
-          // Bold matches
-          const boldRegex = /\*\*(.*?)\*\*/g;
-          const runs: TextRun[] = [];
-          let lastIdx = 0;
-          let match;
-
-          while ((match = boldRegex.exec(trimmed)) !== null) {
-            const index = match.index;
-            if (index > lastIdx) {
-              runs.push(new TextRun(trimmed.substring(lastIdx, index)));
-            }
-            runs.push(
-              new TextRun({
-                text: match[1],
-                bold: true
-              })
-            );
-            lastIdx = boldRegex.lastIndex;
-          }
-
-          if (lastIdx < trimmed.length) {
-            runs.push(new TextRun(trimmed.substring(lastIdx)));
-          }
-
-          paragraphs.push(
-            new Paragraph({
-              children: runs.length > 0 ? runs : [new TextRun(trimmed)],
-              spacing: { after: 120 }
-            })
-          );
-        } else {
-          // Blank line
-          paragraphs.push(new Paragraph({ spacing: { after: 80 } }));
-        }
-      });
-
-      const docx = new DocxDocument({
-        sections: [
-          {
-            properties: {},
-            children: paragraphs
-          }
-        ]
-      });
-
-      const buffer = await Packer.toBuffer(docx);
+      const buffer = await Packer.toBuffer(markdownToDocxDocument(draft.title, draft.content));
 
       // Clean title for safe attachment name
       const safeTitle = draft.title.replace(/[^a-z0-9]/gi, "_").toLowerCase();
