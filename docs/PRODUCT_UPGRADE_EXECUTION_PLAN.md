@@ -85,15 +85,15 @@ Rollback/failure: revert Phase 5 UI/query changes; thread records are unchanged.
 
 ### Checklist
 
-- [ ] Add migration 006 extending `drafts` with `updated_at`, `shared_with_client`, `shared_at`, `origin`, nullable self-referencing `parent_draft_id`, and `revision_type`.
-- [ ] Backfill `updated_at` from `created_at`, `origin` from legacy/thread context, and retain every existing Matter assignment including the imported legacy Matter.
-- [ ] Modify `server/db.ts` with owned create, duplicate, share/stop-share, and revision-copy methods; continue deriving Matter from the owned thread or validated Matter.
-- [ ] Modify `server.ts` with Matter-scoped Work Product list/create/read/update/export/duplicate/share routes while retaining compatible existing draft routes for the editor during transition.
-- [ ] Refactor `src/components/DraftEditorView.tsx` for Matter-only embedding, metadata display, duplicate/share controls, and unchanged Markdown/save/export behavior.
-- [ ] Integrate Work Product into `MatterWorkspaceView`; add a simple create-draft action and retain Assistant generation navigation.
-- [ ] Remove global Drafts navigation and routing only after all existing drafts are reachable through their Matters.
-- [ ] Implement Client Revision copy semantics without exposing a portal editor until Phase 9.
-- [ ] Add tests for backfill, Matter ownership, duplicate, share/unshare, parent linkage, deletion survival, and no Source-document creation.
+- [x] Add migration 006 extending `drafts` with `updated_at`, `shared_with_client`, `shared_at`, `origin`, nullable self-referencing `parent_draft_id`, and `revision_type`.
+- [x] Backfill `updated_at` from `created_at`, retain safe origin defaults, and retain every existing Matter assignment including the imported legacy Matter.
+- [x] Modify `server/db.ts` with owned create, duplicate, share/stop-share, and revision-copy methods; continue deriving Matter from the owned thread or validated Matter.
+- [x] Modify `server.ts` with Matter-scoped Work Product list/create/read/update/export/duplicate/share routes while retaining compatible existing draft routes for the editor during transition.
+- [x] Refactor `src/components/DraftEditorView.tsx` for Matter-only embedding, metadata display, duplicate/share controls, and unchanged Markdown/save/export behavior.
+- [x] Integrate Work Product into `MatterWorkspaceView`; add a simple create-draft action and retain Assistant generation navigation.
+- [x] Remove global Drafts navigation and routing only after all existing drafts are reachable through their Matters.
+- [x] Implement Client Revision copy semantics without exposing a portal editor until Phase 9.
+- [x] Add tests for backfill, Matter ownership, duplicate, share/unshare, parent linkage, deletion survival, and no Source-document creation.
 
 Manual verification: open legacy/imported Work Product, edit/save/export, create/duplicate/share/unshare, generate from a Matter conversation, delete origin thread, and verify no document row appears.  
 Completion: every Work Product is Matter-scoped; global Drafts is removed; originals survive and revisions are copies.  

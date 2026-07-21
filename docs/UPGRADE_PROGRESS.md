@@ -176,3 +176,26 @@ Verification:
 - `npm test`: passed, 16/16 tests.
 - `npm run lint`: passed.
 - `npm run build`: passed.
+
+## Phase 6 — Work Product Migration
+
+Status: Complete.
+
+Implemented:
+
+- Migration 006 adds updated/share/origin/revision metadata and a nullable self-reference for copied Client Revisions; existing Work Product is backfilled without moving or deleting rows.
+- The existing Markdown editor, save behavior, preview, and DOCX export now live in each Matter's Work Product tab.
+- Users can create blank Work Product, generate it from a Matter conversation, duplicate it, share it with the client, and stop sharing.
+- Client Revision creation inserts a separate child copy and never updates the lawyer original.
+- Global Drafts & Documents navigation/routing is removed after confirming every draft has a Matter, including imported legacy Work Product.
+- Existing compatibility draft endpoints remain temporarily for the reused editor and generated-draft flow; every direct operation still requires Matter/workspace ownership.
+
+Verification:
+
+- Migration 006 applied exactly once; all existing Work Product has `case_id` and `updated_at`.
+- Live validation created, duplicated, shared, and client-revised owned Work Product, denied a foreign workspace, preserved the original content, and did not create a Source document.
+- Previously verified conversation deletion survival remains present with a null thread reference and retained Matter.
+- Imported legacy Work Product remains accessible in its imported Matter.
+- `npm test`: passed, 18/18 tests.
+- `npm run lint`: passed.
+- `npm run build`: passed.

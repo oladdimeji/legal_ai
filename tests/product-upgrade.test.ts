@@ -60,3 +60,28 @@ test("Phase 5 History groups by stored context and recent activity", async () =>
   assert.match(database, /COALESCE\(MAX\(m\.created_at\), t\.created_at\) AS last_activity_at/);
   assert.match(database, /WHERE t\.user_id = \$1/);
 });
+
+test("Phase 6 Work Product is Matter-scoped and global Draft navigation is removed", async () => {
+  const [sidebar, workspace, server] = await Promise.all([
+    readFile("src/components/Sidebar.tsx", "utf8"),
+    readFile("src/components/MatterWorkspaceView.tsx", "utf8"),
+    readFile("server.ts", "utf8"),
+  ]);
+  assert.doesNotMatch(sidebar, /Drafts & Documents/);
+  assert.match(workspace, /<DraftEditorView caseId=\{matter\.id\}/);
+  assert.match(server, /\/api\/cases\/:caseId\/work-product/);
+  assert.match(server, /Matter context is required/);
+});
+
+test("migration 006 and copy operations preserve Work Product originals", async () => {
+  const [migrations, database] = await Promise.all([
+    readFile("server/migrations.ts", "utf8"),
+    readFile("server/db.ts", "utf8"),
+  ]);
+  assert.match(migrations, /version: 6/);
+  assert.match(migrations, /parent_draft_id/);
+  assert.match(migrations, /ON DELETE SET NULL/);
+  assert.match(database, /'Duplicated Work Product', 'Duplicate'/);
+  assert.match(database, /'Client Revision', d\.id, 'Client Revision'/);
+  assert.doesNotMatch(database, /UPDATE drafts[\s\S]{0,120}revision_type = 'Client Revision'/);
+});

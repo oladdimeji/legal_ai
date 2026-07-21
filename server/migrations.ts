@@ -249,6 +249,40 @@ const migrations: Migration[] = [
       );
     },
   },
+  {
+    version: 6,
+    name: "matter_work_product",
+    async run(client) {
+      await client.query("ALTER TABLE drafts ADD COLUMN IF NOT EXISTS updated_at TEXT");
+      await client.query(
+        "ALTER TABLE drafts ADD COLUMN IF NOT EXISTS shared_with_client BOOLEAN NOT NULL DEFAULT FALSE"
+      );
+      await client.query("ALTER TABLE drafts ADD COLUMN IF NOT EXISTS shared_at TEXT");
+      await client.query(
+        "ALTER TABLE drafts ADD COLUMN IF NOT EXISTS origin TEXT NOT NULL DEFAULT 'Generated from conversation'"
+      );
+      await client.query("ALTER TABLE drafts ADD COLUMN IF NOT EXISTS parent_draft_id TEXT");
+      await client.query(
+        "ALTER TABLE drafts ADD COLUMN IF NOT EXISTS revision_type TEXT NOT NULL DEFAULT 'Lawyer Original'"
+      );
+      await client.query("UPDATE drafts SET updated_at = COALESCE(updated_at, created_at) WHERE updated_at IS NULL");
+      const parentConstraint = await client.query(`
+        SELECT 1 FROM pg_constraint WHERE conname = 'drafts_parent_draft_id_fkey'
+      `);
+      if (parentConstraint.rowCount === 0) {
+        await client.query(`
+          ALTER TABLE drafts ADD CONSTRAINT drafts_parent_draft_id_fkey
+          FOREIGN KEY (parent_draft_id) REFERENCES drafts(id) ON DELETE SET NULL
+        `);
+      }
+      await client.query(
+        "CREATE INDEX IF NOT EXISTS drafts_case_updated_idx ON drafts(case_id, updated_at DESC)"
+      );
+      await client.query(
+        "CREATE INDEX IF NOT EXISTS drafts_parent_idx ON drafts(parent_draft_id) WHERE parent_draft_id IS NOT NULL"
+      );
+    },
+  },
 ];
 
 export async function runMigrations(pool: Pool): Promise<void> {

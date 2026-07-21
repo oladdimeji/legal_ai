@@ -52,7 +52,8 @@ export default function DraftEditorView({
 
   const fetchDrafts = async () => {
     try {
-      const url = caseId ? `/api/drafts?caseId=${caseId}` : "/api/drafts?caseId=null";
+      if (!caseId) return setDrafts([]);
+      const url = `/api/cases/${caseId}/work-product`;
       const res = await fetch(url);
       const data = await res.json();
       setDrafts(data);
@@ -105,7 +106,7 @@ export default function DraftEditorView({
       if (data.id) {
         setSaveStatus("saved");
         setDrafts((prev) => 
-          prev.map((d) => (d.id === data.id ? { ...d, content } : d))
+          prev.map((d) => (d.id === data.id ? data : d))
         );
         setTimeout(() => setSaveStatus("idle"), 2000);
       }
@@ -121,6 +122,39 @@ export default function DraftEditorView({
     if (!activeDraft) return;
     if (!caseId) return;
     window.open(`/api/drafts/${activeDraft.id}/export?caseId=${caseId}`, "_blank");
+  };
+
+  const handleCreateWorkProduct = async () => {
+    if (!caseId) return;
+    const newTitle = prompt("Work Product title");
+    if (!newTitle?.trim()) return;
+    const response = await fetch(`/api/cases/${caseId}/work-product`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: newTitle.trim(), content: "" }),
+    });
+    const data = await response.json();
+    if (!response.ok) return alert(data.error || "Work Product could not be created");
+    setDrafts((current) => [data, ...current]); selectDraft(data);
+  };
+
+  const handleDuplicate = async () => {
+    if (!caseId || !activeDraft) return;
+    const response = await fetch(`/api/drafts/${activeDraft.id}/duplicate?caseId=${caseId}`, { method: "POST" });
+    const data = await response.json();
+    if (!response.ok) return alert(data.error || "Work Product could not be duplicated");
+    setDrafts((current) => [data, ...current]); selectDraft(data);
+  };
+
+  const handleSharing = async () => {
+    if (!caseId || !activeDraft) return;
+    const response = await fetch(`/api/drafts/${activeDraft.id}/sharing?caseId=${caseId}`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ shared: !activeDraft.shared_with_client }),
+    });
+    const data = await response.json();
+    if (!response.ok) return alert(data.error || "Sharing could not be updated");
+    setActiveDraft(data);
+    setDrafts((current) => current.map((draft) => draft.id === data.id ? data : draft));
   };
 
   // Requirement 8 Text Manipulations
@@ -211,17 +245,18 @@ export default function DraftEditorView({
   return (
     <div className="flex-1 flex h-full overflow-hidden bg-white text-zinc-900" id="draft-editor-view">
       
-      {/* Drafts Sidebar Selection */}
+      {/* Work Product selection */}
       <div className="w-64 border-r border-zinc-100 bg-zinc-50 flex flex-col h-full shrink-0">
-        <div className="p-5 border-b border-zinc-200">
-          <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-zinc-500">Legal Memorandums</span>
+        <div className="p-5 border-b border-zinc-200 flex items-center justify-between gap-2">
+          <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-zinc-500">Work Product</span>
+          <button onClick={() => void handleCreateWorkProduct()} className="rounded bg-zinc-900 px-2 py-1 text-[9px] font-mono font-bold uppercase text-white">New</button>
         </div>
 
         <div className="flex-1 overflow-y-auto p-4 space-y-2" id="drafts-sidebar-list">
           {drafts.length === 0 ? (
             <div className="text-center p-6 text-zinc-400 text-xs">
               <FileWarning className="h-6 w-6 mx-auto mb-2 text-zinc-300" />
-              No drafts generated yet. Return to the assistant to create.
+              No Work Product yet. Create one here or generate one from a Matter conversation.
             </div>
           ) : (
             drafts.map((d) => (
@@ -239,7 +274,7 @@ export default function DraftEditorView({
                 <div className="min-w-0 flex-1">
                   <p className="truncate uppercase font-bold tracking-tight">{d.title.replace("Legal ", "")}</p>
                   <p className="text-[9px] text-zinc-400 font-mono mt-0.5">
-                    {new Date(d.created_at).toLocaleDateString()}
+                    {new Date(d.updated_at || d.created_at).toLocaleDateString()} · {d.shared_with_client ? "Shared" : "Private"}
                   </p>
                 </div>
               </button>
@@ -259,11 +294,13 @@ export default function DraftEditorView({
                   {title}
                 </h2>
                 <p className="text-[10px] font-mono text-zinc-400 uppercase mt-0.5">
-                  Generated {new Date(activeDraft.created_at).toLocaleString()} • Document Workspace
+                  Updated {new Date(activeDraft.updated_at || activeDraft.created_at).toLocaleString()} · {activeDraft.origin || "Work Product"} · {activeDraft.shared_with_client ? "Shared with client" : "Private"}
                 </p>
               </div>
 
               <div className="flex items-center gap-3 shrink-0">
+                <button onClick={() => void handleDuplicate()} className="inline-flex items-center gap-1 rounded border border-zinc-300 px-3 py-1.5 text-[10px] font-mono font-bold uppercase"><Copy className="h-3.5 w-3.5" />Duplicate</button>
+                <button onClick={() => void handleSharing()} className="rounded border border-zinc-300 px-3 py-1.5 text-[10px] font-mono font-bold uppercase">{activeDraft.shared_with_client ? "Stop sharing" : "Share with client"}</button>
                 <div className="flex bg-zinc-100 p-0.5 rounded border border-zinc-200 text-[10px] font-mono font-semibold uppercase">
                   <button
                     onClick={() => setEditMode(true)}
@@ -614,7 +651,7 @@ export default function DraftEditorView({
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center text-center p-12">
             <FileText className="h-12 w-12 text-zinc-300 mb-3" />
-            <h3 className="text-sm font-semibold uppercase tracking-tight text-zinc-900">Legal Document Workspace</h3>
+            <h3 className="text-sm font-semibold uppercase tracking-tight text-zinc-900">Matter Work Product</h3>
             <p className="text-xs text-zinc-500 mt-2 max-w-sm leading-relaxed">
               Select an attorney memo or client advice draft from the left side index to inspect, modify, and export as Word files.
             </p>

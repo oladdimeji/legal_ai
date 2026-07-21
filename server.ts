@@ -856,6 +856,25 @@ ${citationInstSearch}`;
   });
 
   // Draft Generation and Editable View APIs
+  app.get("/api/cases/:caseId/work-product", async (req, res) => {
+    const matter = await db.getCaseById(req.params.caseId, ownership(req));
+    if (!matter) return res.status(404).json({ error: "Matter not found" });
+    return res.json(await db.getDrafts(ownership(req), matter.id));
+  });
+
+  app.post("/api/cases/:caseId/work-product", async (req, res) => {
+    try {
+      const title = typeof req.body.title === "string" ? req.body.title.trim() : "";
+      const content = typeof req.body.content === "string" ? req.body.content : "";
+      if (!title) return res.status(400).json({ error: "Work Product title is required" });
+      return res.status(201).json(
+        await db.createManualDraft(req.params.caseId, title, content, ownership(req))
+      );
+    } catch (err: any) {
+      return res.status(ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
   app.get("/api/drafts", async (req, res) => {
     const caseId = requestedCaseId(req.query.caseId);
     res.json(await db.getDrafts(ownership(req), caseId));
@@ -943,6 +962,41 @@ INSTRUCTIONS:
       res.json(updated);
     } catch (err: any) {
       res.status(ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/drafts/:id/duplicate", async (req, res) => {
+    try {
+      const caseId = requestedCaseId(req.query.caseId);
+      if (!caseId) return res.status(400).json({ error: "Matter context is required" });
+      return res.status(201).json(await db.duplicateDraft(req.params.id, caseId, ownership(req)));
+    } catch (err: any) {
+      return res.status(ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
+  app.put("/api/drafts/:id/sharing", async (req, res) => {
+    try {
+      const caseId = requestedCaseId(req.query.caseId);
+      if (!caseId || typeof req.body.shared !== "boolean") {
+        return res.status(400).json({ error: "Matter context and sharing state are required" });
+      }
+      return res.json(await db.setDraftSharing(req.params.id, caseId, req.body.shared, ownership(req)));
+    } catch (err: any) {
+      return res.status(ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/drafts/:id/client-revision", async (req, res) => {
+    try {
+      const caseId = requestedCaseId(req.query.caseId);
+      const content = typeof req.body.content === "string" ? req.body.content : "";
+      if (!caseId) return res.status(400).json({ error: "Matter context is required" });
+      return res.status(201).json(
+        await db.createClientRevision(req.params.id, caseId, content, ownership(req))
+      );
+    } catch (err: any) {
+      return res.status(ownedErrorStatus(err)).json({ error: err.message });
     }
   });
 

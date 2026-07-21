@@ -101,6 +101,12 @@ export interface Draft {
   title: string;
   content: string; // markdown or plain text editable
   created_at: string;
+  updated_at?: string;
+  shared_with_client?: boolean;
+  shared_at?: string | null;
+  origin?: string;
+  parent_draft_id?: string | null;
+  revision_type?: "Lawyer Original" | "Duplicate" | "Client Revision";
 }
 
 export interface WorkspaceState {

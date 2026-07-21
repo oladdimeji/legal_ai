@@ -1,5 +1,5 @@
 import React from "react";
-import { Scale, MessageSquare, Briefcase, Building2, FileText, History, LogOut, Settings } from "lucide-react";
+import { Scale, MessageSquare, Briefcase, Building2, History, LogOut, Settings } from "lucide-react";
 
 interface SidebarProps {
   activeTab: string;
@@ -30,7 +30,6 @@ export default function Sidebar({
     { id: "assistant", label: "Assistant", icon: MessageSquare },
     { id: "matters", label: "Matters", icon: Briefcase },
     { id: "library", label: "Firm Library", icon: Building2 },
-    { id: "drafts", label: "Drafts & Documents", icon: FileText },
     { id: "history", label: "History", icon: History },
     { id: "settings", label: "Settings", icon: Settings },
   ];

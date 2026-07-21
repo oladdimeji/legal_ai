@@ -5,7 +5,6 @@ import FirmLibraryView from "./components/FirmLibraryView";
 import MattersView from "./components/MattersView";
 import SettingsView from "./components/SettingsView";
 import MatterWorkspaceView from "./components/MatterWorkspaceView";
-import DraftEditorView from "./components/DraftEditorView";
 import HistoryView from "./components/HistoryView";
 import AuthView from "./components/AuthView";
 import { Case, Firm, User } from "./types";
@@ -67,7 +66,7 @@ export default function App() {
 
   const handleNavigateToDrafts = (draftId: string) => {
     setInitialDraftId(draftId);
-    setActiveTab("drafts");
+    setActiveTab("matter");
   };
 
   const handleClearInitialDraftId = () => {
@@ -144,15 +143,7 @@ export default function App() {
 
         {activeTab === "library" && <FirmLibraryView />}
 
-        {activeTab === "matter" && activeCaseId && <MatterWorkspaceView matterId={activeCaseId} onBack={() => setActiveTab("matters")} onMatterChange={handleMatterChange} />}
-
-        {activeTab === "drafts" && (
-          <DraftEditorView 
-            initialDraftId={initialDraftId}
-            onClearInitialDraftId={handleClearInitialDraftId}
-            caseId={activeCaseId}
-          />
-        )}
+        {activeTab === "matter" && activeCaseId && <MatterWorkspaceView matterId={activeCaseId} onBack={() => setActiveTab("matters")} onMatterChange={handleMatterChange} initialDraftId={initialDraftId} onClearInitialDraftId={handleClearInitialDraftId} />}
 
         {activeTab === "history" && (
           <HistoryView 

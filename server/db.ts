@@ -886,7 +886,7 @@ class DatabaseService {
       `SELECT d.* FROM drafts d
        JOIN cases c ON c.id = d.case_id
        WHERE d.case_id = $1 AND c.firm_id = $2
-       ORDER BY d.created_at DESC`,
+       ORDER BY COALESCE(d.updated_at, d.created_at) DESC`,
       [caseId, context.firmId]
     );
   }
@@ -917,8 +917,8 @@ class DatabaseService {
     const createdAt = new Date().toISOString();
 
     const inserted = await this.query(
-      `INSERT INTO drafts (id, thread_id, case_id, title, content, created_at)
-       SELECT $1, t.id, t.case_id, $4, $5, $6
+      `INSERT INTO drafts (id, thread_id, case_id, title, content, created_at, updated_at, origin)
+       SELECT $1, t.id, t.case_id, $4, $5, $6, $6, 'Generated from conversation'
        FROM threads t
        JOIN cases c ON c.id = t.case_id
        WHERE t.id = $2 AND t.case_id = $3
@@ -934,8 +934,77 @@ class DatabaseService {
       case_id: caseId,
       title,
       content,
-      created_at: createdAt
+      created_at: createdAt, updated_at: createdAt, origin: "Generated from conversation",
+      shared_with_client: false, shared_at: null, parent_draft_id: null,
+      revision_type: "Lawyer Original",
     };
+  }
+
+  public async createManualDraft(
+    caseId: string, title: string, content: string, context: OwnershipContext
+  ): Promise<Draft> {
+    const id = `draft_${randomUUID()}`;
+    const now = new Date().toISOString();
+    const rows = await this.query(
+      `INSERT INTO drafts
+        (id, thread_id, case_id, title, content, created_at, updated_at, origin, revision_type)
+       SELECT $1, NULL, c.id, $3, $4, $5, $5, 'Created in Matter', 'Lawyer Original'
+       FROM cases c WHERE c.id = $2 AND c.firm_id = $6 RETURNING *`,
+      [id, caseId, title, content, now, context.firmId]
+    );
+    if (!rows[0]) throw new Error("Matter not found");
+    return rows[0];
+  }
+
+  public async duplicateDraft(
+    id: string, caseId: string, context: OwnershipContext
+  ): Promise<Draft> {
+    const duplicateId = `draft_${randomUUID()}`;
+    const now = new Date().toISOString();
+    const rows = await this.query(
+      `INSERT INTO drafts
+        (id, thread_id, case_id, title, content, created_at, updated_at, origin, revision_type)
+       SELECT $1, NULL, d.case_id, d.title || ' (Copy)', d.content, $4, $4, 'Duplicated Work Product', 'Duplicate'
+       FROM drafts d JOIN cases c ON c.id = d.case_id
+       WHERE d.id = $2 AND d.case_id = $3 AND c.firm_id = $5 RETURNING *`,
+      [duplicateId, id, caseId, now, context.firmId]
+    );
+    if (!rows[0]) throw new Error("Work Product not found");
+    return rows[0];
+  }
+
+  public async setDraftSharing(
+    id: string, caseId: string, shared: boolean, context: OwnershipContext
+  ): Promise<Draft> {
+    const now = new Date().toISOString();
+    const rows = await this.query(
+      `UPDATE drafts d SET shared_with_client = $1, shared_at = $2, updated_at = $3
+       WHERE d.id = $4 AND d.case_id = $5
+         AND EXISTS (SELECT 1 FROM cases c WHERE c.id = d.case_id AND c.firm_id = $6)
+       RETURNING d.*`,
+      [shared, shared ? now : null, now, id, caseId, context.firmId]
+    );
+    if (!rows[0]) throw new Error("Work Product not found");
+    return rows[0];
+  }
+
+  public async createClientRevision(
+    id: string, caseId: string, content: string, context: OwnershipContext
+  ): Promise<Draft> {
+    const revisionId = `draft_${randomUUID()}`;
+    const now = new Date().toISOString();
+    const rows = await this.query(
+      `INSERT INTO drafts
+        (id, thread_id, case_id, title, content, created_at, updated_at, origin,
+         parent_draft_id, revision_type)
+       SELECT $1, NULL, d.case_id, d.title || ' (Client Revision)', $4, $5, $5,
+         'Client Revision', d.id, 'Client Revision'
+       FROM drafts d JOIN cases c ON c.id = d.case_id
+       WHERE d.id = $2 AND d.case_id = $3 AND c.firm_id = $6 RETURNING *`,
+      [revisionId, id, caseId, content, now, context.firmId]
+    );
+    if (!rows[0]) throw new Error("Work Product not found");
+    return rows[0];
   }
 
   public async updateDraft(
@@ -945,11 +1014,11 @@ class DatabaseService {
     context: OwnershipContext
   ): Promise<Draft> {
     const rows = await this.query(
-      `UPDATE drafts d SET content = $1
+      `UPDATE drafts d SET content = $1, updated_at = $5
        WHERE d.id = $2 AND d.case_id = $3
          AND EXISTS (SELECT 1 FROM cases c WHERE c.id = d.case_id AND c.firm_id = $4)
        RETURNING d.*`,
-      [content, id, caseId, context.firmId]
+      [content, id, caseId, context.firmId, new Date().toISOString()]
     );
     if (rows.length === 0) {
       throw new Error("Draft not found");
