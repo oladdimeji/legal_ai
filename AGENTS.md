@@ -21,3 +21,9 @@
 19. Do not continue past a failing lint or build command.
 20. Do not use a default, first, or fallback user after authentication is introduced.
 21. Stop before any destructive migration, data reset or irreversible operation.
+
+22. Installing dependencies already declared in package.json is permitted. Use npm ci when a package-lock.json exists; otherwise use npm install. Do not intentionally change dependency versions unless the requested phase requires it.
+
+23. Application startup must never delete, reset or reseed user data. Demo seeding must be explicitly enabled through an environment variable and disabled by default.
+
+24. Work Product must remain available when its originating conversation is deleted.
