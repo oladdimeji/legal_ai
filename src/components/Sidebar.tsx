@@ -1,11 +1,13 @@
 import React from "react";
-import { Scale, MessageSquare, Briefcase, FileText, History, ChevronLeft, ChevronRight } from "lucide-react";
+import { Scale, MessageSquare, Briefcase, FileText, History, LogOut } from "lucide-react";
 
 interface SidebarProps {
   activeTab: string;
   setActiveTab: (tab: string) => void;
   firmName: string;
   userName: string;
+  userEmail: string;
+  onLogout: () => void;
   isCollapsed: boolean;
   setIsCollapsed: (collapsed: boolean) => void;
   onStartNewThread: () => void;
@@ -16,6 +18,8 @@ export default function Sidebar({
   setActiveTab, 
   firmName, 
   userName,
+  userEmail,
+  onLogout,
   isCollapsed,
   setIsCollapsed,
   onStartNewThread
@@ -95,9 +99,17 @@ export default function Sidebar({
           {!collapsedActual && (
             <div className="min-w-0 flex-1">
               <p className="text-xs font-semibold text-zinc-900 truncate">{userName || "Counsel"}</p>
-              <p className="text-[9px] font-mono text-zinc-500 truncate uppercase">Firm Attorney</p>
+              <p className="text-[9px] font-mono text-zinc-500 truncate">{userEmail}</p>
             </div>
           )}
+          <button
+            type="button"
+            onClick={onLogout}
+            title="Log out"
+            className={`text-zinc-400 hover:text-zinc-900 rounded p-1.5 hover:bg-zinc-100 ${collapsedActual ? "hidden" : "block"}`}
+          >
+            <LogOut className="h-3.5 w-3.5" />
+          </button>
         </div>
       </div>
     </div>

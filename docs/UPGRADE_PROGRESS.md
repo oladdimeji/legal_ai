@@ -38,7 +38,27 @@ Verification:
 
 ## Phase 1 — Authentication and Ownership
 
-Status: Not started.
+Status: Complete (code and static verification; live legacy migration requires deployment secrets/database).
+
+Implemented:
+
+- Migration 003 adds nullable legacy-safe password/timestamp columns, case-insensitive unique email index, and server-side sessions.
+- Deterministic legacy migration requires all three approved environment variables, validates the exact User/Firm relationship and Matter/document consistency, assigns only null legacy ownership, and fails safely on missing/ambiguous ownership.
+- Salted Node `scrypt` password hashes and constant-time verification.
+- Secure random session tokens; only SHA-256 token hashes are stored.
+- Seven-day server-side sessions with HTTP-only, `SameSite=Lax` cookies and production-only `Secure`.
+- Signup, login, logout, and session-me endpoints.
+- All other APIs require a server-validated session.
+- Signup creates one empty firm, one user, and one authenticated session transactionally.
+- Monochrome login/signup gate and sidebar account email/logout control.
+- Removed all first/default/fallback user and firm database selection.
+
+Verification:
+
+- `npm test`: passed, 5 tests.
+- `npm run lint`: passed.
+- `npm run build`: passed.
+- No live database or legacy secret was available, so database-backed signup/login and the legacy backfill require manual deployment verification.
 
 ## Phase 2 — Search and Context Isolation
 

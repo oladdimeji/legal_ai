@@ -1,4 +1,5 @@
 import express from "express";
+import type { NextFunction, Request, Response } from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import { db } from "./server/db.js";
@@ -7,12 +8,30 @@ import { CourtListenerAdapter } from "./server/connectors/courtlistener.js";
 import { GovInfoAdapter } from "./server/connectors/govinfo.js";
 import { Document, Citation, Message, Draft, ResearchStep } from "./src/types.js";
 import { Document as DocxDocument, Packer, Paragraph, TextRun, HeadingLevel } from "docx";
+import {
+  SESSION_COOKIE_NAME,
+  SESSION_TTL_MS,
+  clearSessionCookie,
+  createSessionToken,
+  hashPassword,
+  hashSessionToken,
+  parseCookie,
+  sessionCookie,
+  verifyPassword,
+} from "./server/auth.js";
 
 const isProduction = process.env.NODE_ENV === "production";
 const PORT = 3000;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const SIMILARITY_THRESHOLD = 0.65;
+
+interface AuthenticatedRequest extends Request {
+  auth?: {
+    user: { id: string; firm_id: string; name: string; email: string };
+    firm: { id: string; name: string };
+  };
+}
 
 function cleanSourceText(text: string): string {
   return text.replace(/\[cit_\d+\]/g, "");
@@ -22,9 +41,11 @@ async function startServer() {
   const app = express();
   app.use(express.json());
 
-  // Demo data is opt-in and never deletes or resets existing records.
+  // Migrations and legacy ownership validation must succeed before any route is served.
   try {
+    await db.initialize();
     await db.seedDemoDataIfEnabled();
+    await db.migrateLegacyOwner();
   } catch (err) {
     console.error("Database initialization or explicit demo seeding failed:", err);
     throw err;
@@ -37,13 +58,88 @@ async function startServer() {
     res.json({ status: "ok", time: new Date().toISOString() });
   });
 
-  // Get current user and firm info
-  app.get("/api/me", async (req, res) => {
-    res.json({
-      user: await db.getUser(),
-      firm: await db.getFirm()
-    });
+  app.post("/api/auth/signup", async (req, res) => {
+    try {
+      const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
+      const email = typeof req.body.email === "string" ? req.body.email.trim().toLowerCase() : "";
+      const password = typeof req.body.password === "string" ? req.body.password : "";
+      if (!name || !email || !email.includes("@") || password.length < 8) {
+        return res.status(400).json({
+          error: "Name, a valid email, and a password of at least 8 characters are required.",
+        });
+      }
+
+      const passwordHash = await hashPassword(password);
+      const { token, tokenHash } = createSessionToken();
+      const expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString();
+      const account = await db.createAccount(name, email, passwordHash, tokenHash, expiresAt);
+      res.setHeader("Set-Cookie", sessionCookie(token, isProduction));
+      res.setHeader("Cache-Control", "no-store");
+      return res.status(201).json(account);
+    } catch (err: any) {
+      if (err?.code === "23505") {
+        return res.status(409).json({ error: "An account with that email already exists." });
+      }
+      console.error("Signup failed:", err);
+      return res.status(500).json({ error: "Unable to create the account." });
+    }
   });
+
+  app.post("/api/auth/login", async (req, res) => {
+    try {
+      const email = typeof req.body.email === "string" ? req.body.email.trim().toLowerCase() : "";
+      const password = typeof req.body.password === "string" ? req.body.password : "";
+      const user = email && password ? await db.getUserForLogin(email) : null;
+      const valid = user ? await verifyPassword(password, user.password_hash) : false;
+      if (!user || !valid) {
+        return res.status(401).json({ error: "Invalid email or password." });
+      }
+
+      const { token, tokenHash } = createSessionToken();
+      const expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString();
+      await db.createSession(user.id, tokenHash, expiresAt);
+      const account = await db.getSessionAccount(tokenHash);
+      if (!account) throw new Error("Session could not be loaded after login.");
+      res.setHeader("Set-Cookie", sessionCookie(token, isProduction));
+      res.setHeader("Cache-Control", "no-store");
+      return res.json(account);
+    } catch (err) {
+      console.error("Login failed:", err);
+      return res.status(500).json({ error: "Unable to sign in." });
+    }
+  });
+
+  app.post("/api/auth/logout", async (req, res) => {
+    const token = parseCookie(req.headers.cookie, SESSION_COOKIE_NAME);
+    if (token) await db.deleteSession(hashSessionToken(token));
+    res.setHeader("Set-Cookie", clearSessionCookie(isProduction));
+    res.setHeader("Cache-Control", "no-store");
+    return res.json({ success: true });
+  });
+
+  const requireAuth = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const token = parseCookie(req.headers.cookie, SESSION_COOKIE_NAME);
+      const account = token ? await db.getSessionAccount(hashSessionToken(token)) : null;
+      if (!account) {
+        res.setHeader("Cache-Control", "no-store");
+        return res.status(401).json({ error: "Authentication required." });
+      }
+      req.auth = account;
+      return next();
+    } catch (err) {
+      console.error("Session validation failed:", err);
+      return res.status(500).json({ error: "Unable to validate the session." });
+    }
+  };
+
+  app.get("/api/auth/me", requireAuth, (req: AuthenticatedRequest, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    return res.json(req.auth);
+  });
+
+  // All remaining API routes require a server-validated session.
+  app.use("/api", requireAuth);
 
   // Enhance/Improve Raw Prompt into Legal-Grade Query
   app.post("/api/improve-prompt", async (req, res) => {
@@ -79,7 +175,8 @@ Raw prompt: "${prompt}"`;
       if (!name) {
         return res.status(400).json({ error: "Case name is required" });
       }
-      const newCase = await db.createCase(name, description || "");
+      const authReq = req as AuthenticatedRequest;
+      const newCase = await db.createCase(name, description || "", authReq.auth!.firm.id);
       res.status(201).json(newCase);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -103,6 +200,7 @@ Raw prompt: "${prompt}"`;
       const newDoc = await db.uploadDocument(
         title,
         text,
+        (req as AuthenticatedRequest).auth!.firm.id,
         sourceUrl || null,
         driveId || null,
         caseId || null
@@ -132,7 +230,11 @@ Raw prompt: "${prompt}"`;
   app.post("/api/threads", async (req, res) => {
     try {
       const { title, caseId } = req.body;
-      const newThread = await db.createThread(title || "New Legal Conversation", caseId || null);
+      const newThread = await db.createThread(
+        title || "New Legal Conversation",
+        caseId || null,
+        (req as AuthenticatedRequest).auth!.user.id
+      );
       res.status(201).json(newThread);
     } catch (err: any) {
       res.status(500).json({ error: err.message });

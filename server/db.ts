@@ -1,7 +1,9 @@
 import pg from "pg";
+import { randomUUID } from "node:crypto";
 import { Document, DocumentChunk, Case, Thread, Message, Draft, Citation } from "../src/types.js";
 import { callModel } from "./model.js";
 import { runMigrations } from "./migrations.js";
+import { migrateLegacyOwnerFromEnvironment } from "./legacyMigration.js";
 
 const { Pool } = pg;
 
@@ -94,6 +96,15 @@ class DatabaseService {
     console.log("PostgreSQL migrations verified successfully.");
   }
 
+  public async initialize(): Promise<void> {
+    await this.ensureSchema();
+  }
+
+  public async migrateLegacyOwner(): Promise<void> {
+    await this.ensureSchema();
+    await migrateLegacyOwnerFromEnvironment(getPool());
+  }
+
   private async query(text: string, params?: any[]): Promise<any[]> {
     await this.ensureSchema();
     const pool = getPool();
@@ -163,10 +174,9 @@ class DatabaseService {
     sourceUrl: string | null = null,
     driveId: string | null = null,
     caseId: string | null = null,
-    explicitFirmId: string | null = null
+    firmId: string
   ): Promise<Document> {
     const docId = `doc_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    const firmId = explicitFirmId || (await this.getFirm()).id;
     const uploadedAt = new Date().toISOString();
 
     await this.query(
@@ -220,20 +230,104 @@ class DatabaseService {
     };
   }
 
-  public async getFirm(): Promise<{ id: string; name: string }> {
-    const rows = await this.query("SELECT * FROM firm LIMIT 1");
-    if (rows.length === 0) {
-      return { id: "firm_123", name: "Sterling & Croft LLP" };
+  public async createAccount(
+    name: string,
+    email: string,
+    passwordHash: string,
+    tokenHash: string,
+    expiresAt: string
+  ): Promise<{
+    user: { id: string; firm_id: string; name: string; email: string };
+    firm: { id: string; name: string };
+  }> {
+    await this.ensureSchema();
+    const client = await getPool().connect();
+    const firmId = `firm_${randomUUID()}`;
+    const userId = `user_${randomUUID()}`;
+    const now = new Date().toISOString();
+    const firmName = `${name}'s Workspace`;
+
+    try {
+      await client.query("BEGIN");
+      await client.query("INSERT INTO firm (id, name) VALUES ($1, $2)", [firmId, firmName]);
+      await client.query(
+        `INSERT INTO users (id, firm_id, name, email, password_hash, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $6)`,
+        [userId, firmId, name, email, passwordHash, now]
+      );
+      await client.query(
+        `INSERT INTO sessions (token_hash, user_id, created_at, expires_at, last_used_at)
+         VALUES ($1, $2, $3, $4, $3)`,
+        [tokenHash, userId, now, expiresAt]
+      );
+      await client.query("COMMIT");
+      return {
+        user: { id: userId, firm_id: firmId, name, email },
+        firm: { id: firmId, name: firmName },
+      };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
     }
-    return rows[0];
   }
 
-  public async getUser(): Promise<{ id: string; firm_id: string; name: string; email: string }> {
-    const rows = await this.query("SELECT * FROM users LIMIT 1");
-    if (rows.length === 0) {
-      return { id: "user_456", firm_id: "firm_123", name: "Oladimeji", email: "oladimeji@workpodd.com" };
-    }
-    return rows[0];
+  public async getUserForLogin(email: string): Promise<{
+    id: string;
+    firm_id: string;
+    name: string;
+    email: string;
+    password_hash: string;
+  } | null> {
+    const rows = await this.query(
+      `SELECT id, firm_id, name, email, password_hash
+       FROM users
+       WHERE LOWER(BTRIM(email)) = $1 AND password_hash IS NOT NULL`,
+      [email]
+    );
+    return rows[0] || null;
+  }
+
+  public async createSession(userId: string, tokenHash: string, expiresAt: string): Promise<void> {
+    const now = new Date().toISOString();
+    await this.query(
+      `INSERT INTO sessions (token_hash, user_id, created_at, expires_at, last_used_at)
+       VALUES ($1, $2, $3, $4, $3)`,
+      [tokenHash, userId, now, expiresAt]
+    );
+  }
+
+  public async getSessionAccount(tokenHash: string): Promise<{
+    user: { id: string; firm_id: string; name: string; email: string };
+    firm: { id: string; name: string };
+  } | null> {
+    const now = new Date().toISOString();
+    const rows = await this.query(
+      `UPDATE sessions s
+       SET last_used_at = $2
+       FROM users u
+       JOIN firm f ON f.id = u.firm_id
+       WHERE s.token_hash = $1
+         AND s.user_id = u.id
+         AND s.expires_at > $2
+       RETURNING u.id, u.firm_id, u.name, u.email, f.name AS firm_name`,
+      [tokenHash, now]
+    );
+    if (!rows[0]) return null;
+    return {
+      user: {
+        id: rows[0].id,
+        firm_id: rows[0].firm_id,
+        name: rows[0].name,
+        email: rows[0].email,
+      },
+      firm: { id: rows[0].firm_id, name: rows[0].firm_name },
+    };
+  }
+
+  public async deleteSession(tokenHash: string): Promise<void> {
+    await this.query("DELETE FROM sessions WHERE token_hash = $1", [tokenHash]);
   }
 
   public async getCases(): Promise<Case[]> {
@@ -245,20 +339,19 @@ class DatabaseService {
     return rows[0];
   }
 
-  public async createCase(name: string, description: string): Promise<Case> {
+  public async createCase(name: string, description: string, firmId: string): Promise<Case> {
     const caseId = `case_${Date.now()}`;
-    const firm = await this.getFirm();
     const createdAt = new Date().toISOString();
 
     await this.query(
       `INSERT INTO cases (id, firm_id, name, description, created_at)
        VALUES ($1, $2, $3, $4, $5)`,
-      [caseId, firm.id, name, description, createdAt]
+      [caseId, firmId, name, description, createdAt]
     );
 
     const newCase: Case = {
       id: caseId,
-      firm_id: firm.id,
+      firm_id: firmId,
       name,
       description,
       created_at: createdAt
@@ -309,6 +402,7 @@ class DatabaseService {
   public async uploadDocument(
     title: string,
     text: string,
+    firmId: string,
     sourceUrl: string | null = null,
     driveId: string | null = null,
     caseId: string | null = null
@@ -335,7 +429,7 @@ class DatabaseService {
       console.error("Error suggesting section for document:", e);
     }
 
-    return await this.addDocumentInternal(title, text, suggestedSection, sourceUrl, driveId, caseId);
+    return await this.addDocumentInternal(title, text, suggestedSection, sourceUrl, driveId, caseId, firmId);
   }
 
   public async deleteDocument(id: string): Promise<void> {
@@ -391,9 +485,8 @@ class DatabaseService {
     return rows[0];
   }
 
-  public async createThread(title: string, caseId: string | null = null): Promise<Thread> {
+  public async createThread(title: string, caseId: string | null, userId: string): Promise<Thread> {
     const threadId = `thread_${Date.now()}`;
-    const user = await this.getUser();
     const createdAt = new Date().toISOString();
     const scope = caseId ? "case" : "wide";
     const finalTitle = title || "New Legal Conversation";
@@ -401,12 +494,12 @@ class DatabaseService {
     await this.query(
       `INSERT INTO threads (id, user_id, case_id, scope, title, created_at)
        VALUES ($1, $2, $3, $4, $5, $6)`,
-      [threadId, user.id, caseId, scope, finalTitle, createdAt]
+      [threadId, userId, caseId, scope, finalTitle, createdAt]
     );
 
     return {
       id: threadId,
-      user_id: user.id,
+      user_id: userId,
       case_id: caseId,
       scope,
       title: finalTitle,

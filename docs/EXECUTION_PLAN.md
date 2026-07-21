@@ -44,35 +44,35 @@ This checklist implements only the approved foundation phases. Phase 3 navigatio
 
 ### Files and authentication surface
 
-- [ ] Add password/session utilities using Node cryptography (no external auth provider).
-- [ ] Add Express authentication middleware and typed authenticated context.
-- [ ] Add `POST /api/auth/signup`, `POST /api/auth/login`, `POST /api/auth/logout`, and `GET /api/auth/me`.
-- [ ] Protect all non-health API routes and the application shell.
-- [ ] Add monochrome login/signup screens and signed-in account/logout controls.
-- [ ] Update shared User/Firm types and environment documentation.
+- [x] Add password/session utilities using Node cryptography (no external auth provider).
+- [x] Add Express authentication middleware and typed authenticated context.
+- [x] Add `POST /api/auth/signup`, `POST /api/auth/login`, `POST /api/auth/logout`, and `GET /api/auth/me`.
+- [x] Protect all non-health API routes and the application shell.
+- [x] Add monochrome login/signup screens and signed-in account/logout controls.
+- [x] Update shared User/Firm types and environment documentation.
 
 ### Database migrations and legacy migration
 
-- [ ] Add `users.password_hash`, `users.created_at`, and `users.updated_at` non-destructively.
-- [ ] Add case-insensitive unique email index, failing safely if legacy duplicates exist.
-- [ ] Add server-side `sessions` table with token hash, user, creation, expiry, and last-used timestamps.
-- [ ] Validate `LEGACY_OWNER_USER_ID`, `LEGACY_OWNER_FIRM_ID`, and `LEGACY_OWNER_INITIAL_PASSWORD` as an all-or-none set.
-- [ ] Verify exact legacy user/firm relationship and legacy record consistency before hashing/storing the supplied initial password.
-- [ ] Never select a first/default/fallback user or firm and never log a password/token.
-- [ ] New signup transaction creates exactly one new firm, one user, and one session; new workspace starts empty.
+- [x] Add `users.password_hash`, `users.created_at`, and `users.updated_at` non-destructively.
+- [x] Add case-insensitive unique email index, failing safely if legacy duplicates exist.
+- [x] Add server-side `sessions` table with token hash, user, creation, expiry, and last-used timestamps.
+- [x] Validate `LEGACY_OWNER_USER_ID`, `LEGACY_OWNER_FIRM_ID`, and `LEGACY_OWNER_INITIAL_PASSWORD` as an all-or-none set.
+- [x] Verify exact legacy user/firm relationship and legacy record consistency before hashing/storing the supplied initial password.
+- [x] Never select a first/default/fallback user or firm and never log a password/token.
+- [x] New signup transaction creates exactly one new firm, one user, and one session; new workspace starts empty.
 
 ### Session behavior
 
-- [ ] Hash passwords with salted `scrypt`; compare using constant-time equality.
-- [ ] Generate secure random session tokens and store only a SHA-256 token hash.
-- [ ] Use an HTTP-only, `SameSite=Lax` cookie; add `Secure` in production.
-- [ ] Enforce expiry server-side; logout deletes the session row and clears the cookie.
-- [ ] Return uniform invalid-credential errors and safe duplicate-email errors.
+- [x] Hash passwords with salted `scrypt`; compare using constant-time equality.
+- [x] Generate secure random session tokens and store only a SHA-256 token hash.
+- [x] Use an HTTP-only, `SameSite=Lax` cookie; add `Secure` in production.
+- [x] Enforce expiry server-side; logout deletes the session row and clears the cookie.
+- [x] Return uniform invalid-credential errors and safe duplicate-email errors.
 
 ### Verification and rollback
 
-- [ ] Test password hashing, cookie parsing/attributes, auth validation, and empty signup ownership.
-- [ ] Run tests, lint, and build.
+- [x] Test password hashing, token hashing, cookie parsing, and cookie attributes; database-backed signup/session tests remain manual.
+- [x] Run tests, lint, and build.
 - [ ] Manual verification: signup, refresh persistence, logout, invalid login, duplicate email, protected API/application response.
 - [ ] Rollback strategy: revert application commit while retaining additive auth columns/tables; do not erase hashes/sessions or legacy data.
 

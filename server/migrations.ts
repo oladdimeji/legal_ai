@@ -115,6 +115,47 @@ const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 3,
+    name: "authentication_and_sessions",
+    async run(client) {
+      const duplicateEmails = await client.query<{ normalized_email: string }>(`
+        SELECT LOWER(BTRIM(email)) AS normalized_email
+        FROM users
+        GROUP BY LOWER(BTRIM(email))
+        HAVING COUNT(*) > 1
+        LIMIT 1
+      `);
+      if (duplicateEmails.rowCount) {
+        throw new Error(
+          "Cannot add case-insensitive email uniqueness: duplicate legacy email addresses require review."
+        );
+      }
+
+      await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT");
+      await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TEXT");
+      await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TEXT");
+      await client.query(`
+        CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower_unique_idx
+        ON users (LOWER(BTRIM(email)))
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS sessions (
+          token_hash TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          created_at TEXT NOT NULL,
+          expires_at TEXT NOT NULL,
+          last_used_at TEXT NOT NULL
+        )
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON sessions(user_id)
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS sessions_expires_at_idx ON sessions(expires_at)
+      `);
+    },
+  },
 ];
 
 export async function runMigrations(pool: Pool): Promise<void> {
