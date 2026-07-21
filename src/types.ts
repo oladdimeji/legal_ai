@@ -143,6 +143,14 @@ export interface CollaborationResponse {
   draft_id: string | null;
   is_read: boolean;
   created_at: string;
+  attachments?: Array<{
+    response_id: string;
+    document_id: string | null;
+    draft_id: string | null;
+    document_title?: string | null;
+    draft_title?: string | null;
+    revision_type?: string | null;
+  }>;
 }
 
 export interface CollaborationRequest {

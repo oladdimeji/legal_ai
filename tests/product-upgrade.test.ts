@@ -176,15 +176,18 @@ test("Phase 9 Client Assistant prompt disables internal and external research co
   assert.doesNotMatch(route, /googleSearch|CourtListenerAdapter|GovInfoAdapter|vectorSearch/);
 });
 
-test("migration 009 adds portal comments while temporary Assistant text remains request-only", async () => {
-  const [migrations, portal] = await Promise.all([
+test("migration 009 keeps portal comments while Phase 13 removes temporary Assistant text", async () => {
+  const [migrations, portal, server] = await Promise.all([
     readFile("server/migrations.ts", "utf8"),
     readFile("src/components/ClientPortalView.tsx", "utf8"),
+    readFile("server.ts", "utf8"),
   ]);
   assert.match(migrations, /version: 9/);
   assert.match(migrations, /CREATE TABLE IF NOT EXISTS portal_comments/);
   assert.doesNotMatch(migrations, /portal_temporary_documents/);
-  assert.match(portal, /temporary external document text \(not saved\)/);
+  assert.doesNotMatch(portal, /temporary external document text \(not saved\)|temporaryText/);
+  assert.doesNotMatch(server, /temporaryText/);
+  assert.match(migrations, /portal_chat_messages/);
   assert.match(portal, /Edit a Copy/);
 });
 
@@ -325,6 +328,131 @@ test("Phase 12 generated draft prompt uses actual Matter account and date metada
   assert.match(server, /Firm name:/);
   assert.match(server, /Current date:/);
   assert.match(server, /Do not emit bracketed placeholders/);
+});
+
+test("Phase 13 Collaboration empty state hides normal sections until collaborator exists", async () => {
+  const view = await readFile("src/components/MatterCollaboration.tsx", "utf8");
+  assert.match(view, /Create Collaborator & Invite/);
+  assert.match(view, /if \(!data\.access\)/);
+  const emptyBlock = view.slice(view.indexOf("if (!data.access)"), view.indexOf("return (", view.indexOf("return (") + 1));
+  assert.doesNotMatch(emptyBlock, /Shared Documents|Requests and Responses|Send Request/);
+});
+
+test("Phase 13 invite copy rotates token and remains hash-only", async () => {
+  const [server, database, view] = await Promise.all([
+    readFile("server.ts", "utf8"),
+    readFile("server/db.ts", "utf8"),
+    readFile("src/components/MatterCollaboration.tsx", "utf8"),
+  ]);
+  assert.match(server, /const \{ token, tokenHash \} = createSessionToken\(\)/);
+  assert.match(server, /activateClientInvite\(req\.params\.caseId, tokenHash/);
+  assert.match(database, /SET token_hash = \$1, invitation_status = 'Active'/);
+  assert.doesNotMatch(database, /RETURNING[\s\S]{0,100}\btoken\b(?!_hash)/);
+  assert.match(view, /Fresh invite link copied\. Older links are now invalid\./);
+  assert.match(view, /rotateAndCopyInvite/);
+});
+
+test("Phase 13 lawyer request instruction is optional and document selection remains required", async () => {
+  const [server, database, view] = await Promise.all([
+    readFile("server.ts", "utf8"),
+    readFile("server/db.ts", "utf8"),
+    readFile("src/components/MatterCollaboration.tsx", "utf8"),
+  ]);
+  assert.doesNotMatch(server, /Request instruction is required/);
+  assert.match(database, /Select at least one Work Product document/);
+  assert.match(view, /Optional comment or instruction/);
+  assert.match(view, /draftIds\.length === 0/);
+  assert.match(view, /Sending\.\.\./);
+});
+
+test("Phase 13 client responses are per-request with four approved options", async () => {
+  const [portal, server] = await Promise.all([
+    readFile("src/components/ClientPortalView.tsx", "utf8"),
+    readFile("server.ts", "utf8"),
+  ]);
+  assert.match(portal, /Record<string, ResponseState>/);
+  assert.match(portal, /requestState\(requestId/);
+  assert.match(portal, /const responseOptions = \["Acknowledgement", "Comment", "Upload files", "Shared files"\]/);
+  assert.doesNotMatch(portal, /Written Answer|Existing Portal Document|Client Revision as/);
+  assert.match(server, /new Set\(\["Acknowledgement", "Comment", "Upload files", "Shared files"\]\)/);
+});
+
+test("Phase 13 portal uploads and response attachments are token and Matter scoped", async () => {
+  const [server, database, migrations] = await Promise.all([
+    readFile("server.ts", "utf8"),
+    readFile("server/db.ts", "utf8"),
+    readFile("server/migrations.ts", "utf8"),
+  ]);
+  assert.match(server, /app\.post\("\/api\/portal\/:token\/documents", upload\.array\("files", MAX_FILE_COUNT\)/);
+  assert.match(server, /extractUploads\(\(req\.files \|\| \[\]\) as Express\.Multer\.File\[\]\)/);
+  assert.match(database, /uploadPortalDocument\(tokenHash/);
+  assert.match(database, /resolvePortalAccess\(tokenHash\)/);
+  assert.match(database, /case_id = \$2 AND firm_id = \$3[\s\S]*source_type = 'Client Submission'/);
+  assert.match(migrations, /client_response_attachments/);
+});
+
+test("Phase 13 Client Revisions appear in shared lists and originals remain preserved", async () => {
+  const [database, portal] = await Promise.all([
+    readFile("server/db.ts", "utf8"),
+    readFile("src/components/ClientPortalView.tsx", "utf8"),
+  ]);
+  assert.match(database, /shared_with_client = TRUE OR revision_type = 'Client Revision'/);
+  assert.match(database, /parent_draft_id, revision_type/);
+  assert.doesNotMatch(database, /UPDATE drafts[\s\S]{0,160}Client Revision/);
+  assert.match(portal, /Client Revision/);
+  assert.match(portal, /await load\(\)/);
+});
+
+test("Phase 13 requests sort unanswered first and update only the responded request", async () => {
+  const database = await readFile("server/db.ts", "utf8");
+  assert.match(database, /ORDER BY CASE WHEN COUNT\(r\.id\) = 0 THEN 0 ELSE 1 END ASC/);
+  assert.match(database, /COALESCE\(MAX\(r\.created_at\), cr\.created_at\) DESC/);
+  assert.match(database, /UPDATE collaboration_requests SET status = 'Responded', updated_at = \$1 WHERE id = \$2 AND case_id = \$3/);
+});
+
+test("Phase 13 request and response document titles are visible", async () => {
+  const [database, lawyer, portal] = await Promise.all([
+    readFile("server/db.ts", "utf8"),
+    readFile("src/components/MatterCollaboration.tsx", "utf8"),
+    readFile("src/components/ClientPortalView.tsx", "utf8"),
+  ]);
+  assert.match(database, /document_title/);
+  assert.match(database, /draft_title/);
+  assert.match(lawyer, /request\.documents\.map/);
+  assert.match(lawyer, /response\.attachments\.map/);
+  assert.match(portal, /request\.documents\.map/);
+});
+
+test("Phase 13 Client Assistant persists history and uses formatted Markdown", async () => {
+  const [server, database, portal, migrations] = await Promise.all([
+    readFile("server.ts", "utf8"),
+    readFile("server/db.ts", "utf8"),
+    readFile("src/components/ClientPortalView.tsx", "utf8"),
+    readFile("server/migrations.ts", "utf8"),
+  ]);
+  assert.match(migrations, /portal_chat_messages/);
+  assert.match(database, /getPortalChatMessages/);
+  assert.match(database, /addPortalChatMessage/);
+  assert.match(server, /Prior assistant conversation is only for resolving follow-up references/);
+  assert.match(server, /PRIOR CHAT:/);
+  assert.match(portal, /chatMessages/);
+  assert.match(portal, /<FormattedMarkdown content=\{message\.content\}/);
+});
+
+test("Phase 13 private foreign content and revoked portal access remain denied", async () => {
+  const [database, server] = await Promise.all([
+    readFile("server/db.ts", "utf8"),
+    readFile("server.ts", "utf8"),
+  ]);
+  const portalAssistantRoute = server.slice(
+    server.indexOf('app.post("/api/portal/:token/assistant"'),
+    server.indexOf('app.post("/api/threads"', server.indexOf('app.post("/api/portal/:token/assistant"'))
+  );
+  assert.match(database, /ca\.token_hash = \$1 AND ca\.invitation_status = 'Active' AND ca\.revoked_at IS NULL/);
+  assert.match(database, /getPermittedPortalDraft\(tokenHash, draftId\)/);
+  assert.match(database, /Selected Work Product is not available in this Client Portal/);
+  assert.match(portalAssistantRoute, /Client Portal access is unavailable/);
+  assert.doesNotMatch(portalAssistantRoute, /CourtListenerAdapter|GovInfoAdapter|googleSearch: true/);
 });
 
 test("Phase 10 preserves SQL-before-ranking and direct-ID ownership guards", async () => {

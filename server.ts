@@ -302,33 +302,44 @@ async function startServer() {
     }
   });
 
-  app.post("/api/portal/:token/documents", async (req, res) => {
+  app.post("/api/portal/:token/documents", upload.array("files", MAX_FILE_COUNT), async (req, res) => {
     try {
       const tokenHash = portalTokenHash(req.params.token);
       const access = await db.resolvePortalAccess(tokenHash);
       if (!access) return res.status(404).json({ error: "Client Portal access is unavailable" });
-      const title = typeof req.body.title === "string" ? req.body.title.trim() : "";
-      const text = typeof req.body.text === "string" ? req.body.text.trim() : "";
-      if (!title || !text) return res.status(400).json({ error: "Document title and text are required" });
-      return res.status(201).json(await db.uploadDocument(
-        title, text, { userId: "client-portal", firmId: access.firm_id },
-        null, null, access.case_id, "Client Submission", "Client"
-      ));
+      const extracted = await extractUploads((req.files || []) as Express.Multer.File[]);
+      if (extracted.length === 0) return res.status(400).json({ error: "Upload at least one PDF, DOCX, or TXT file" });
+      const documents = [];
+      for (const file of extracted) {
+        documents.push(await db.uploadPortalDocument(tokenHash, file.filename, file.text));
+      }
+      return res.status(201).json({ documents });
     } catch {
       return res.status(404).json({ error: "Client Portal access is unavailable" });
     }
   });
 
-  app.post("/api/portal/:token/requests/:requestId/responses", async (req, res) => {
+  app.post("/api/portal/:token/requests/:requestId/responses", upload.array("files", MAX_FILE_COUNT), async (req, res) => {
     try {
-      const allowed = new Set(["Acknowledgement", "Comment", "Written Answer", "Uploaded Document", "Existing Portal Document", "Client Revision"]);
+      const allowed = new Set(["Acknowledgement", "Comment", "Upload files", "Shared files"]);
       const type = typeof req.body.type === "string" ? req.body.type : "";
       if (!allowed.has(type)) return res.status(400).json({ error: "Invalid client response type" });
+      const tokenHash = portalTokenHash(req.params.token);
+      const content = typeof req.body.content === "string" ? req.body.content.trim() : "";
+      if (type === "Comment" && !content) return res.status(400).json({ error: "Comment text is required" });
+      const uploadedDocumentIds: string[] = [];
+      if (type === "Upload files") {
+        const extracted = await extractUploads((req.files || []) as Express.Multer.File[]);
+        if (extracted.length === 0) return res.status(400).json({ error: "Select at least one file to upload" });
+        for (const file of extracted) {
+          const document = await db.uploadPortalDocument(tokenHash, file.filename, file.text);
+          uploadedDocumentIds.push(document.id);
+        }
+      }
+      const rawDraftIds = typeof req.body.draftIds === "string" ? JSON.parse(req.body.draftIds || "[]") : req.body.draftIds;
+      const draftIds = Array.isArray(rawDraftIds) ? rawDraftIds.filter((id: unknown): id is string => typeof id === "string") : [];
       return res.status(201).json(await db.createPortalResponse(
-        portalTokenHash(req.params.token), req.params.requestId, type,
-        typeof req.body.content === "string" ? req.body.content : null,
-        typeof req.body.documentId === "string" ? req.body.documentId : null,
-        typeof req.body.draftId === "string" ? req.body.draftId : null
+        tokenHash, req.params.requestId, type, content || null, uploadedDocumentIds, type === "Shared files" ? draftIds : []
       ));
     } catch {
       return res.status(404).json({ error: "Client request or attachment not found" });
@@ -342,26 +353,37 @@ async function startServer() {
       const documentIds: string[] = Array.isArray(req.body.documentIds)
         ? req.body.documentIds.filter((id: unknown): id is string => typeof id === "string") : [];
       const query = typeof req.body.query === "string" ? req.body.query.trim() : "";
-      const temporaryText = typeof req.body.temporaryText === "string" ? req.body.temporaryText.trim() : "";
       if (!query) return res.status(400).json({ error: "Question is required" });
+      const tokenHash = portalTokenHash(req.params.token);
       const bundle = await db.getPortalAssistantSources(
-        portalTokenHash(req.params.token), draftIds, documentIds
+        tokenHash, draftIds, documentIds
       );
       if (!bundle) return res.status(404).json({ error: "Client Portal access is unavailable" });
       const sources = [...bundle.sources];
-      if (temporaryText) sources.push({ id: "temporary", title: "Temporary client upload", text: temporaryText });
       if (sources.length === 0) return res.status(400).json({ error: "Select or attach at least one permitted document" });
+      const priorMessages = await db.getPortalChatMessages(tokenHash, 20);
+      const selectedLabels = sources.map(({ id, title }) => ({ id, title }));
+      const userMessage = await db.addPortalChatMessage(tokenHash, "user", query, selectedLabels);
       const context = sources.map((source, index) =>
         `DOCUMENT ${index + 1}: ${source.title}\n${source.text.slice(0, 16000)}`
       ).join("\n\n---\n\n").slice(0, 60000);
+      const history = priorMessages
+        .slice(-12)
+        .map((message: any) => `${message.role.toUpperCase()}: ${message.content}`)
+        .join("\n\n");
       const prompt = `You are a document-understanding assistant for an external legal client.
 Answer ONLY from the documents selected below. Provide a plain-language explanation, summary, clause clarification, or grounded answer. Cite sources as [Source: exact title].
 Do not provide external legal research, do not imply access to the Firm Library, Matter Intelligence, lawyer conversations, or unshared material, and do not present yourself as a replacement for the lawyer's advice.
+Prior assistant conversation is only for resolving follow-up references, not an additional source.
+
+PRIOR CHAT:
+${history || "No prior chat."}
 
 CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
       const result = await callModel("client-assistant", [{ role: "user", content: prompt }], { temperature: 0.2 });
+      const assistantMessage = await db.addPortalChatMessage(tokenHash, "assistant", result.text.trim(), selectedLabels);
       res.setHeader("Cache-Control", "no-store");
-      return res.json({ text: result.text.trim(), sources: sources.map(({ id, title }) => ({ id, title })) });
+      return res.json({ userMessage, assistantMessage, text: result.text.trim(), sources: selectedLabels });
     } catch (err: any) {
       const status = /not available/i.test(err.message) ? 404 : 500;
       return res.status(status).json({ error: err.message });
@@ -658,7 +680,6 @@ ${sourceText}`;
       const instruction = typeof req.body.instruction === "string" ? req.body.instruction.trim() : "";
       const draftIds: string[] = Array.isArray(req.body.draftIds)
         ? req.body.draftIds.filter((id: unknown): id is string => typeof id === "string") : [];
-      if (!instruction) return res.status(400).json({ error: "Request instruction is required" });
       return res.status(201).json(
         await db.createCollaborationRequest(req.params.caseId, type, instruction, draftIds, ownership(req))
       );

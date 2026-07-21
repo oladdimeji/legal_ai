@@ -388,6 +388,39 @@ const migrations: Migration[] = [
       );
     },
   },
+  {
+    version: 11,
+    name: "portal_response_attachments_and_chat",
+    async run(client) {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS client_response_attachments (
+          response_id TEXT NOT NULL REFERENCES client_responses(id) ON DELETE CASCADE,
+          document_id TEXT REFERENCES documents(id) ON DELETE SET NULL,
+          draft_id TEXT REFERENCES drafts(id) ON DELETE SET NULL,
+          created_at TEXT NOT NULL,
+          PRIMARY KEY (response_id, document_id, draft_id)
+        )
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS client_response_attachments_response_idx
+        ON client_response_attachments(response_id)
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS portal_chat_messages (
+          id TEXT PRIMARY KEY,
+          access_id TEXT NOT NULL REFERENCES matter_client_access(id) ON DELETE CASCADE,
+          role TEXT NOT NULL,
+          content TEXT NOT NULL,
+          selected_sources JSONB NOT NULL DEFAULT '[]'::jsonb,
+          created_at TEXT NOT NULL
+        )
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS portal_chat_messages_access_created_idx
+        ON portal_chat_messages(access_id, created_at)
+      `);
+    },
+  },
 ];
 
 export async function runMigrations(pool: Pool): Promise<void> {

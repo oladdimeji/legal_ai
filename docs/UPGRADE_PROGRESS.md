@@ -399,3 +399,49 @@ Known limitations:
 - OCR remains unsupported for scanned PDFs.
 - Work Product editing is Markdown-backed with a formatted editor/preview rather than a full legal word processor.
 - Client Portal upload/editing still has earlier compact behavior and was not broadened beyond the requested lawyer-side corrections.
+
+## Phase 13 - Collaboration and Client Portal Correction
+
+Status: Complete.
+
+Implemented:
+
+- Reworked lawyer Collaboration so the no-collaborator state shows only a centered invite form with client name/email and progress labels, then transitions into the normal view after success.
+- Replaced the old editable collaborator box with a compact identity/status header. Copy Invite Link now rotates/generates a fresh token, copies the new URL, confirms older links are invalid, and continues storing only token hashes.
+- Reordered Collaboration to Send Request, Shared Documents, then Requests and Responses. Request instructions are now optional, document selection remains required, sending has duplicate-click prevention, and errors preserve selections.
+- Changed Shared Documents into a compact disclosure and expanded request/response history so attached Work Product titles and response attachments are visible.
+- Updated Client Portal shared-document viewing and client revisions to use the shared formatted Markdown renderer and the existing formatted Markdown editor while preserving the original lawyer Work Product.
+- Replaced global request response state with per-request state, exposed only Acknowledgement, Comment, Upload files, and Shared files, and added per-request sending/error handling.
+- Added token-scoped portal file uploads for PDF/DOCX/TXT using the Phase 11 extraction utility and linked multiple uploaded/shared attachments to a single response without replacing legacy response columns.
+- Sorted unanswered requests before answered requests, ordered answered requests by recent response activity, and updated only the responded request's status/timestamp.
+- Replaced the one-shot Client Assistant with a persistent collaborator-scoped chat, explicit source dropdown/chips, bounded follow-up history, formatted Markdown responses, and a document-understanding disclaimer.
+- Kept portal source selection limited to shared/requested Work Product, Client Revisions, and token-scoped portal files; no Firm Library, Matter Intelligence, lawyer Assistant threads, unshared Work Product, other Matters, external search, CourtListener, or GovInfo are exposed.
+
+Schema changes:
+
+- Migration 011 adds `client_response_attachments` for additive multi-attachment responses while preserving existing `client_responses` columns.
+- Migration 011 adds `portal_chat_messages` for one persistent isolated portal chat per active collaborator.
+
+Dependencies added:
+
+- None. Phase 13 reuses the Phase 11 file extraction and Phase 12 formatted Markdown editor dependencies.
+
+API changes:
+
+- `POST /api/cases/:caseId/collaboration/requests` now accepts an optional instruction while still requiring selected Work Product.
+- `POST /api/cases/:caseId/collaboration/invite` continues to return a one-time plaintext link but now supports safe invite rotation for Copy Invite Link.
+- `POST /api/portal/:token/documents` now accepts memory-backed multipart PDF/DOCX/TXT uploads and stores extracted text as token/Matter-scoped Client Submission documents.
+- `POST /api/portal/:token/requests/:requestId/responses` now accepts multipart responses, the four approved response types, multiple uploaded files, and multiple shared Work Product attachments.
+- `POST /api/portal/:token/assistant` now persists portal chat turns, includes bounded prior portal history, and rejects unavailable selected sources on every request.
+
+Verification:
+
+- `npm test`: passed, 50/50 tests.
+- `npm run lint`: passed.
+- `npm run build`: passed. Vite still reports the existing large chunk warning.
+
+Known limitations:
+
+- OCR remains unsupported for scanned PDFs.
+- Portal chat is intentionally one simple persistent chat per active collaborator.
+- Client revisions remain Markdown-backed through the focused formatted editor rather than a full word processor.

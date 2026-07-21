@@ -600,6 +600,9 @@ class DatabaseService {
         `SELECT r.* FROM client_responses r WHERE r.request_id = $1 ORDER BY r.created_at DESC`,
         [request.id]
       );
+      for (const response of request.responses) {
+        response.attachments = await this.getResponseAttachments(response.id);
+      }
     }
     const unread = requests.reduce(
       (count: number, request: any) => count + request.responses.filter((response: any) => !response.is_read).length,
@@ -690,6 +693,19 @@ class DatabaseService {
     return { ...inserted[0], documents: owned, responses: [] };
   }
 
+  private async getResponseAttachments(responseId: string): Promise<any[]> {
+    return await this.query(
+      `SELECT a.response_id, a.document_id, a.draft_id, a.created_at,
+         d.title AS document_title, w.title AS draft_title, w.revision_type
+       FROM client_response_attachments a
+       LEFT JOIN documents d ON d.id = a.document_id
+       LEFT JOIN drafts w ON w.id = a.draft_id
+       WHERE a.response_id = $1
+       ORDER BY a.created_at`,
+      [responseId]
+    );
+  }
+
   public async markCollaborationResponseRead(
     caseId: string, responseId: string, context: OwnershipContext
   ): Promise<boolean> {
@@ -721,12 +737,19 @@ class DatabaseService {
     const shared = await this.query(
       `SELECT id, case_id, title, content, created_at, updated_at, origin,
          parent_draft_id, revision_type
-       FROM drafts WHERE case_id = $1 AND shared_with_client = TRUE
+       FROM drafts WHERE case_id = $1 AND (shared_with_client = TRUE OR revision_type = 'Client Revision')
        ORDER BY COALESCE(updated_at, created_at) DESC`, [access.case_id]
     );
     const requests = await this.query(
-      `SELECT id, request_type, instruction, status, created_at, updated_at
-       FROM collaboration_requests WHERE case_id = $1 ORDER BY created_at DESC`,
+      `SELECT cr.id, cr.request_type, cr.instruction, cr.status, cr.created_at, cr.updated_at,
+         MAX(r.created_at) AS latest_response_at,
+         COUNT(r.id)::int AS response_count
+       FROM collaboration_requests cr
+       LEFT JOIN client_responses r ON r.request_id = cr.id
+       WHERE cr.case_id = $1
+       GROUP BY cr.id
+       ORDER BY CASE WHEN COUNT(r.id) = 0 THEN 0 ELSE 1 END ASC,
+         COALESCE(MAX(r.created_at), cr.created_at) DESC`,
       [access.case_id]
     );
     for (const request of requests) {
@@ -737,8 +760,11 @@ class DatabaseService {
       );
       request.responses = await this.query(
         `SELECT id, response_type, content, document_id, draft_id, created_at
-         FROM client_responses WHERE request_id = $1 ORDER BY created_at`, [request.id]
+         FROM client_responses WHERE request_id = $1 ORDER BY created_at DESC`, [request.id]
       );
+      for (const response of request.responses) {
+        response.attachments = await this.getResponseAttachments(response.id);
+      }
     }
     const portalDocuments = await this.query(
       `SELECT id, title, source_type, origin, processing_state, uploaded_at
@@ -751,7 +777,8 @@ class DatabaseService {
        FROM drafts WHERE case_id = $1 AND revision_type = 'Client Revision'
        ORDER BY created_at DESC`, [access.case_id]
     );
-    return { access, shared, requests, portalDocuments, revisions };
+    const chatMessages = await this.getPortalChatMessages(tokenHash);
+    return { access, shared, requests, portalDocuments, revisions, chatMessages };
   }
 
   public async getPermittedPortalDraft(tokenHash: string, draftId: string): Promise<any | null> {
@@ -802,9 +829,24 @@ class DatabaseService {
     return rows[0];
   }
 
+  public async uploadPortalDocument(tokenHash: string, title: string, text: string): Promise<any> {
+    const access = await this.resolvePortalAccess(tokenHash);
+    if (!access) throw new Error("Client access not found");
+    return await this.uploadDocument(
+      title,
+      text,
+      { userId: "client-portal", firmId: access.firm_id },
+      null,
+      null,
+      access.case_id,
+      "Client Submission",
+      "Client"
+    );
+  }
+
   public async createPortalResponse(
     tokenHash: string, requestId: string, responseType: string, content: string | null,
-    documentId: string | null, draftId: string | null
+    documentIds: string[] = [], draftIds: string[] = []
   ): Promise<any> {
     const access = await this.resolvePortalAccess(tokenHash);
     if (!access) throw new Error("Client access not found");
@@ -813,24 +855,47 @@ class DatabaseService {
       [requestId, access.case_id]
     ))[0];
     if (!request) throw new Error("Client request not found");
-    if (documentId) {
-      const document = await this.query(
-        `SELECT id FROM documents WHERE id = $1 AND case_id = $2 AND firm_id = $3
-         AND source_type = 'Client Submission'`, [documentId, access.case_id, access.firm_id]
+    const uniqueDocumentIds = Array.from(new Set(documentIds.filter(Boolean)));
+    const uniqueDraftIds = Array.from(new Set(draftIds.filter(Boolean)));
+    if (uniqueDocumentIds.length) {
+      const documents = await this.query(
+        `SELECT id FROM documents WHERE id = ANY($1::text[]) AND case_id = $2 AND firm_id = $3
+         AND source_type = 'Client Submission'`, [uniqueDocumentIds, access.case_id, access.firm_id]
       );
-      if (!document[0]) throw new Error("Portal document not found");
+      if (documents.length !== uniqueDocumentIds.length) throw new Error("Portal document not found");
     }
-    if (draftId && !(await this.getPermittedPortalDraft(tokenHash, draftId))) {
-      throw new Error("Portal Work Product not found");
+    for (const draftId of uniqueDraftIds) {
+      if (!(await this.getPermittedPortalDraft(tokenHash, draftId))) {
+        throw new Error("Portal Work Product not found");
+      }
     }
     const id = `response_${randomUUID()}`;
+    const now = new Date().toISOString();
     const rows = await this.query(
       `INSERT INTO client_responses
         (id, request_id, response_type, content, document_id, draft_id, is_read, created_at)
        VALUES($1, $2, $3, $4, $5, $6, FALSE, $7) RETURNING *`,
-      [id, requestId, responseType, content, documentId, draftId, new Date().toISOString()]
+      [id, requestId, responseType, content, uniqueDocumentIds[0] || null, uniqueDraftIds[0] || null, now]
     );
-    return rows[0];
+    for (const documentId of uniqueDocumentIds) {
+      await this.query(
+        `INSERT INTO client_response_attachments(response_id, document_id, draft_id, created_at)
+         VALUES($1, $2, NULL, $3)`,
+        [id, documentId, now]
+      );
+    }
+    for (const draftId of uniqueDraftIds) {
+      await this.query(
+        `INSERT INTO client_response_attachments(response_id, document_id, draft_id, created_at)
+         VALUES($1, NULL, $2, $3)`,
+        [id, draftId, now]
+      );
+    }
+    await this.query(
+      "UPDATE collaboration_requests SET status = 'Responded', updated_at = $1 WHERE id = $2 AND case_id = $3",
+      [now, requestId, access.case_id]
+    );
+    return { ...rows[0], attachments: await this.getResponseAttachments(id) };
   }
 
   public async getPortalAssistantSources(
@@ -856,6 +921,33 @@ class DatabaseService {
       sources.push(...documents.map((document) => ({ id: document.id, title: document.title, text: document.extracted_text })));
     }
     return { access, sources };
+  }
+
+  public async getPortalChatMessages(tokenHash: string, limit = 30): Promise<any[]> {
+    const access = await this.resolvePortalAccess(tokenHash);
+    if (!access) return [];
+    return await this.query(
+      `SELECT id, role, content, selected_sources, created_at
+       FROM portal_chat_messages
+       WHERE access_id = $1
+       ORDER BY created_at ASC
+       LIMIT $2`,
+      [access.access_id, limit]
+    );
+  }
+
+  public async addPortalChatMessage(
+    tokenHash: string, role: "user" | "assistant", content: string, selectedSources: Array<{ id: string; title: string }>
+  ): Promise<any> {
+    const access = await this.resolvePortalAccess(tokenHash);
+    if (!access) throw new Error("Client access not found");
+    const id = `portal_msg_${randomUUID()}`;
+    const rows = await this.query(
+      `INSERT INTO portal_chat_messages(id, access_id, role, content, selected_sources, created_at)
+       VALUES($1, $2, $3, $4, $5::jsonb, $6) RETURNING *`,
+      [id, access.access_id, role, content, JSON.stringify(selectedSources), new Date().toISOString()]
+    );
+    return rows[0];
   }
 
   public async getDocuments(context: OwnershipContext, caseId: string | null): Promise<Document[]> {
