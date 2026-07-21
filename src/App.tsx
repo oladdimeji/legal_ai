@@ -8,8 +8,11 @@ import MatterWorkspaceView from "./components/MatterWorkspaceView";
 import HistoryView from "./components/HistoryView";
 import AuthView from "./components/AuthView";
 import { Case, Firm, User } from "./types";
+import ClientPortalView from "./components/ClientPortalView";
 
 export default function App() {
+  const portalToken = window.location.pathname.startsWith("/client/")
+    ? decodeURIComponent(window.location.pathname.slice("/client/".length)) : null;
   const [activeTab, setActiveTab] = useState<string>("assistant");
   const [cases, setCases] = useState<Case[]>([]);
   const [activeCaseId, setActiveCaseId] = useState<string | null>(null);
@@ -26,6 +29,7 @@ export default function App() {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
 
   useEffect(() => {
+    if (portalToken) { setAuthLoading(false); return; }
     const loadSession = async () => {
       try {
         const res = await fetch("/api/auth/me");
@@ -37,7 +41,7 @@ export default function App() {
       }
     };
     loadSession();
-  }, []);
+  }, [portalToken]);
 
   useEffect(() => {
     if (account) fetchCases();
@@ -96,6 +100,8 @@ export default function App() {
       setActiveTab("assistant");
     }
   };
+
+  if (portalToken) return <ClientPortalView token={portalToken} />;
 
   if (authLoading) {
     return (

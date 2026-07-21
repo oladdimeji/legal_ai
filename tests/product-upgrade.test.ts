@@ -135,3 +135,49 @@ test("migration 008 adds one-client collaboration records without an external ac
   assert.match(migrations, /collaboration_requests/);
   assert.match(migrations, /client_responses/);
 });
+
+test("Phase 9 portal token routes precede and remain separate from lawyer sessions", async () => {
+  const [server, app] = await Promise.all([
+    readFile("server.ts", "utf8"),
+    readFile("src/App.tsx", "utf8"),
+  ]);
+  assert.ok(server.indexOf('app.get("/api/portal/:token"') < server.indexOf('app.use("/api", requireAuth)'));
+  assert.match(server, /portalTokenHash = \(token: string\) => hashSessionToken/);
+  assert.match(app, /window\.location\.pathname\.startsWith\("\/client\/"\)/);
+  assert.match(app, /<ClientPortalView token=\{portalToken\}/);
+});
+
+test("Phase 9 portal SQL allow-lists shared, requested, revision, and client-submission content", async () => {
+  const database = await readFile("server/db.ts", "utf8");
+  assert.match(database, /ca\.token_hash = \$1 AND ca\.invitation_status = 'Active' AND ca\.revoked_at IS NULL/);
+  assert.match(database, /d\.shared_with_client = TRUE OR d\.revision_type = 'Client Revision' OR EXISTS/);
+  assert.match(database, /source_type = 'Client Submission'/);
+  assert.match(database, /id = ANY\(\$1::text\[\]\) AND case_id = \$2 AND firm_id = \$3/);
+  const assistantMethod = database.slice(
+    database.indexOf("getPortalAssistantSources"),
+    database.indexOf("public async getDocuments", database.indexOf("getPortalAssistantSources"))
+  );
+  assert.doesNotMatch(assistantMethod, /matter_intelligence|threads|case_documents/);
+});
+
+test("Phase 9 Client Assistant prompt disables internal and external research context", async () => {
+  const server = await readFile("server.ts", "utf8");
+  const start = server.indexOf('app.post("/api/portal/:token/assistant"');
+  const end = server.indexOf("// All remaining API routes", start);
+  const route = server.slice(start, end);
+  assert.match(route, /Answer ONLY from the documents selected below/);
+  assert.match(route, /do not imply access to the Firm Library, Matter Intelligence, lawyer conversations/);
+  assert.doesNotMatch(route, /googleSearch|CourtListenerAdapter|GovInfoAdapter|vectorSearch/);
+});
+
+test("migration 009 adds portal comments while temporary Assistant text remains request-only", async () => {
+  const [migrations, portal] = await Promise.all([
+    readFile("server/migrations.ts", "utf8"),
+    readFile("src/components/ClientPortalView.tsx", "utf8"),
+  ]);
+  assert.match(migrations, /version: 9/);
+  assert.match(migrations, /CREATE TABLE IF NOT EXISTS portal_comments/);
+  assert.doesNotMatch(migrations, /portal_temporary_documents/);
+  assert.match(portal, /temporary external document text \(not saved\)/);
+  assert.match(portal, /Edit a Copy/);
+});

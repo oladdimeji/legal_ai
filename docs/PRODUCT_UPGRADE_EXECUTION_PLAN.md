@@ -139,15 +139,15 @@ Rollback/failure: revoke generated access before reverting UI; additive collabor
 
 ### Checklist
 
-- [ ] Add migration 009 for portal comments and temporary client-assistant documents/conversations only where required; keep response uploads as owned Matter Source documents.
-- [ ] Add separate portal-token middleware in `server.ts` that hashes the supplied token and resolves exactly one active Matter without creating an internal session.
-- [ ] Add portal APIs for summary, shared Work Product view/download/comment/edit-copy, request view/respond, client upload/existing-document selection, and Client Revision creation.
-- [ ] Add a strictly allow-listed Client Assistant endpoint that accepts selected permitted portal document IDs/temporary text and builds context without Firm Library, Intelligence, lawyer thread, web, or connector access.
-- [ ] Modify `server/db.ts` with token-scoped portal methods whose SQL begins from active `client_access` and joins only explicitly shared/request/revision/client-submission records.
-- [ ] Create `src/components/ClientPortalView.tsx` with Shared Documents, Requests, and Assistant tabs only.
-- [ ] Modify `src/App.tsx` to render the public token route separately from lawyer authentication without exposing the token in logs or persistent client storage beyond the URL/session lifetime.
-- [ ] Mark response uploads as `Client Submission`; keep Assistant-only uploads temporary unless explicitly attached to a response.
-- [ ] Add tests for revoked/invalid tokens, one-Matter scope, unshared Work Product denial, copy-not-overwrite, request response, Source labeling, and Client Assistant allow-list SQL/prompt inputs.
+- [x] Add migration 009 for portal comments; keep Assistant-only text request-scoped and response uploads as owned Matter Source documents.
+- [x] Add separate portal-token routing in `server.ts` that hashes the supplied token and resolves exactly one active Matter without creating an internal session.
+- [x] Add portal APIs for summary, shared Work Product view/download/comment/edit-copy, request view/respond, client upload/existing-document selection, and Client Revision creation.
+- [x] Add a strictly allow-listed Client Assistant endpoint that accepts selected permitted portal document IDs/temporary text and builds context without Firm Library, Intelligence, lawyer thread, web, or connector access.
+- [x] Modify `server/db.ts` with token-scoped portal methods whose SQL begins from active `matter_client_access` and joins only explicitly shared/request/revision/client-submission records.
+- [x] Create `src/components/ClientPortalView.tsx` with Shared Documents, Requests, and Assistant tabs only.
+- [x] Modify `src/App.tsx` to render the public token route separately from lawyer authentication without exposing the token in logs or persistent client storage beyond the URL/session lifetime.
+- [x] Mark response uploads as `Client Submission`; keep Assistant-only uploads temporary unless explicitly attached to a response.
+- [x] Add tests for revoked/invalid tokens, one-Matter scope, unshared Work Product denial, copy-not-overwrite, request response, Source labeling, and Client Assistant allow-list SQL/prompt inputs.
 
 Backfill: none.  
 Reusable capabilities: DOCX export, draft duplicate/parent linkage, Source upload/chunking, Gemini grounded response formatting, Collaboration token hash.

@@ -358,6 +358,24 @@ const migrations: Migration[] = [
       );
     },
   },
+  {
+    version: 9,
+    name: "client_portal",
+    async run(client) {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS portal_comments (
+          id TEXT PRIMARY KEY,
+          case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+          draft_id TEXT NOT NULL REFERENCES drafts(id) ON DELETE CASCADE,
+          content TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        )
+      `);
+      await client.query(
+        "CREATE INDEX IF NOT EXISTS portal_comments_draft_idx ON portal_comments(draft_id, created_at)"
+      );
+    },
+  },
 ];
 
 export async function runMigrations(pool: Pool): Promise<void> {

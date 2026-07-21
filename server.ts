@@ -153,6 +153,127 @@ async function startServer() {
     return res.json(req.auth);
   });
 
+  const portalTokenHash = (token: string) => hashSessionToken(decodeURIComponent(token));
+
+  // Client Portal routes use a separate, Matter-specific invitation token rather than lawyer sessions.
+  app.get("/api/portal/:token", async (req, res) => {
+    const summary = await db.getPortalSummary(portalTokenHash(req.params.token));
+    res.setHeader("Cache-Control", "no-store");
+    if (!summary) return res.status(404).json({ error: "Client Portal access is unavailable" });
+    return res.json(summary);
+  });
+
+  app.get("/api/portal/:token/work-product/:draftId", async (req, res) => {
+    const draft = await db.getPermittedPortalDraft(
+      portalTokenHash(req.params.token), req.params.draftId
+    );
+    res.setHeader("Cache-Control", "no-store");
+    if (!draft) return res.status(404).json({ error: "Shared Work Product not found" });
+    return res.json(draft);
+  });
+
+  app.get("/api/portal/:token/work-product/:draftId/download", async (req, res) => {
+    const draft = await db.getPermittedPortalDraft(
+      portalTokenHash(req.params.token), req.params.draftId
+    );
+    if (!draft) return res.status(404).json({ error: "Shared Work Product not found" });
+    const paragraphs = [new Paragraph({ text: draft.title, heading: HeadingLevel.HEADING_1 })];
+    for (const line of draft.content.split("\n")) paragraphs.push(new Paragraph({ children: [new TextRun(line)] }));
+    const buffer = await Packer.toBuffer(new DocxDocument({ sections: [{ children: paragraphs }] }));
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+    res.setHeader("Content-Disposition", `attachment; filename="${draft.title.replace(/[^a-z0-9]/gi, "_")}.docx"`);
+    return res.send(buffer);
+  });
+
+  app.post("/api/portal/:token/work-product/:draftId/comments", async (req, res) => {
+    try {
+      const content = typeof req.body.content === "string" ? req.body.content.trim() : "";
+      if (!content) return res.status(400).json({ error: "Comment is required" });
+      return res.status(201).json(await db.addPortalComment(
+        portalTokenHash(req.params.token), req.params.draftId, content
+      ));
+    } catch {
+      return res.status(404).json({ error: "Shared Work Product not found" });
+    }
+  });
+
+  app.post("/api/portal/:token/work-product/:draftId/edit-copy", async (req, res) => {
+    try {
+      const content = typeof req.body.content === "string" ? req.body.content : "";
+      return res.status(201).json(await db.createPortalClientRevision(
+        portalTokenHash(req.params.token), req.params.draftId, content
+      ));
+    } catch {
+      return res.status(404).json({ error: "Shared Work Product not found" });
+    }
+  });
+
+  app.post("/api/portal/:token/documents", async (req, res) => {
+    try {
+      const tokenHash = portalTokenHash(req.params.token);
+      const access = await db.resolvePortalAccess(tokenHash);
+      if (!access) return res.status(404).json({ error: "Client Portal access is unavailable" });
+      const title = typeof req.body.title === "string" ? req.body.title.trim() : "";
+      const text = typeof req.body.text === "string" ? req.body.text.trim() : "";
+      if (!title || !text) return res.status(400).json({ error: "Document title and text are required" });
+      return res.status(201).json(await db.uploadDocument(
+        title, text, { userId: "client-portal", firmId: access.firm_id },
+        null, null, access.case_id, "Client Submission", "Client"
+      ));
+    } catch {
+      return res.status(404).json({ error: "Client Portal access is unavailable" });
+    }
+  });
+
+  app.post("/api/portal/:token/requests/:requestId/responses", async (req, res) => {
+    try {
+      const allowed = new Set(["Acknowledgement", "Comment", "Written Answer", "Uploaded Document", "Existing Portal Document", "Client Revision"]);
+      const type = typeof req.body.type === "string" ? req.body.type : "";
+      if (!allowed.has(type)) return res.status(400).json({ error: "Invalid client response type" });
+      return res.status(201).json(await db.createPortalResponse(
+        portalTokenHash(req.params.token), req.params.requestId, type,
+        typeof req.body.content === "string" ? req.body.content : null,
+        typeof req.body.documentId === "string" ? req.body.documentId : null,
+        typeof req.body.draftId === "string" ? req.body.draftId : null
+      ));
+    } catch {
+      return res.status(404).json({ error: "Client request or attachment not found" });
+    }
+  });
+
+  app.post("/api/portal/:token/assistant", async (req, res) => {
+    try {
+      const draftIds: string[] = Array.isArray(req.body.draftIds)
+        ? req.body.draftIds.filter((id: unknown): id is string => typeof id === "string") : [];
+      const documentIds: string[] = Array.isArray(req.body.documentIds)
+        ? req.body.documentIds.filter((id: unknown): id is string => typeof id === "string") : [];
+      const query = typeof req.body.query === "string" ? req.body.query.trim() : "";
+      const temporaryText = typeof req.body.temporaryText === "string" ? req.body.temporaryText.trim() : "";
+      if (!query) return res.status(400).json({ error: "Question is required" });
+      const bundle = await db.getPortalAssistantSources(
+        portalTokenHash(req.params.token), draftIds, documentIds
+      );
+      if (!bundle) return res.status(404).json({ error: "Client Portal access is unavailable" });
+      const sources = [...bundle.sources];
+      if (temporaryText) sources.push({ id: "temporary", title: "Temporary client upload", text: temporaryText });
+      if (sources.length === 0) return res.status(400).json({ error: "Select or attach at least one permitted document" });
+      const context = sources.map((source, index) =>
+        `DOCUMENT ${index + 1}: ${source.title}\n${source.text.slice(0, 16000)}`
+      ).join("\n\n---\n\n").slice(0, 60000);
+      const prompt = `You are a document-understanding assistant for an external legal client.
+Answer ONLY from the documents selected below. Provide a plain-language explanation, summary, clause clarification, or grounded answer. Cite sources as [Source: exact title].
+Do not provide external legal research, do not imply access to the Firm Library, Matter Intelligence, lawyer conversations, or unshared material, and do not present yourself as a replacement for the lawyer's advice.
+
+CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
+      const result = await callModel("client-assistant", [{ role: "user", content: prompt }], { temperature: 0.2 });
+      res.setHeader("Cache-Control", "no-store");
+      return res.json({ text: result.text.trim(), sources: sources.map(({ id, title }) => ({ id, title })) });
+    } catch (err: any) {
+      const status = /not available/i.test(err.message) ? 404 : 500;
+      return res.status(status).json({ error: err.message });
+    }
+  });
+
   // All remaining API routes require a server-validated session.
   app.use("/api", requireAuth);
 

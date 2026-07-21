@@ -579,6 +579,13 @@ class DatabaseService {
        WHERE d.case_id = $1 AND c.firm_id = $2 AND d.shared_with_client = TRUE
        ORDER BY COALESCE(d.updated_at, d.created_at) DESC`, [caseId, context.firmId]
     );
+    for (const draft of shared) {
+      draft.client_comments = await this.query(
+        `SELECT id, content, created_at FROM portal_comments
+         WHERE case_id = $1 AND draft_id = $2 ORDER BY created_at DESC`,
+        [caseId, draft.id]
+      );
+    }
     const requests = await this.query(
       `SELECT cr.* FROM collaboration_requests cr JOIN cases c ON c.id = cr.case_id
        WHERE cr.case_id = $1 AND c.firm_id = $2 ORDER BY cr.created_at DESC`,
@@ -695,6 +702,160 @@ class DatabaseService {
       [responseId, caseId, context.firmId]
     );
     return rows.length === 1;
+  }
+
+  public async resolvePortalAccess(tokenHash: string): Promise<any | null> {
+    const rows = await this.query(
+      `SELECT ca.id AS access_id, ca.case_id, ca.client_name, ca.client_email,
+         c.firm_id, c.name AS matter_name
+       FROM matter_client_access ca JOIN cases c ON c.id = ca.case_id
+       WHERE ca.token_hash = $1 AND ca.invitation_status = 'Active' AND ca.revoked_at IS NULL`,
+      [tokenHash]
+    );
+    return rows[0] || null;
+  }
+
+  public async getPortalSummary(tokenHash: string): Promise<any | null> {
+    const access = await this.resolvePortalAccess(tokenHash);
+    if (!access) return null;
+    const shared = await this.query(
+      `SELECT id, case_id, title, content, created_at, updated_at, origin,
+         parent_draft_id, revision_type
+       FROM drafts WHERE case_id = $1 AND shared_with_client = TRUE
+       ORDER BY COALESCE(updated_at, created_at) DESC`, [access.case_id]
+    );
+    const requests = await this.query(
+      `SELECT id, request_type, instruction, status, created_at, updated_at
+       FROM collaboration_requests WHERE case_id = $1 ORDER BY created_at DESC`,
+      [access.case_id]
+    );
+    for (const request of requests) {
+      request.documents = await this.query(
+        `SELECT d.id, d.title, d.created_at, d.updated_at, d.origin, d.revision_type
+         FROM collaboration_request_documents rd JOIN drafts d ON d.id = rd.draft_id
+         WHERE rd.request_id = $1 AND d.case_id = $2`, [request.id, access.case_id]
+      );
+      request.responses = await this.query(
+        `SELECT id, response_type, content, document_id, draft_id, created_at
+         FROM client_responses WHERE request_id = $1 ORDER BY created_at`, [request.id]
+      );
+    }
+    const portalDocuments = await this.query(
+      `SELECT id, title, source_type, origin, processing_state, uploaded_at
+       FROM documents WHERE case_id = $1 AND firm_id = $2 AND source_type = 'Client Submission'
+       ORDER BY uploaded_at DESC`, [access.case_id, access.firm_id]
+    );
+    const revisions = await this.query(
+      `SELECT id, case_id, title, content, created_at, updated_at, origin,
+         parent_draft_id, revision_type
+       FROM drafts WHERE case_id = $1 AND revision_type = 'Client Revision'
+       ORDER BY created_at DESC`, [access.case_id]
+    );
+    return { access, shared, requests, portalDocuments, revisions };
+  }
+
+  public async getPermittedPortalDraft(tokenHash: string, draftId: string): Promise<any | null> {
+    const access = await this.resolvePortalAccess(tokenHash);
+    if (!access) return null;
+    const rows = await this.query(
+      `SELECT d.* FROM drafts d WHERE d.id = $1 AND d.case_id = $2 AND (
+         d.shared_with_client = TRUE OR d.revision_type = 'Client Revision' OR EXISTS (
+           SELECT 1 FROM collaboration_request_documents rd
+           JOIN collaboration_requests cr ON cr.id = rd.request_id
+           WHERE rd.draft_id = d.id AND cr.case_id = $2
+         )
+       )`, [draftId, access.case_id]
+    );
+    return rows[0] || null;
+  }
+
+  public async addPortalComment(tokenHash: string, draftId: string, content: string): Promise<any> {
+    const access = await this.resolvePortalAccess(tokenHash);
+    const draft = access ? await this.getPermittedPortalDraft(tokenHash, draftId) : null;
+    if (!access || !draft) throw new Error("Shared Work Product not found");
+    const id = `comment_${randomUUID()}`;
+    const createdAt = new Date().toISOString();
+    const rows = await this.query(
+      `INSERT INTO portal_comments(id, case_id, draft_id, content, created_at)
+       VALUES($1, $2, $3, $4, $5) RETURNING *`,
+      [id, access.case_id, draftId, content, createdAt]
+    );
+    return rows[0];
+  }
+
+  public async createPortalClientRevision(
+    tokenHash: string, draftId: string, content: string
+  ): Promise<any> {
+    const access = await this.resolvePortalAccess(tokenHash);
+    const original = access ? await this.getPermittedPortalDraft(tokenHash, draftId) : null;
+    if (!access || !original) throw new Error("Shared Work Product not found");
+    const id = `draft_${randomUUID()}`;
+    const now = new Date().toISOString();
+    const rows = await this.query(
+      `INSERT INTO drafts
+        (id, thread_id, case_id, title, content, created_at, updated_at, origin,
+         parent_draft_id, revision_type)
+       VALUES($1, NULL, $2, $3, $4, $5, $5, 'Client Revision', $6, 'Client Revision')
+       RETURNING *`,
+      [id, access.case_id, `${original.title} (Client Revision)`, content, now, original.id]
+    );
+    return rows[0];
+  }
+
+  public async createPortalResponse(
+    tokenHash: string, requestId: string, responseType: string, content: string | null,
+    documentId: string | null, draftId: string | null
+  ): Promise<any> {
+    const access = await this.resolvePortalAccess(tokenHash);
+    if (!access) throw new Error("Client access not found");
+    const request = (await this.query(
+      "SELECT id FROM collaboration_requests WHERE id = $1 AND case_id = $2",
+      [requestId, access.case_id]
+    ))[0];
+    if (!request) throw new Error("Client request not found");
+    if (documentId) {
+      const document = await this.query(
+        `SELECT id FROM documents WHERE id = $1 AND case_id = $2 AND firm_id = $3
+         AND source_type = 'Client Submission'`, [documentId, access.case_id, access.firm_id]
+      );
+      if (!document[0]) throw new Error("Portal document not found");
+    }
+    if (draftId && !(await this.getPermittedPortalDraft(tokenHash, draftId))) {
+      throw new Error("Portal Work Product not found");
+    }
+    const id = `response_${randomUUID()}`;
+    const rows = await this.query(
+      `INSERT INTO client_responses
+        (id, request_id, response_type, content, document_id, draft_id, is_read, created_at)
+       VALUES($1, $2, $3, $4, $5, $6, FALSE, $7) RETURNING *`,
+      [id, requestId, responseType, content, documentId, draftId, new Date().toISOString()]
+    );
+    return rows[0];
+  }
+
+  public async getPortalAssistantSources(
+    tokenHash: string, draftIds: string[], documentIds: string[]
+  ): Promise<{ access: any; sources: Array<{ id: string; title: string; text: string }> } | null> {
+    const access = await this.resolvePortalAccess(tokenHash);
+    if (!access) return null;
+    const sources: Array<{ id: string; title: string; text: string }> = [];
+    for (const id of Array.from(new Set(draftIds))) {
+      const draft = await this.getPermittedPortalDraft(tokenHash, id);
+      if (!draft) throw new Error("Selected Work Product is not available in this Client Portal");
+      sources.push({ id: draft.id, title: draft.title, text: draft.content });
+    }
+    if (documentIds.length) {
+      const unique = Array.from(new Set(documentIds));
+      const documents = await this.query(
+        `SELECT id, title, extracted_text FROM documents
+         WHERE id = ANY($1::text[]) AND case_id = $2 AND firm_id = $3
+           AND source_type = 'Client Submission'`,
+        [unique, access.case_id, access.firm_id]
+      );
+      if (documents.length !== unique.length) throw new Error("Selected portal document is not available");
+      sources.push(...documents.map((document) => ({ id: document.id, title: document.title, text: document.extracted_text })));
+    }
+    return { access, sources };
   }
 
   public async getDocuments(context: OwnershipContext, caseId: string | null): Promise<Document[]> {

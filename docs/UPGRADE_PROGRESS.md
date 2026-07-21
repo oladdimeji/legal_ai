@@ -245,3 +245,28 @@ Verification:
 - `npm test`: passed, 23/23 tests.
 - `npm run lint`: passed.
 - `npm run build`: passed.
+
+## Phase 9 — Client Portal
+
+Status: Complete.
+
+Implemented:
+
+- Migration 009 adds portal comments. Temporary Client Assistant text remains request-only and is not persisted.
+- `/client/:token` renders a public Client Portal independently of lawyer sessions; API routes hash the token and resolve one active, unrevoked Matter before any data query.
+- The portal contains exactly Shared Documents, Requests, and Assistant tabs with no Client Activity.
+- Shared Work Product can be viewed, downloaded, commented on, and edited only as a separate Client Revision linked to the preserved lawyer original.
+- Requests support acknowledgement, comment, written answer, uploaded/existing portal documents, and Client Revisions.
+- Client uploads are embedded and stored as direct Matter Sources labelled `Client Submission` with client origin.
+- Client Assistant accepts only explicitly selected shared/request Work Product, Client Revisions, direct Client Submissions, or request-scoped temporary text. Its prompt and SQL exclude Firm Library, Matter Intelligence, lawyer conversations, external legal research, web search, and connectors.
+- Portal content is never automatically sent to the lawyer; only explicit comments and request responses enter Collaboration.
+
+Verification:
+
+- Migration 009 applied exactly once.
+- Live token verification passed shared view/download/comment, copy-not-overwrite, client upload classification, request response, and selected-document Client Assistant grounding.
+- Direct IDs for unshared Work Product, another Matter's Work Product, and Firm Library content were denied.
+- Revocation immediately blocked portal summary, Work Product, and Assistant routes using the prior link.
+- `npm test`: passed, 27/27 tests.
+- `npm run lint`: passed.
+- `npm run build`: passed.
