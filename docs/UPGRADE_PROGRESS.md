@@ -34,11 +34,11 @@ Verification:
 - `npm run lint`: passed.
 - `npm run build`: passed.
 - Code-path verification confirms disabled seeding returns before demo writes and no startup cleanup delete remains.
-- No live database migration was executed because no deployment database/legacy credentials were supplied to this verification environment.
+- Live validation-database verification passed on 2026-07-21: migrations 001–004 applied once, protected pre-existing row counts reconciled without deletion, demo seeding remained disabled across restarts, and the vector index retained its identity.
 
 ## Phase 1 — Authentication and Ownership
 
-Status: Complete (code and static verification; live legacy migration requires deployment secrets/database).
+Status: Complete (code, automated, and live validation-database verification).
 
 Implemented:
 
@@ -58,11 +58,12 @@ Verification:
 - `npm test`: passed, 5 tests.
 - `npm run lint`: passed.
 - `npm run build`: passed.
-- No live database or legacy secret was available, so database-backed signup/login and the legacy backfill require manual deployment verification.
+- Live legacy login/backfill passed with the exact configured owner; five null-Matter drafts were preserved in one imported `On Hold` Matter.
+- Live signup/session/login/logout checks passed for two temporary accounts, including separate empty workspaces, case-insensitive duplicate rejection, uniform invalid-login errors, and server-side logout invalidation.
 
 ## Phase 2 — Search and Context Isolation
 
-Status: Complete (code and static verification; live multi-account database verification remains required).
+Status: Complete (code, automated, and live multi-account/multi-Matter verification).
 
 Implemented:
 
@@ -85,7 +86,10 @@ Verification:
 - `npm run lint`: passed.
 - `npm run build`: passed.
 - Static regression tests confirm legacy global query shapes are absent and General/Matter vector ownership predicates precede ranking/limit.
-- Live two-user/two-Matter checks and legacy migration row-count reconciliation require a configured database and approved legacy secrets before Phase 3.
+- Live two-user/two-Matter direct-ID substitution passed without foreign disclosure or mutation.
+- Live deterministic upload/search checks passed for General, direct Matter, linked Firm Library, unlinked Firm Library, cross-Matter, and cross-workspace boundaries.
+- Live conversation deletion preserved Work Product and cleared only its thread reference; actual generated Work Product stayed on the correct Matter and created no parallel Source document.
+- Full sanitized evidence is recorded in `docs/FOUNDATION_VERIFICATION.md`.
 
 Known retained behavior:
 
@@ -93,3 +97,14 @@ Known retained behavior:
 - Existing redundant `case_documents` rows are preserved.
 - The global Drafts navigation remains until Phase 6; in General context it now returns no Work Product because saving/listing requires a Matter.
 - Navigation remains otherwise unchanged; Phase 3 was not implemented.
+
+## Foundation live verification gate
+
+Status: Passed on 2026-07-21.
+
+- Pre-migration ownership inspection found no ambiguous legacy owner, duplicate email, missing Firm ownership, or cross-workspace relationship.
+- `npm test`: passed, 9/9 tests.
+- `npm run lint`: passed.
+- `npm run build`: passed.
+- No foundation defect was found and no `fix(foundation):` commit was needed.
+- Before Phase 3, remove `LEGACY_OWNER_INITIAL_PASSWORD` from the runtime environment and restart once to confirm the stored legacy password hash remains sufficient.
