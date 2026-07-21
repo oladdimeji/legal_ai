@@ -66,6 +66,7 @@ export interface Thread {
   scope: Scope;
   title: string;
   created_at: string;
+  last_activity_at?: string;
 }
 
 export interface Citation {

@@ -708,14 +708,17 @@ class DatabaseService {
 
   public async getHistoryThreads(context: OwnershipContext): Promise<Thread[]> {
     return await this.query(
-      `SELECT t.* FROM threads t
+      `SELECT t.*, COALESCE(MAX(m.created_at), t.created_at) AS last_activity_at
+       FROM threads t
+       LEFT JOIN messages m ON m.thread_id = t.id
        WHERE t.user_id = $1
          AND (
            t.case_id IS NULL OR EXISTS (
              SELECT 1 FROM cases c WHERE c.id = t.case_id AND c.firm_id = $2
            )
          )
-       ORDER BY t.created_at DESC`,
+       GROUP BY t.id
+       ORDER BY COALESCE(MAX(m.created_at), t.created_at) DESC`,
       [context.userId, context.firmId]
     );
   }

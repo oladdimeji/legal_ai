@@ -66,12 +66,12 @@ Rollback/failure: migration columns remain harmless if frontend/server commit is
 
 ### Checklist
 
-- [ ] Modify `src/components/AssistantView.tsx` to show a persistent General/Matter selector and selected-context banner using Matter language.
-- [ ] Modify `src/App.tsx` so context transitions clear incompatible active threads and History opening restores the stored context.
-- [ ] Modify `src/components/HistoryView.tsx` to group General Assistant and one section per Matter, each sorted by recent activity.
-- [ ] Modify `server/db.ts` history ordering to use latest message activity while preserving stored thread context as authoritative.
-- [ ] Modify `server.ts` only where response metadata is needed; do not weaken established search/thread ownership.
-- [ ] Add tests asserting General/Matter visible language, grouping, context clearing, stored-context restoration, and unchanged SQL isolation.
+- [x] Modify `src/components/AssistantView.tsx` to show a persistent General/Matter selector and selected-context banner using Matter language.
+- [x] Confirm `src/App.tsx` context transitions clear incompatible active threads and History opening restores the stored context.
+- [x] Modify `src/components/HistoryView.tsx` to group General Assistant and one section per Matter, each sorted by recent activity.
+- [x] Modify `server/db.ts` history ordering to use latest message activity while preserving stored thread context as authoritative.
+- [x] Keep `server.ts` unchanged because existing History response serialization already carries the added activity metadata.
+- [x] Add tests asserting General/Matter visible language, grouping, context clearing, stored-context restoration, and unchanged SQL isolation.
 
 Database migrations: none unless a non-destructive activity index is demonstrably needed; prefer existing timestamps.  
 Backfill: none; existing General and Matter threads already carry authoritative `case_id`/scope.  

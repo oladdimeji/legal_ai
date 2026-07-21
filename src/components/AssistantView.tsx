@@ -817,7 +817,7 @@ export default function AssistantView({
             ref={textareaRef}
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
-            placeholder={activeCaseId ? "Analyze or query specific documents in this case..." : "Ask a legal question across your wide legal database..."}
+            placeholder={activeCaseId ? "Ask about Sources in the selected Matter..." : "Ask using the Firm Library and permitted external sources..."}
             className="w-full min-h-[64px] max-h-[180px] p-1.5 border-none outline-none focus:ring-0 text-sm text-zinc-900 placeholder-zinc-400 font-sans transition-all resize-none bg-white"
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
@@ -841,7 +841,7 @@ export default function AssistantView({
                   }}
                   className="appearance-none bg-white border border-zinc-200 text-xs font-mono font-semibold text-zinc-600 hover:text-zinc-900 px-2.5 py-1.5 pr-7 rounded focus:outline-none cursor-pointer hover:border-zinc-300 transition-all"
                 >
-                  <option value="wide">📁 Wide Library</option>
+                  <option value="wide">General Assistant</option>
                   {cases.map((c) => (
                     <option key={c.id} value={c.id}>
                       💼 {c.name.length > 15 ? `${c.name.substring(0, 15)}...` : c.name}
@@ -861,7 +861,7 @@ export default function AssistantView({
                   onClick={() => setFilesAndSourcesOpen(!filesAndSourcesOpen)}
                   id="files-and-sources-picker"
                   className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-mono font-semibold text-zinc-600 hover:text-zinc-900 border border-zinc-200 rounded bg-white transition-all cursor-pointer hover:border-zinc-300"
-                  title="Toggle case attachments and external connector APIs"
+                  title="Choose Matter Sources and permitted external connectors"
                 >
                   <Paperclip className="h-3.5 w-3.5 shrink-0" />
                   <span>Files and sources</span>
@@ -881,7 +881,7 @@ export default function AssistantView({
                     
                     {/* Additional files attachment entries */}
                     <div className="border-b border-zinc-100 pb-3">
-                      <span className="text-[10px] font-mono uppercase text-zinc-400 font-semibold block mb-2 tracking-wider">Workspace & Attachments</span>
+                      <span className="text-[10px] font-mono uppercase text-zinc-400 font-semibold block mb-2 tracking-wider">Context Sources</span>
                       <div className="space-y-2">
                         <button
                           type="button"
@@ -1213,7 +1213,7 @@ export default function AssistantView({
             {/* Simple Thread Title Header (Only if there are messages) */}
             <div className="px-8 py-4.5 bg-zinc-50 border-b border-zinc-100 flex items-center justify-between z-10 select-none shrink-0" id="active-thread-header">
               <div>
-                <span className="text-xs font-mono font-semibold uppercase text-zinc-400 tracking-wider">Active Consultation</span>
+                <span className="text-xs font-mono font-semibold uppercase text-zinc-400 tracking-wider">{activeCaseId ? `Matter Context · ${cases.find((matter) => matter.id === activeCaseId)?.name || "Matter"}` : "General Assistant Context"}</span>
                 <h2 className="text-sm font-sans font-semibold text-zinc-800 line-clamp-1 mt-0.5">
                   {activeThreadId ? threads.find(t => t.id === activeThreadId)?.title || "Consultation Thread" : "New Consultation"}
                 </h2>
@@ -1458,9 +1458,9 @@ export default function AssistantView({
                 <div className="w-12 h-12 rounded-full bg-zinc-100 border border-zinc-200 flex items-center justify-center mb-5">
                   <MessageSquare className="h-5 w-5 text-zinc-800" />
                 </div>
-                <h1 className="text-xl font-bold text-zinc-900 uppercase tracking-tight font-sans">AI Legal Assistant</h1>
+                <h1 className="text-xl font-bold text-zinc-900 uppercase tracking-tight font-sans">Legal Assistant</h1>
                 <p className="text-sm text-zinc-500 mt-2.5 max-w-md leading-relaxed">
-                  Formulate queries, select workspace documents, or toggle public law connectors below to initiate your high-fidelity legal consultation.
+                  {activeCaseId ? `Working only with Sources for ${cases.find((matter) => matter.id === activeCaseId)?.name || "this Matter"} and permitted external sources.` : "General context uses only the Firm Library and permitted external sources."}
                 </p>
               </div>
 

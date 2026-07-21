@@ -40,3 +40,23 @@ test("migration 005 adds only additive Matter and Source metadata", async () => 
   assert.match(migrations, /ADD COLUMN IF NOT EXISTS source_type/);
   assert.match(migrations, /ADD COLUMN IF NOT EXISTS link_origin/);
 });
+
+test("Phase 5 Assistant exposes persistent General and Matter context language", async () => {
+  const assistant = await readFile("src/components/AssistantView.tsx", "utf8");
+  assert.match(assistant, />General Assistant<\/option>/);
+  assert.match(assistant, /General Assistant Context/);
+  assert.match(assistant, /Matter Context/);
+  assert.match(assistant, /setActiveThreadId\(null\)[\s\S]*setActiveCaseId/);
+  assert.doesNotMatch(assistant, />📁 Wide Library<\/option>/);
+});
+
+test("Phase 5 History groups by stored context and recent activity", async () => {
+  const [history, database] = await Promise.all([
+    readFile("src/components/HistoryView.tsx", "utf8"),
+    readFile("server/db.ts", "utf8"),
+  ]);
+  assert.match(history, /title: "General Assistant"/);
+  assert.match(history, /thread\.case_id === matter\.id/);
+  assert.match(database, /COALESCE\(MAX\(m\.created_at\), t\.created_at\) AS last_activity_at/);
+  assert.match(database, /WHERE t\.user_id = \$1/);
+});

@@ -155,3 +155,24 @@ Verification:
 - `npm test`: passed, 14/14 tests.
 - `npm run lint`: passed.
 - `npm run build`: passed.
+
+## Phase 5 — Assistant and History Context
+
+Status: Complete.
+
+Implemented:
+
+- Assistant now exposes a persistent General Assistant or specific Matter selector and repeats the selected context in the active-conversation header/empty state.
+- Visible Assistant context language uses General, Firm Library, Matter, and Matter Sources rather than Wide Library or Case workspace terminology.
+- Changing the selector clears the incompatible active thread before changing context.
+- Opening History retains the server-stored `case_id` as authoritative and restores General or the exact Matter before loading the conversation.
+- History is grouped into General Assistant and one section per Matter; each group is ordered by latest message activity with thread creation as fallback.
+- General and Matter retrieval queries were not changed, preserving the verified isolation foundation.
+
+Verification:
+
+- Live owned History loading returned both General and Matter conversations, all with consistent stored scope, ordered by recent activity.
+- Focused tests cover persistent context labels, thread clearing, grouping, activity ordering, and owned History SQL.
+- `npm test`: passed, 16/16 tests.
+- `npm run lint`: passed.
+- `npm run build`: passed.
