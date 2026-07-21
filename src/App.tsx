@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from "react";
 import Sidebar from "./components/Sidebar";
 import AssistantView from "./components/AssistantView";
-import WorkspaceView from "./components/WorkspaceView";
+import FirmLibraryView from "./components/FirmLibraryView";
+import MattersView from "./components/MattersView";
+import SettingsView from "./components/SettingsView";
 import DraftEditorView from "./components/DraftEditorView";
 import HistoryView from "./components/HistoryView";
 import AuthView from "./components/AuthView";
@@ -50,6 +52,12 @@ export default function App() {
     } catch (err) {
       console.error("Error fetching cases list:", err);
     }
+  };
+
+  const handleOpenMatter = (matterId: string) => {
+    setActiveCaseId(matterId);
+    setActiveThreadId(null);
+    setActiveTab("assistant");
   };
 
   const handleNavigateToDrafts = (draftId: string) => {
@@ -127,14 +135,9 @@ export default function App() {
           />
         )}
 
-        {activeTab === "workspace" && (
-          <WorkspaceView 
-            cases={cases}
-            activeCaseId={activeCaseId}
-            setActiveCaseId={setActiveCaseId}
-            onRefreshCases={fetchCases}
-          />
-        )}
+        {activeTab === "matters" && <MattersView matters={cases} onRefresh={fetchCases} onOpenMatter={handleOpenMatter} />}
+
+        {activeTab === "library" && <FirmLibraryView />}
 
         {activeTab === "drafts" && (
           <DraftEditorView 
@@ -156,6 +159,8 @@ export default function App() {
             }}
           />
         )}
+
+        {activeTab === "settings" && <SettingsView user={account.user} onLogout={handleLogout} />}
       </main>
     </div>
   );

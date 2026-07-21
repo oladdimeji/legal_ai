@@ -108,3 +108,25 @@ Status: Passed on 2026-07-21.
 - `npm run build`: passed.
 - No foundation defect was found and no `fix(foundation):` commit was needed.
 - Before Phase 3, remove `LEGACY_OWNER_INITIAL_PASSWORD` from the runtime environment and restart once to confirm the stored legacy password hash remains sufficient.
+
+## Phase 3 — Navigation and Firm Library Separation
+
+Status: Complete.
+
+Implemented:
+
+- Global navigation now exposes Assistant, Matters, Firm Library, temporary Drafts & Documents, History, and Settings while retaining the existing collapsible sidebar and account footer.
+- The combined Workspace & Library view is no longer routed by the application.
+- Matters has a separate global landing page and existing Matter records remain available.
+- Firm Library is a workspace-only view with semantic/keyword search, section browsing, document preview, paste/upload indexing, and removal.
+- Firm Library contains no Matter list, Matter scope selector, or Matter creation control.
+- Minimal Settings displays authenticated name/email and logout.
+- No schema, migration, API, ownership, or retrieval-foundation changes were required.
+
+Verification:
+
+- `npm test`: passed, 11/11 tests.
+- `npm run lint`: passed.
+- `npm run build`: passed.
+- Static/manual inspection confirmed distinct navigation routes and Firm Library requests remain fixed to `caseId=null`/General (`wide`) scope.
+- Phase 4 has not been included in this commit; its stricter starting-input creation flow remains next.

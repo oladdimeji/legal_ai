@@ -1,5 +1,5 @@
 import React from "react";
-import { Scale, MessageSquare, Briefcase, FileText, History, LogOut } from "lucide-react";
+import { Scale, MessageSquare, Briefcase, Building2, FileText, History, LogOut, Settings } from "lucide-react";
 
 interface SidebarProps {
   activeTab: string;
@@ -27,10 +27,12 @@ export default function Sidebar({
   const collapsedActual = isCollapsed;
 
   const navItems = [
-    { id: "assistant", label: "Legal Assistant", icon: MessageSquare },
-    { id: "workspace", label: "Workspace & Library", icon: Briefcase },
+    { id: "assistant", label: "Assistant", icon: MessageSquare },
+    { id: "matters", label: "Matters", icon: Briefcase },
+    { id: "library", label: "Firm Library", icon: Building2 },
     { id: "drafts", label: "Drafts & Documents", icon: FileText },
     { id: "history", label: "History", icon: History },
+    { id: "settings", label: "Settings", icon: Settings },
   ];
 
   return (
