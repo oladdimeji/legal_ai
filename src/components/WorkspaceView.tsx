@@ -132,7 +132,7 @@ export default function WorkspaceView({
     if (!confirm("Are you sure you want to permanently delete this document and its semantic index?")) return;
 
     try {
-      await fetch(`/api/documents/${id}`, { method: "DELETE" });
+      await fetch(`/api/documents/${id}?caseId=${activeCaseId || "null"}`, { method: "DELETE" });
       setDocuments((prev) => prev.filter((d) => d.id !== id));
       if (viewingDoc?.id === id) {
         setViewingDoc(null);

@@ -80,38 +80,38 @@ This checklist implements only the approved foundation phases. Phase 3 navigatio
 
 ### Ownership-aware database methods
 
-- [ ] Every Case read/create validates authenticated `firm_id`.
-- [ ] Every document list/read/upload/delete validates workspace and optional Matter ownership.
-- [ ] Every Case-document link joins through an owned Matter and owned Firm Library document.
-- [ ] Every thread list/read/create/delete validates authenticated user and workspace Matter access.
-- [ ] Every message read/create/update validates ownership through its thread.
-- [ ] Every draft list/read/create/update/export validates ownership through its Matter/workspace.
-- [ ] Imported null-Matter legacy drafts move to one `Imported Legacy Work Product` Matter (`On Hold`) only for the verified legacy workspace.
-- [ ] Preserve redundant Case-document links and ambiguous legacy generated-draft documents.
+- [x] Every Case read/create validates authenticated `firm_id`.
+- [x] Every document list/read/upload/delete validates workspace and optional Matter ownership.
+- [x] Every Case-document link joins through an owned Matter and owned Firm Library document.
+- [x] Every thread list/read/create/delete validates authenticated user and workspace Matter access.
+- [x] Every message read/create/update validates ownership through its thread.
+- [x] Every draft list/read/create/update/export validates ownership through its Matter/workspace.
+- [x] Imported null-Matter legacy drafts move to one `Imported Legacy Work Product` Matter (`On Hold`) only for the verified legacy workspace.
+- [x] Preserve redundant Case-document links and ambiguous legacy generated-draft documents.
 
 ### Search and retrieval isolation
 
-- [ ] General/Firm Library SQL requires authenticated `firm_id` and `documents.case_id IS NULL` before vector ordering/limit.
-- [ ] Matter SQL requires the owned Matter and includes only direct Matter documents plus linked Firm Library documents.
-- [ ] Section suggestion and automatic linking never inspect another workspace or direct Matter documents.
-- [ ] Similarity threshold is applied only after ownership/context predicates and ranking/limit are safe.
-- [ ] General thread/draft listings exclude Matter contexts; Matter listings require the exact owned Matter.
-- [ ] Stored thread context remains authoritative for messages and draft generation.
-- [ ] Opening History restores General or the exact stored Matter context.
+- [x] General/Firm Library SQL requires authenticated `firm_id` and `documents.case_id IS NULL` before vector ordering/limit.
+- [x] Matter SQL requires the owned Matter and includes only direct Matter documents plus linked Firm Library documents.
+- [x] Section suggestion and automatic linking never inspect another workspace or direct Matter documents.
+- [x] Similarity threshold is applied only after ownership/context predicates and ranking/limit are safe.
+- [x] General thread/draft listings exclude Matter contexts; Matter listings require the exact owned Matter.
+- [x] Stored thread context remains authoritative for messages and draft generation.
+- [x] Opening History restores General or the exact stored Matter context.
 
 ### Direct-ID and route protection
 
-- [ ] Treat every URL/body ID as an object selector only, never as ownership.
-- [ ] Return safe 404/403 responses for foreign Case, document, thread, message, and draft IDs.
-- [ ] Do not accept user/firm ownership fields from frontend bodies.
-- [ ] Ensure exports and deletes use the same ownership joins as reads.
-- [ ] Deleting a conversation preserves drafts with their Matter ownership.
+- [x] Treat every URL/body ID as an object selector only, never as ownership.
+- [x] Return safe empty/404 responses for foreign Case, document, thread, message, and draft IDs.
+- [x] Do not accept user/firm ownership fields from frontend bodies.
+- [x] Ensure exports and deletes use the same ownership joins as reads.
+- [x] Deleting a conversation preserves drafts with their Matter ownership.
 
 ### Verification and rollback
 
-- [ ] Add SQL/query-shape and integration-focused tests where database-independent testing is practical.
+- [x] Add SQL/query-shape and integration-focused tests where database-independent testing is practical.
 - [ ] Verify two-user, two-Matter isolation; General exclusion; Firm Library classification; direct-ID denial; history restoration; and Work Product survival.
-- [ ] Run tests, lint, and build.
+- [x] Run tests, lint, and build.
 - [ ] Rollback strategy: revert application commit while retaining additive/backfill migrations; never reverse ownership by deleting records.
 
 ## Deferred beyond this plan

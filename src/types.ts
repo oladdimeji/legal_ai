@@ -35,6 +35,7 @@ export interface Case {
   name: string;
   description: string;
   created_at: string;
+  status?: "Open" | "Waiting for Client" | "On Hold" | "Closed";
 }
 
 export interface CaseDocument {
@@ -80,7 +81,7 @@ export interface Message {
 
 export interface Draft {
   id: string;
-  thread_id: string;
+  thread_id: string | null;
   case_id: string | null;
   title: string;
   content: string; // markdown or plain text editable

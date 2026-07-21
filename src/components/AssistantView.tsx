@@ -488,7 +488,7 @@ export default function AssistantView({
     setSideEditorSaving(true);
     setSideEditorSaveStatus("saving");
     try {
-      const res = await fetch(`/api/messages/${sideEditorMessageId}`, {
+      const res = await fetch(`/api/messages/${sideEditorMessageId}?threadId=${activeThreadId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content: sideEditorContent })
@@ -836,6 +836,7 @@ export default function AssistantView({
                   value={activeCaseId || "wide"}
                   onChange={(e) => {
                     const val = e.target.value;
+                    setActiveThreadId(null);
                     setActiveCaseId(val === "wide" ? null : val);
                   }}
                   className="appearance-none bg-white border border-zinc-200 text-xs font-mono font-semibold text-zinc-600 hover:text-zinc-900 px-2.5 py-1.5 pr-7 rounded focus:outline-none cursor-pointer hover:border-zinc-300 transition-all"

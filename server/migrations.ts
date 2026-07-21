@@ -156,6 +156,36 @@ const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 4,
+    name: "context_isolation_and_legacy_work_product",
+    async run(client) {
+      await client.query(
+        "ALTER TABLE cases ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'Open'"
+      );
+      await client.query(
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS is_generated_draft_duplicate BOOLEAN NOT NULL DEFAULT FALSE"
+      );
+      await client.query(`
+        UPDATE documents d
+        SET is_generated_draft_duplicate = TRUE
+        WHERE d.is_generated_draft_duplicate = FALSE
+          AND EXISTS (
+            SELECT 1
+            FROM drafts w
+            WHERE d.title = 'Draft: ' || w.title
+              AND d.extracted_text = w.content
+              AND d.case_id IS NOT DISTINCT FROM w.case_id
+          )
+      `);
+      await client.query("CREATE INDEX IF NOT EXISTS cases_firm_id_idx ON cases(firm_id)");
+      await client.query(
+        "CREATE INDEX IF NOT EXISTS documents_firm_case_idx ON documents(firm_id, case_id)"
+      );
+      await client.query("CREATE INDEX IF NOT EXISTS threads_user_case_idx ON threads(user_id, case_id)");
+      await client.query("CREATE INDEX IF NOT EXISTS drafts_case_id_idx ON drafts(case_id)");
+    },
+  },
 ];
 
 export async function runMigrations(pool: Pool): Promise<void> {

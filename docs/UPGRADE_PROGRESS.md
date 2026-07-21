@@ -62,4 +62,34 @@ Verification:
 
 ## Phase 2 — Search and Context Isolation
 
-Status: Not started.
+Status: Complete (code and static verification; live multi-account database verification remains required).
+
+Implemented:
+
+- Migration 004 adds the minimal Matter status needed for imported Work Product, classifies only exact generated-draft duplicate documents, and adds ownership-path indexes.
+- Null-Matter legacy drafts are preserved in a deterministic `Imported Legacy Work Product` Matter marked `On Hold`; migration refuses ambiguous ownership.
+- Cases, documents, links, threads, messages, drafts, reads, writes, deletes, and exports now require authenticated ownership context in database methods.
+- Firm Library lists/searches only workspace documents with `case_id IS NULL` and excludes confidently identified generated-draft duplicates.
+- Matter retrieval includes only direct documents for that owned Matter and Firm Library documents linked to that Matter.
+- Workspace and context predicates are inside vector SQL before distance ordering and limiting.
+- Section suggestions and automatic Matter linking use only the authenticated Firm Library.
+- Direct document deletion validates visible context; deleting a linked Firm Library source from a Matter removes only the link.
+- General thread listing is General-only; History has a separate authenticated all-context query.
+- History selection restores the stored General/Matter context; changing Assistant context clears the prior active thread.
+- New generated Work Product requires an owned Matter and no longer produces a parallel Source document.
+- Draft/message direct reads, updates, and exports require matching parent context.
+
+Verification:
+
+- `npm test`: passed, 9 tests.
+- `npm run lint`: passed.
+- `npm run build`: passed.
+- Static regression tests confirm legacy global query shapes are absent and General/Matter vector ownership predicates precede ranking/limit.
+- Live two-user/two-Matter checks and legacy migration row-count reconciliation require a configured database and approved legacy secrets before Phase 3.
+
+Known retained behavior:
+
+- Existing ambiguous generated-draft duplicate documents remain preserved and unclassified for later review.
+- Existing redundant `case_documents` rows are preserved.
+- The global Drafts navigation remains until Phase 6; in General context it now returns no Work Product because saving/listing requires a Matter.
+- Navigation remains otherwise unchanged; Phase 3 was not implemented.

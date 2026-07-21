@@ -3,9 +3,17 @@ import { randomUUID } from "node:crypto";
 import { Document, DocumentChunk, Case, Thread, Message, Draft, Citation } from "../src/types.js";
 import { callModel } from "./model.js";
 import { runMigrations } from "./migrations.js";
-import { migrateLegacyOwnerFromEnvironment } from "./legacyMigration.js";
+import {
+  migrateLegacyDraftsFromEnvironment,
+  migrateLegacyOwnerFromEnvironment,
+} from "./legacyMigration.js";
 
 const { Pool } = pg;
+
+export interface OwnershipContext {
+  userId: string;
+  firmId: string;
+}
 
 // Lazy initialization of Pool
 let poolInstance: pg.Pool | null = null;
@@ -105,6 +113,11 @@ class DatabaseService {
     await migrateLegacyOwnerFromEnvironment(getPool());
   }
 
+  public async migrateLegacyDrafts(): Promise<void> {
+    await this.ensureSchema();
+    await migrateLegacyDraftsFromEnvironment(getPool());
+  }
+
   private async query(text: string, params?: any[]): Promise<any[]> {
     await this.ensureSchema();
     const pool = getPool();
@@ -184,14 +197,6 @@ class DatabaseService {
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
       [docId, firmId, caseId, title, sourceUrl, driveId, text, section, uploadedAt]
     );
-
-    if (caseId) {
-      await this.query(
-        `INSERT INTO case_documents (case_id, document_id) VALUES ($1, $2)
-         ON CONFLICT DO NOTHING`,
-        [caseId, docId]
-      );
-    }
 
     // Paragraph splitting
     const paragraphs = text
@@ -330,28 +335,34 @@ class DatabaseService {
     await this.query("DELETE FROM sessions WHERE token_hash = $1", [tokenHash]);
   }
 
-  public async getCases(): Promise<Case[]> {
-    return await this.query("SELECT * FROM cases ORDER BY created_at DESC");
+  public async getCases(context: OwnershipContext): Promise<Case[]> {
+    return await this.query(
+      "SELECT * FROM cases WHERE firm_id = $1 ORDER BY created_at DESC",
+      [context.firmId]
+    );
   }
 
-  public async getCaseById(id: string): Promise<Case | undefined> {
-    const rows = await this.query("SELECT * FROM cases WHERE id = $1", [id]);
+  public async getCaseById(id: string, context: OwnershipContext): Promise<Case | undefined> {
+    const rows = await this.query("SELECT * FROM cases WHERE id = $1 AND firm_id = $2", [
+      id,
+      context.firmId,
+    ]);
     return rows[0];
   }
 
-  public async createCase(name: string, description: string, firmId: string): Promise<Case> {
+  public async createCase(name: string, description: string, context: OwnershipContext): Promise<Case> {
     const caseId = `case_${Date.now()}`;
     const createdAt = new Date().toISOString();
 
     await this.query(
       `INSERT INTO cases (id, firm_id, name, description, created_at)
        VALUES ($1, $2, $3, $4, $5)`,
-      [caseId, firmId, name, description, createdAt]
+      [caseId, context.firmId, name, description, createdAt]
     );
 
     const newCase: Case = {
       id: caseId,
-      firm_id: firmId,
+      firm_id: context.firmId,
       name,
       description,
       created_at: createdAt
@@ -359,17 +370,25 @@ class DatabaseService {
 
     try {
       console.log(`Auto-attaching documents for case: "${name}" based on description context...`);
-      const searchResults = await this.vectorSearch(description, "wide", 3);
+      const searchResults = description
+        ? await this.vectorSearch(description, "wide", context, 3)
+        : [];
       
       const attachedDocIds = new Set<string>();
       for (const chunk of searchResults) {
-        const doc = await this.getDocumentById(chunk.document_id);
+        const doc = await this.getDocumentById(chunk.document_id, context, null);
         if (doc && !attachedDocIds.has(doc.id)) {
           attachedDocIds.add(doc.id);
           await this.query(
-            `INSERT INTO case_documents (case_id, document_id) VALUES ($1, $2)
+            `INSERT INTO case_documents (case_id, document_id)
+             SELECT c.id, d.id
+             FROM cases c
+             JOIN documents d ON d.id = $2
+             WHERE c.id = $1 AND c.firm_id = $3
+               AND d.firm_id = $3 AND d.case_id IS NULL
+               AND d.is_generated_draft_duplicate = FALSE
              ON CONFLICT DO NOTHING`,
-            [caseId, doc.id]
+            [caseId, doc.id, context.firmId]
           );
           console.log(`Auto-attached document: "${doc.title}" (Score: ${chunk.similarity.toFixed(4)})`);
         }
@@ -381,32 +400,74 @@ class DatabaseService {
     return newCase;
   }
 
-  public async getDocuments(caseId: string | null = null): Promise<Document[]> {
+  public async getDocuments(context: OwnershipContext, caseId: string | null): Promise<Document[]> {
     if (!caseId) {
-      return await this.query("SELECT * FROM documents ORDER BY uploaded_at DESC");
+      return await this.query(
+        `SELECT * FROM documents
+         WHERE firm_id = $1 AND case_id IS NULL AND is_generated_draft_duplicate = FALSE
+         ORDER BY uploaded_at DESC`,
+        [context.firmId]
+      );
     }
     return await this.query(
-      `SELECT DISTINCT d.* FROM documents d
-       LEFT JOIN case_documents cd ON cd.document_id = d.id
-       WHERE d.case_id = $1 OR cd.case_id = $1
+      `SELECT d.*
+       FROM documents d
+       WHERE d.firm_id = $1
+         AND d.is_generated_draft_duplicate = FALSE
+         AND EXISTS (SELECT 1 FROM cases c WHERE c.id = $2 AND c.firm_id = $1)
+         AND (
+           d.case_id = $2 OR (
+             d.case_id IS NULL AND EXISTS (
+               SELECT 1 FROM case_documents cd
+               WHERE cd.case_id = $2 AND cd.document_id = d.id
+             )
+           )
+         )
        ORDER BY d.uploaded_at DESC`,
-      [caseId]
+      [context.firmId, caseId]
     );
   }
 
-  public async getDocumentById(id: string): Promise<Document | undefined> {
-    const rows = await this.query("SELECT * FROM documents WHERE id = $1", [id]);
+  public async getDocumentById(
+    id: string,
+    context: OwnershipContext,
+    caseId: string | null
+  ): Promise<Document | undefined> {
+    const rows = caseId
+      ? await this.query(
+          `SELECT d.* FROM documents d
+           WHERE d.id = $1 AND d.firm_id = $2 AND d.is_generated_draft_duplicate = FALSE
+             AND EXISTS (SELECT 1 FROM cases c WHERE c.id = $3 AND c.firm_id = $2)
+             AND (
+               d.case_id = $3 OR (
+                 d.case_id IS NULL AND EXISTS (
+                   SELECT 1 FROM case_documents cd
+                   WHERE cd.case_id = $3 AND cd.document_id = d.id
+                 )
+               )
+             )`,
+          [id, context.firmId, caseId]
+        )
+      : await this.query(
+          `SELECT * FROM documents
+           WHERE id = $1 AND firm_id = $2 AND case_id IS NULL
+             AND is_generated_draft_duplicate = FALSE`,
+          [id, context.firmId]
+        );
     return rows[0];
   }
 
   public async uploadDocument(
     title: string,
     text: string,
-    firmId: string,
+    context: OwnershipContext,
     sourceUrl: string | null = null,
     driveId: string | null = null,
     caseId: string | null = null
   ): Promise<Document> {
+    if (caseId && !(await this.getCaseById(caseId, context))) {
+      throw new Error("Matter not found");
+    }
     let suggestedSection = "General Legal Advice";
     try {
       const docEmbedding = await callModel("embedding", [], { textToEmbed: text.substring(0, 500) }) as number[];
@@ -416,10 +477,12 @@ class DatabaseService {
         `SELECT d.section, AVG(1 - (dc.embedding <=> $1::vector)) as avg_sim
          FROM document_chunks dc
          JOIN documents d ON dc.document_id = d.id
+         WHERE d.firm_id = $2 AND d.case_id IS NULL
+           AND d.is_generated_draft_duplicate = FALSE
          GROUP BY d.section
          ORDER BY avg_sim DESC
          LIMIT 1`,
-        [vectorStr]
+        [vectorStr, context.firmId]
       );
 
       if (rows.length > 0 && rows[0].avg_sim > 0.3) {
@@ -429,16 +492,59 @@ class DatabaseService {
       console.error("Error suggesting section for document:", e);
     }
 
-    return await this.addDocumentInternal(title, text, suggestedSection, sourceUrl, driveId, caseId, firmId);
+    return await this.addDocumentInternal(
+      title,
+      text,
+      suggestedSection,
+      sourceUrl,
+      driveId,
+      caseId,
+      context.firmId
+    );
   }
 
-  public async deleteDocument(id: string): Promise<void> {
-    await this.query("DELETE FROM documents WHERE id = $1", [id]);
+  public async deleteDocument(
+    id: string,
+    context: OwnershipContext,
+    caseId: string | null
+  ): Promise<boolean> {
+    if (caseId) {
+      const directDocument = await this.query(
+        `DELETE FROM documents d
+         WHERE d.id = $1 AND d.firm_id = $2 AND d.case_id = $3
+           AND EXISTS (SELECT 1 FROM cases c WHERE c.id = $3 AND c.firm_id = $2)
+         RETURNING d.id`,
+        [id, context.firmId, caseId]
+      );
+      if (directDocument.length === 1) return true;
+
+      const linkedLibraryDocument = await this.query(
+        `DELETE FROM case_documents cd
+         WHERE cd.case_id = $1 AND cd.document_id = $2
+           AND EXISTS (SELECT 1 FROM cases c WHERE c.id = cd.case_id AND c.firm_id = $3)
+           AND EXISTS (
+             SELECT 1 FROM documents d
+             WHERE d.id = cd.document_id AND d.firm_id = $3 AND d.case_id IS NULL
+           )
+         RETURNING cd.document_id`,
+        [caseId, id, context.firmId]
+      );
+      return linkedLibraryDocument.length === 1;
+    }
+
+    const libraryDocument = await this.query(
+      `DELETE FROM documents
+       WHERE id = $1 AND firm_id = $2 AND case_id IS NULL
+       RETURNING id`,
+      [id, context.firmId]
+    );
+    return libraryDocument.length === 1;
   }
 
   public async vectorSearch(
     query: string,
     scope: "wide" | string,
+    context: OwnershipContext,
     limit = 5
   ): Promise<(DocumentChunk & { similarity: number })[]> {
     let queryEmbedding: number[];
@@ -455,37 +561,89 @@ class DatabaseService {
       return await this.query(
         `SELECT dc.id, dc.document_id, dc.chunk_text, (1 - (dc.embedding <=> $1::vector))::float as similarity
          FROM document_chunks dc
+         JOIN documents d ON d.id = dc.document_id
+         WHERE d.firm_id = $2 AND d.case_id IS NULL
+           AND d.is_generated_draft_duplicate = FALSE
          ORDER BY dc.embedding <=> $1::vector
-         LIMIT $2`,
-        [vectorStr, limit]
+         LIMIT $3`,
+        [vectorStr, context.firmId, limit]
       );
     } else {
       return await this.query(
         `SELECT dc.id, dc.document_id, dc.chunk_text, (1 - (dc.embedding <=> $1::vector))::float as similarity
          FROM document_chunks dc
          JOIN documents d ON dc.document_id = d.id
-         LEFT JOIN case_documents cd ON cd.document_id = d.id
-         WHERE d.case_id = $2 OR cd.case_id = $2
+         WHERE d.firm_id = $2 AND d.is_generated_draft_duplicate = FALSE
+           AND EXISTS (SELECT 1 FROM cases c WHERE c.id = $3 AND c.firm_id = $2)
+           AND (
+             d.case_id = $3 OR (
+               d.case_id IS NULL AND EXISTS (
+                 SELECT 1 FROM case_documents cd
+                 WHERE cd.case_id = $3 AND cd.document_id = d.id
+               )
+             )
+           )
          ORDER BY dc.embedding <=> $1::vector
-         LIMIT $3`,
-        [vectorStr, scope, limit]
+         LIMIT $4`,
+        [vectorStr, context.firmId, scope, limit]
       );
     }
   }
 
-  public async getThreads(caseId: string | null = null): Promise<Thread[]> {
+  public async getThreads(context: OwnershipContext, caseId: string | null): Promise<Thread[]> {
     if (caseId) {
-      return await this.query("SELECT * FROM threads WHERE case_id = $1 ORDER BY created_at DESC", [caseId]);
+      return await this.query(
+        `SELECT t.* FROM threads t
+         JOIN cases c ON c.id = t.case_id
+         WHERE t.user_id = $1 AND t.case_id = $2 AND c.firm_id = $3
+         ORDER BY t.created_at DESC`,
+        [context.userId, caseId, context.firmId]
+      );
     }
-    return await this.query("SELECT * FROM threads ORDER BY created_at DESC");
+    return await this.query(
+      `SELECT * FROM threads
+       WHERE user_id = $1 AND case_id IS NULL
+       ORDER BY created_at DESC`,
+      [context.userId]
+    );
   }
 
-  public async getThreadById(id: string): Promise<Thread | undefined> {
-    const rows = await this.query("SELECT * FROM threads WHERE id = $1", [id]);
+  public async getHistoryThreads(context: OwnershipContext): Promise<Thread[]> {
+    return await this.query(
+      `SELECT t.* FROM threads t
+       WHERE t.user_id = $1
+         AND (
+           t.case_id IS NULL OR EXISTS (
+             SELECT 1 FROM cases c WHERE c.id = t.case_id AND c.firm_id = $2
+           )
+         )
+       ORDER BY t.created_at DESC`,
+      [context.userId, context.firmId]
+    );
+  }
+
+  public async getThreadById(id: string, context: OwnershipContext): Promise<Thread | undefined> {
+    const rows = await this.query(
+      `SELECT t.* FROM threads t
+       WHERE t.id = $1 AND t.user_id = $2
+         AND (
+           t.case_id IS NULL OR EXISTS (
+             SELECT 1 FROM cases c WHERE c.id = t.case_id AND c.firm_id = $3
+           )
+         )`,
+      [id, context.userId, context.firmId]
+    );
     return rows[0];
   }
 
-  public async createThread(title: string, caseId: string | null, userId: string): Promise<Thread> {
+  public async createThread(
+    title: string,
+    caseId: string | null,
+    context: OwnershipContext
+  ): Promise<Thread> {
+    if (caseId && !(await this.getCaseById(caseId, context))) {
+      throw new Error("Matter not found");
+    }
     const threadId = `thread_${Date.now()}`;
     const createdAt = new Date().toISOString();
     const scope = caseId ? "case" : "wide";
@@ -494,12 +652,12 @@ class DatabaseService {
     await this.query(
       `INSERT INTO threads (id, user_id, case_id, scope, title, created_at)
        VALUES ($1, $2, $3, $4, $5, $6)`,
-      [threadId, userId, caseId, scope, finalTitle, createdAt]
+      [threadId, context.userId, caseId, scope, finalTitle, createdAt]
     );
 
     return {
       id: threadId,
-      user_id: userId,
+      user_id: context.userId,
       case_id: caseId,
       scope,
       title: finalTitle,
@@ -507,12 +665,34 @@ class DatabaseService {
     };
   }
 
-  public async deleteThread(id: string): Promise<void> {
-    await this.query("DELETE FROM threads WHERE id = $1", [id]);
+  public async deleteThread(id: string, context: OwnershipContext): Promise<boolean> {
+    const rows = await this.query(
+      `DELETE FROM threads t
+       WHERE t.id = $1 AND t.user_id = $2
+         AND (
+           t.case_id IS NULL OR EXISTS (
+             SELECT 1 FROM cases c WHERE c.id = t.case_id AND c.firm_id = $3
+           )
+         )
+       RETURNING t.id`,
+      [id, context.userId, context.firmId]
+    );
+    return rows.length === 1;
   }
 
-  public async getMessages(threadId: string): Promise<Message[]> {
-    const rows = await this.query("SELECT * FROM messages WHERE thread_id = $1 ORDER BY created_at ASC", [threadId]);
+  public async getMessages(threadId: string, context: OwnershipContext): Promise<Message[]> {
+    const rows = await this.query(
+      `SELECT m.* FROM messages m
+       JOIN threads t ON t.id = m.thread_id
+       WHERE m.thread_id = $1 AND t.user_id = $2
+         AND (
+           t.case_id IS NULL OR EXISTS (
+             SELECT 1 FROM cases c WHERE c.id = t.case_id AND c.firm_id = $3
+           )
+         )
+       ORDER BY m.created_at ASC`,
+      [threadId, context.userId, context.firmId]
+    );
     return rows.map((m) => ({
       ...m,
       citations: typeof m.citations === "string" ? JSON.parse(m.citations) : m.citations,
@@ -524,17 +704,37 @@ class DatabaseService {
     threadId: string,
     role: "user" | "assistant",
     content: string,
+    context: OwnershipContext,
     citations: Citation[] = [],
     steps: any[] | null = null
   ): Promise<Message> {
     const msgId = `msg_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const createdAt = new Date().toISOString();
 
-    await this.query(
+    const inserted = await this.query(
       `INSERT INTO messages (id, thread_id, role, content, citations, steps, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [msgId, threadId, role, content, JSON.stringify(citations), JSON.stringify(steps), createdAt]
+       SELECT $1, t.id, $3, $4, $5, $6, $7
+       FROM threads t
+       WHERE t.id = $2 AND t.user_id = $8
+         AND (
+           t.case_id IS NULL OR EXISTS (
+             SELECT 1 FROM cases c WHERE c.id = t.case_id AND c.firm_id = $9
+           )
+         )
+       RETURNING id`,
+      [
+        msgId,
+        threadId,
+        role,
+        content,
+        JSON.stringify(citations),
+        JSON.stringify(steps),
+        createdAt,
+        context.userId,
+        context.firmId,
+      ]
     );
+    if (inserted.length !== 1) throw new Error("Thread not found");
 
     return {
       id: msgId,
@@ -547,10 +747,26 @@ class DatabaseService {
     };
   }
 
-  public async updateMessage(id: string, content: string): Promise<Message> {
+  public async updateMessage(
+    id: string,
+    threadId: string,
+    content: string,
+    context: OwnershipContext
+  ): Promise<Message> {
     const rows = await this.query(
-      `UPDATE messages SET content = $1 WHERE id = $2 RETURNING *`,
-      [content, id]
+      `UPDATE messages m SET content = $1
+       WHERE m.id = $2 AND m.thread_id = $3
+         AND EXISTS (
+           SELECT 1 FROM threads t
+           WHERE t.id = m.thread_id AND t.user_id = $4
+             AND (
+               t.case_id IS NULL OR EXISTS (
+                 SELECT 1 FROM cases c WHERE c.id = t.case_id AND c.firm_id = $5
+               )
+             )
+         )
+       RETURNING m.*`,
+      [content, id, threadId, context.userId, context.firmId]
     );
     if (rows.length === 0) {
       throw new Error("Message not found");
@@ -563,15 +779,28 @@ class DatabaseService {
     };
   }
 
-  public async getDrafts(caseId: string | null = null): Promise<Draft[]> {
-    if (caseId) {
-      return await this.query("SELECT * FROM drafts WHERE case_id = $1 ORDER BY created_at DESC", [caseId]);
-    }
-    return await this.query("SELECT * FROM drafts ORDER BY created_at DESC");
+  public async getDrafts(context: OwnershipContext, caseId: string | null): Promise<Draft[]> {
+    if (!caseId) return [];
+    return await this.query(
+      `SELECT d.* FROM drafts d
+       JOIN cases c ON c.id = d.case_id
+       WHERE d.case_id = $1 AND c.firm_id = $2
+       ORDER BY d.created_at DESC`,
+      [caseId, context.firmId]
+    );
   }
 
-  public async getDraftById(id: string): Promise<Draft | undefined> {
-    const rows = await this.query("SELECT * FROM drafts WHERE id = $1", [id]);
+  public async getDraftById(
+    id: string,
+    caseId: string,
+    context: OwnershipContext
+  ): Promise<Draft | undefined> {
+    const rows = await this.query(
+      `SELECT d.* FROM drafts d
+       JOIN cases c ON c.id = d.case_id
+       WHERE d.id = $1 AND d.case_id = $2 AND c.firm_id = $3`,
+      [id, caseId, context.firmId]
+    );
     return rows[0];
   }
 
@@ -579,16 +808,24 @@ class DatabaseService {
     threadId: string,
     caseId: string | null,
     title: string,
-    content: string
+    content: string,
+    context: OwnershipContext
   ): Promise<Draft> {
+    if (!caseId) throw new Error("A Matter is required before saving Work Product");
     const draftId = `draft_${Date.now()}`;
     const createdAt = new Date().toISOString();
 
-    await this.query(
+    const inserted = await this.query(
       `INSERT INTO drafts (id, thread_id, case_id, title, content, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [draftId, threadId, caseId, title, content, createdAt]
+       SELECT $1, t.id, t.case_id, $4, $5, $6
+       FROM threads t
+       JOIN cases c ON c.id = t.case_id
+       WHERE t.id = $2 AND t.case_id = $3
+         AND t.user_id = $7 AND c.firm_id = $8
+       RETURNING id`,
+      [draftId, threadId, caseId, title, content, createdAt, context.userId, context.firmId]
     );
+    if (inserted.length !== 1) throw new Error("Thread or Matter not found");
 
     return {
       id: draftId,
@@ -600,10 +837,18 @@ class DatabaseService {
     };
   }
 
-  public async updateDraft(id: string, content: string): Promise<Draft> {
+  public async updateDraft(
+    id: string,
+    caseId: string,
+    content: string,
+    context: OwnershipContext
+  ): Promise<Draft> {
     const rows = await this.query(
-      `UPDATE drafts SET content = $1 WHERE id = $2 RETURNING *`,
-      [content, id]
+      `UPDATE drafts d SET content = $1
+       WHERE d.id = $2 AND d.case_id = $3
+         AND EXISTS (SELECT 1 FROM cases c WHERE c.id = d.case_id AND c.firm_id = $4)
+       RETURNING d.*`,
+      [content, id, caseId, context.firmId]
     );
     if (rows.length === 0) {
       throw new Error("Draft not found");

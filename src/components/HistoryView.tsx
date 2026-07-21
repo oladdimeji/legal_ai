@@ -5,7 +5,7 @@ import { Calendar, MessageSquare, ArrowRight, Trash2, ShieldAlert } from "lucide
 interface HistoryViewProps {
   cases: Case[];
   activeThreadId: string | null;
-  onSelectThread: (threadId: string) => void;
+  onSelectThread: (thread: Thread) => void;
   onRefreshThreads?: () => void;
 }
 
@@ -21,7 +21,7 @@ export default function HistoryView({
   const fetchAllThreads = async () => {
     try {
       setLoading(true);
-      const res = await fetch("/api/threads");
+      const res = await fetch("/api/threads?history=true");
       const data = await res.json();
       // Sort threads by created_at descending
       const sorted = data.sort((a: Thread, b: Thread) => 
@@ -108,7 +108,7 @@ export default function HistoryView({
               <div
                 key={thread.id}
                 id={`thread-card-${thread.id}`}
-                onClick={() => onSelectThread(thread.id)}
+                onClick={() => onSelectThread(thread)}
                 className={`p-5 rounded-lg border text-left cursor-pointer transition-all flex flex-col justify-between group ${
                   isCurrent
                     ? "border-zinc-900 bg-zinc-50 ring-1 ring-zinc-950"

@@ -35,6 +35,9 @@ export default function DraftEditorView({
   const [redoStack, setRedoStack] = useState<string[]>([]);
 
   useEffect(() => {
+    setActiveDraft(null);
+    setTitle("");
+    setContent("");
     fetchDrafts();
   }, [caseId]);
 
@@ -60,7 +63,8 @@ export default function DraftEditorView({
 
   const loadSpecificDraft = async (id: string) => {
     try {
-      const res = await fetch(`/api/drafts/${id}`);
+      if (!caseId) return;
+      const res = await fetch(`/api/drafts/${id}?caseId=${caseId}`);
       const data = await res.json();
       if (data.id) {
         selectDraft(data);
@@ -91,7 +95,8 @@ export default function DraftEditorView({
     setSaving(true);
     setSaveStatus("saving");
     try {
-      const res = await fetch(`/api/drafts/${activeDraft.id}`, {
+      if (!caseId) return;
+      const res = await fetch(`/api/drafts/${activeDraft.id}?caseId=${caseId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content })
@@ -114,7 +119,8 @@ export default function DraftEditorView({
 
   const handleExportDocx = () => {
     if (!activeDraft) return;
-    window.open(`/api/drafts/${activeDraft.id}/export`, "_blank");
+    if (!caseId) return;
+    window.open(`/api/drafts/${activeDraft.id}/export?caseId=${caseId}`, "_blank");
   };
 
   // Requirement 8 Text Manipulations

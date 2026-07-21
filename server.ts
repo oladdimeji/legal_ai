@@ -3,6 +3,7 @@ import type { NextFunction, Request, Response } from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import { db } from "./server/db.js";
+import type { OwnershipContext } from "./server/db.js";
 import { callModel, MODEL_CONFIGS } from "./server/model.js";
 import { CourtListenerAdapter } from "./server/connectors/courtlistener.js";
 import { GovInfoAdapter } from "./server/connectors/govinfo.js";
@@ -33,6 +34,19 @@ interface AuthenticatedRequest extends Request {
   };
 }
 
+function ownership(req: Request): OwnershipContext {
+  const auth = (req as AuthenticatedRequest).auth!;
+  return { userId: auth.user.id, firmId: auth.firm.id };
+}
+
+function requestedCaseId(value: unknown): string | null {
+  return typeof value === "string" && value !== "null" && value ? value : null;
+}
+
+function ownedErrorStatus(error: unknown): number {
+  return error instanceof Error && /not found/i.test(error.message) ? 404 : 500;
+}
+
 function cleanSourceText(text: string): string {
   return text.replace(/\[cit_\d+\]/g, "");
 }
@@ -46,6 +60,7 @@ async function startServer() {
     await db.initialize();
     await db.seedDemoDataIfEnabled();
     await db.migrateLegacyOwner();
+    await db.migrateLegacyDrafts();
   } catch (err) {
     console.error("Database initialization or explicit demo seeding failed:", err);
     throw err;
@@ -166,7 +181,7 @@ Raw prompt: "${prompt}"`;
 
   // Cases List and Create
   app.get("/api/cases", async (req, res) => {
-    res.json(await db.getCases());
+    res.json(await db.getCases(ownership(req)));
   });
 
   app.post("/api/cases", async (req, res) => {
@@ -175,18 +190,17 @@ Raw prompt: "${prompt}"`;
       if (!name) {
         return res.status(400).json({ error: "Case name is required" });
       }
-      const authReq = req as AuthenticatedRequest;
-      const newCase = await db.createCase(name, description || "", authReq.auth!.firm.id);
+      const newCase = await db.createCase(name, description || "", ownership(req));
       res.status(201).json(newCase);
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      res.status(ownedErrorStatus(err)).json({ error: err.message });
     }
   });
 
   // Documents Library
   app.get("/api/documents", async (req, res) => {
-    const caseId = (req.query.caseId as string) || null;
-    res.json(await db.getDocuments(caseId === "null" ? null : caseId));
+    const caseId = requestedCaseId(req.query.caseId);
+    res.json(await db.getDocuments(ownership(req), caseId));
   });
 
   // Upload/create Document
@@ -200,7 +214,7 @@ Raw prompt: "${prompt}"`;
       const newDoc = await db.uploadDocument(
         title,
         text,
-        (req as AuthenticatedRequest).auth!.firm.id,
+        ownership(req),
         sourceUrl || null,
         driveId || null,
         caseId || null
@@ -208,23 +222,34 @@ Raw prompt: "${prompt}"`;
       res.status(201).json(newDoc);
     } catch (err: any) {
       console.error("Error creating document:", err);
-      res.status(500).json({ error: err.message });
+      res.status(ownedErrorStatus(err)).json({ error: err.message });
     }
   });
 
   app.delete("/api/documents/:id", async (req, res) => {
     try {
-      await db.deleteDocument(req.params.id);
+      if (typeof req.query.caseId !== "string") {
+        return res.status(400).json({ error: "Document context is required" });
+      }
+      const deleted = await db.deleteDocument(
+        req.params.id,
+        ownership(req),
+        requestedCaseId(req.query.caseId)
+      );
+      if (!deleted) return res.status(404).json({ error: "Document not found" });
       res.json({ success: true });
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      res.status(ownedErrorStatus(err)).json({ error: err.message });
     }
   });
 
   // Threads API
   app.get("/api/threads", async (req, res) => {
-    const caseId = (req.query.caseId as string) || null;
-    res.json(await db.getThreads(caseId === "null" ? null : caseId));
+    if (req.query.history === "true") {
+      return res.json(await db.getHistoryThreads(ownership(req)));
+    }
+    const caseId = requestedCaseId(req.query.caseId);
+    return res.json(await db.getThreads(ownership(req), caseId));
   });
 
   app.post("/api/threads", async (req, res) => {
@@ -233,17 +258,18 @@ Raw prompt: "${prompt}"`;
       const newThread = await db.createThread(
         title || "New Legal Conversation",
         caseId || null,
-        (req as AuthenticatedRequest).auth!.user.id
+        ownership(req)
       );
       res.status(201).json(newThread);
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      res.status(ownedErrorStatus(err)).json({ error: err.message });
     }
   });
 
   app.delete("/api/threads/:id", async (req, res) => {
     try {
-      await db.deleteThread(req.params.id);
+      const deleted = await db.deleteThread(req.params.id, ownership(req));
+      if (!deleted) return res.status(404).json({ error: "Thread not found" });
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -251,7 +277,9 @@ Raw prompt: "${prompt}"`;
   });
 
   app.get("/api/threads/:id/messages", async (req, res) => {
-    res.json(await db.getMessages(req.params.id));
+    const thread = await db.getThreadById(req.params.id, ownership(req));
+    if (!thread) return res.status(404).json({ error: "Thread not found" });
+    return res.json(await db.getMessages(req.params.id, ownership(req)));
   });
 
   // Core Legal Search (semantic + keyword search fallback)
@@ -261,7 +289,7 @@ Raw prompt: "${prompt}"`;
       if (!query) {
         return res.status(400).json({ error: "Query is required" });
       }
-      const results = await db.vectorSearch(query, scope || "wide", 5);
+      const results = await db.vectorSearch(query, scope || "wide", ownership(req), 5);
       res.json(results);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -278,13 +306,14 @@ Raw prompt: "${prompt}"`;
     }
 
     try {
-      const thread = await db.getThreadById(threadId);
+      const requestOwnership = ownership(req);
+      const thread = await db.getThreadById(threadId, requestOwnership);
       if (!thread) {
         return res.status(404).json({ error: "Thread not found" });
       }
 
       // Save user message first
-      const userMessage = await db.addMessage(threadId, "user", content);
+      const userMessage = await db.addMessage(threadId, "user", content, requestOwnership);
 
       const scope = thread.case_id || "wide";
 
@@ -375,7 +404,7 @@ Query: "${content}"`;
           }
           
           // Vector Search Chunks with similarity threshold
-          const allLocalChunks = await db.vectorSearch(subQ, scope, 2);
+          const allLocalChunks = await db.vectorSearch(subQ, scope, requestOwnership, 2);
           const localChunks = allLocalChunks.filter(c => c.similarity >= SIMILARITY_THRESHOLD);
           
           // Connectors Query
@@ -386,7 +415,11 @@ Query: "${content}"`;
           const stepCitations: string[] = [];
 
           for (const c of localChunks) {
-            const doc = await db.getDocumentById(c.document_id);
+            const doc = await db.getDocumentById(
+              c.document_id,
+              requestOwnership,
+              thread.case_id
+            );
             const cit = registerCitation({
               type: "workspace",
               title: doc ? doc.title : "Workspace Document",
@@ -544,7 +577,7 @@ ${citationInstSearch}`;
 
         // Perform parallel lookups
         const [allLocalChunks, clResults, giResults] = await Promise.all([
-          db.vectorSearch(content, scope, 3),
+          db.vectorSearch(content, scope, requestOwnership, 3),
           enableCourtListener ? CourtListenerAdapter.query(content) : Promise.resolve([]),
           enableGovInfo ? GovInfoAdapter.query(content) : Promise.resolve([])
         ]);
@@ -553,7 +586,11 @@ ${citationInstSearch}`;
 
         // Register in citations list
         for (const c of localChunks) {
-          const doc = await db.getDocumentById(c.document_id);
+          const doc = await db.getDocumentById(
+            c.document_id,
+            requestOwnership,
+            thread.case_id
+          );
           registerCitation({
             type: "workspace",
             title: doc ? doc.title : "Workspace Document",
@@ -685,6 +722,7 @@ ${citationInstSearch}`;
         threadId,
         "assistant",
         finalContent,
+        requestOwnership,
         citations,
         researchSteps
       );
@@ -704,25 +742,33 @@ ${citationInstSearch}`;
   app.put("/api/messages/:id", async (req, res) => {
     try {
       const { content } = req.body;
-      if (!content) {
-        return res.status(400).json({ error: "Content is required" });
+      const threadId = typeof req.query.threadId === "string" ? req.query.threadId : "";
+      if (!content || !threadId) {
+        return res.status(400).json({ error: "Content and thread context are required" });
       }
-      const updatedMessage = await db.updateMessage(req.params.id, content);
+      const updatedMessage = await db.updateMessage(
+        req.params.id,
+        threadId,
+        content,
+        ownership(req)
+      );
       res.json(updatedMessage);
     } catch (err: any) {
       console.error("Error updating message:", err);
-      res.status(500).json({ error: err.message });
+      res.status(ownedErrorStatus(err)).json({ error: err.message });
     }
   });
 
   // Draft Generation and Editable View APIs
   app.get("/api/drafts", async (req, res) => {
-    const caseId = (req.query.caseId as string) || null;
-    res.json(await db.getDrafts(caseId === "null" ? null : caseId));
+    const caseId = requestedCaseId(req.query.caseId);
+    res.json(await db.getDrafts(ownership(req), caseId));
   });
 
   app.get("/api/drafts/:id", async (req, res) => {
-    const draft = await db.getDraftById(req.params.id);
+    const caseId = requestedCaseId(req.query.caseId);
+    if (!caseId) return res.status(400).json({ error: "Matter context is required" });
+    const draft = await db.getDraftById(req.params.id, caseId, ownership(req));
     if (!draft) {
       return res.status(404).json({ error: "Draft not found" });
     }
@@ -736,12 +782,16 @@ ${citationInstSearch}`;
         return res.status(400).json({ error: "Thread ID and format are required" });
       }
 
-      const thread = await db.getThreadById(threadId);
+      const requestOwnership = ownership(req);
+      const thread = await db.getThreadById(threadId, requestOwnership);
       if (!thread) {
         return res.status(404).json({ error: "Thread not found" });
       }
+      if (!thread.case_id) {
+        return res.status(400).json({ error: "Select a Matter before saving generated Work Product" });
+      }
 
-      const messages = await db.getMessages(threadId);
+      const messages = await db.getMessages(threadId, requestOwnership);
       if (messages.length === 0) {
         return res.status(400).json({ error: "Cannot generate draft from empty conversation" });
       }
@@ -773,29 +823,39 @@ INSTRUCTIONS:
       });
 
       const title = `Legal ${format.charAt(0).toUpperCase() + format.slice(1)} - Thread Ref: ${thread.title.substring(0, 30)}`;
-      const newDraft = await db.createDraft(threadId, thread.case_id, title, draftResult.text);
+      const newDraft = await db.createDraft(
+        threadId,
+        thread.case_id,
+        title,
+        draftResult.text,
+        requestOwnership
+      );
 
       res.status(201).json(newDraft);
     } catch (err: any) {
       console.error("Error creating draft:", err);
-      res.status(500).json({ error: err.message });
+      res.status(ownedErrorStatus(err)).json({ error: err.message });
     }
   });
 
   app.put("/api/drafts/:id", async (req, res) => {
     try {
       const { content } = req.body;
-      const updated = await db.updateDraft(req.params.id, content);
+      const caseId = requestedCaseId(req.query.caseId);
+      if (!caseId) return res.status(400).json({ error: "Matter context is required" });
+      const updated = await db.updateDraft(req.params.id, caseId, content, ownership(req));
       res.json(updated);
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      res.status(ownedErrorStatus(err)).json({ error: err.message });
     }
   });
 
   // DOCX Export Endpoint
   app.get("/api/drafts/:id/export", async (req, res) => {
     try {
-      const draft = await db.getDraftById(req.params.id);
+      const caseId = requestedCaseId(req.query.caseId);
+      if (!caseId) return res.status(400).json({ error: "Matter context is required" });
+      const draft = await db.getDraftById(req.params.id, caseId, ownership(req));
       if (!draft) {
         return res.status(404).json({ error: "Draft not found" });
       }

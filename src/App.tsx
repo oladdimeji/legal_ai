@@ -148,8 +148,9 @@ export default function App() {
           <HistoryView 
             cases={cases}
             activeThreadId={activeThreadId}
-            onSelectThread={(threadId) => {
-              setActiveThreadId(threadId);
+            onSelectThread={(thread) => {
+              setActiveCaseId(thread.case_id);
+              setActiveThreadId(thread.id);
               setActiveTab("assistant");
               setIsSidebarCollapsed(true);
             }}
