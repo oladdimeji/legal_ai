@@ -1,18 +1,51 @@
 import express from "express";
+import type { NextFunction, Request, Response } from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import { db } from "./server/db.js";
+import type { OwnershipContext } from "./server/db.js";
 import { callModel, MODEL_CONFIGS } from "./server/model.js";
 import { CourtListenerAdapter } from "./server/connectors/courtlistener.js";
 import { GovInfoAdapter } from "./server/connectors/govinfo.js";
 import { Document, Citation, Message, Draft, ResearchStep } from "./src/types.js";
 import { Document as DocxDocument, Packer, Paragraph, TextRun, HeadingLevel } from "docx";
+import {
+  SESSION_COOKIE_NAME,
+  SESSION_TTL_MS,
+  clearSessionCookie,
+  createSessionToken,
+  hashPassword,
+  hashSessionToken,
+  parseCookie,
+  sessionCookie,
+  verifyPassword,
+} from "./server/auth.js";
 
 const isProduction = process.env.NODE_ENV === "production";
 const PORT = 3000;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const SIMILARITY_THRESHOLD = 0.65;
+
+interface AuthenticatedRequest extends Request {
+  auth?: {
+    user: { id: string; firm_id: string; name: string; email: string };
+    firm: { id: string; name: string };
+  };
+}
+
+function ownership(req: Request): OwnershipContext {
+  const auth = (req as AuthenticatedRequest).auth!;
+  return { userId: auth.user.id, firmId: auth.firm.id };
+}
+
+function requestedCaseId(value: unknown): string | null {
+  return typeof value === "string" && value !== "null" && value ? value : null;
+}
+
+function ownedErrorStatus(error: unknown): number {
+  return error instanceof Error && /not found/i.test(error.message) ? 404 : 500;
+}
 
 function cleanSourceText(text: string): string {
   return text.replace(/\[cit_\d+\]/g, "");
@@ -22,11 +55,15 @@ async function startServer() {
   const app = express();
   app.use(express.json());
 
-  // Automatically preseed and generate embeddings on startup
+  // Migrations and legacy ownership validation must succeed before any route is served.
   try {
-    await db.preseedIfEmpty();
+    await db.initialize();
+    await db.seedDemoDataIfEnabled();
+    await db.migrateLegacyOwner();
+    await db.migrateLegacyDrafts();
   } catch (err) {
-    console.error("Failed to preseed database:", err);
+    console.error("Database initialization or explicit demo seeding failed:", err);
+    throw err;
   }
 
   // --- API ROUTES ---
@@ -36,13 +73,209 @@ async function startServer() {
     res.json({ status: "ok", time: new Date().toISOString() });
   });
 
-  // Get current user and firm info
-  app.get("/api/me", async (req, res) => {
-    res.json({
-      user: await db.getUser(),
-      firm: await db.getFirm()
-    });
+  app.post("/api/auth/signup", async (req, res) => {
+    try {
+      const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
+      const email = typeof req.body.email === "string" ? req.body.email.trim().toLowerCase() : "";
+      const password = typeof req.body.password === "string" ? req.body.password : "";
+      if (!name || !email || !email.includes("@") || password.length < 8) {
+        return res.status(400).json({
+          error: "Name, a valid email, and a password of at least 8 characters are required.",
+        });
+      }
+
+      const passwordHash = await hashPassword(password);
+      const { token, tokenHash } = createSessionToken();
+      const expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString();
+      const account = await db.createAccount(name, email, passwordHash, tokenHash, expiresAt);
+      res.setHeader("Set-Cookie", sessionCookie(token, isProduction));
+      res.setHeader("Cache-Control", "no-store");
+      return res.status(201).json(account);
+    } catch (err: any) {
+      if (err?.code === "23505") {
+        return res.status(409).json({ error: "An account with that email already exists." });
+      }
+      console.error("Signup failed:", err);
+      return res.status(500).json({ error: "Unable to create the account." });
+    }
   });
+
+  app.post("/api/auth/login", async (req, res) => {
+    try {
+      const email = typeof req.body.email === "string" ? req.body.email.trim().toLowerCase() : "";
+      const password = typeof req.body.password === "string" ? req.body.password : "";
+      const user = email && password ? await db.getUserForLogin(email) : null;
+      const valid = user ? await verifyPassword(password, user.password_hash) : false;
+      if (!user || !valid) {
+        return res.status(401).json({ error: "Invalid email or password." });
+      }
+
+      const { token, tokenHash } = createSessionToken();
+      const expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString();
+      await db.createSession(user.id, tokenHash, expiresAt);
+      const account = await db.getSessionAccount(tokenHash);
+      if (!account) throw new Error("Session could not be loaded after login.");
+      res.setHeader("Set-Cookie", sessionCookie(token, isProduction));
+      res.setHeader("Cache-Control", "no-store");
+      return res.json(account);
+    } catch (err) {
+      console.error("Login failed:", err);
+      return res.status(500).json({ error: "Unable to sign in." });
+    }
+  });
+
+  app.post("/api/auth/logout", async (req, res) => {
+    const token = parseCookie(req.headers.cookie, SESSION_COOKIE_NAME);
+    if (token) await db.deleteSession(hashSessionToken(token));
+    res.setHeader("Set-Cookie", clearSessionCookie(isProduction));
+    res.setHeader("Cache-Control", "no-store");
+    return res.json({ success: true });
+  });
+
+  const requireAuth = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const token = parseCookie(req.headers.cookie, SESSION_COOKIE_NAME);
+      const account = token ? await db.getSessionAccount(hashSessionToken(token)) : null;
+      if (!account) {
+        res.setHeader("Cache-Control", "no-store");
+        return res.status(401).json({ error: "Authentication required." });
+      }
+      req.auth = account;
+      return next();
+    } catch (err) {
+      console.error("Session validation failed:", err);
+      return res.status(500).json({ error: "Unable to validate the session." });
+    }
+  };
+
+  app.get("/api/auth/me", requireAuth, (req: AuthenticatedRequest, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    return res.json(req.auth);
+  });
+
+  const portalTokenHash = (token: string) => hashSessionToken(decodeURIComponent(token));
+
+  // Client Portal routes use a separate, Matter-specific invitation token rather than lawyer sessions.
+  app.get("/api/portal/:token", async (req, res) => {
+    const summary = await db.getPortalSummary(portalTokenHash(req.params.token));
+    res.setHeader("Cache-Control", "no-store");
+    if (!summary) return res.status(404).json({ error: "Client Portal access is unavailable" });
+    return res.json(summary);
+  });
+
+  app.get("/api/portal/:token/work-product/:draftId", async (req, res) => {
+    const draft = await db.getPermittedPortalDraft(
+      portalTokenHash(req.params.token), req.params.draftId
+    );
+    res.setHeader("Cache-Control", "no-store");
+    if (!draft) return res.status(404).json({ error: "Shared Work Product not found" });
+    return res.json(draft);
+  });
+
+  app.get("/api/portal/:token/work-product/:draftId/download", async (req, res) => {
+    const draft = await db.getPermittedPortalDraft(
+      portalTokenHash(req.params.token), req.params.draftId
+    );
+    if (!draft) return res.status(404).json({ error: "Shared Work Product not found" });
+    const paragraphs = [new Paragraph({ text: draft.title, heading: HeadingLevel.HEADING_1 })];
+    for (const line of draft.content.split("\n")) paragraphs.push(new Paragraph({ children: [new TextRun(line)] }));
+    const buffer = await Packer.toBuffer(new DocxDocument({ sections: [{ children: paragraphs }] }));
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+    res.setHeader("Content-Disposition", `attachment; filename="${draft.title.replace(/[^a-z0-9]/gi, "_")}.docx"`);
+    return res.send(buffer);
+  });
+
+  app.post("/api/portal/:token/work-product/:draftId/comments", async (req, res) => {
+    try {
+      const content = typeof req.body.content === "string" ? req.body.content.trim() : "";
+      if (!content) return res.status(400).json({ error: "Comment is required" });
+      return res.status(201).json(await db.addPortalComment(
+        portalTokenHash(req.params.token), req.params.draftId, content
+      ));
+    } catch {
+      return res.status(404).json({ error: "Shared Work Product not found" });
+    }
+  });
+
+  app.post("/api/portal/:token/work-product/:draftId/edit-copy", async (req, res) => {
+    try {
+      const content = typeof req.body.content === "string" ? req.body.content : "";
+      return res.status(201).json(await db.createPortalClientRevision(
+        portalTokenHash(req.params.token), req.params.draftId, content
+      ));
+    } catch {
+      return res.status(404).json({ error: "Shared Work Product not found" });
+    }
+  });
+
+  app.post("/api/portal/:token/documents", async (req, res) => {
+    try {
+      const tokenHash = portalTokenHash(req.params.token);
+      const access = await db.resolvePortalAccess(tokenHash);
+      if (!access) return res.status(404).json({ error: "Client Portal access is unavailable" });
+      const title = typeof req.body.title === "string" ? req.body.title.trim() : "";
+      const text = typeof req.body.text === "string" ? req.body.text.trim() : "";
+      if (!title || !text) return res.status(400).json({ error: "Document title and text are required" });
+      return res.status(201).json(await db.uploadDocument(
+        title, text, { userId: "client-portal", firmId: access.firm_id },
+        null, null, access.case_id, "Client Submission", "Client"
+      ));
+    } catch {
+      return res.status(404).json({ error: "Client Portal access is unavailable" });
+    }
+  });
+
+  app.post("/api/portal/:token/requests/:requestId/responses", async (req, res) => {
+    try {
+      const allowed = new Set(["Acknowledgement", "Comment", "Written Answer", "Uploaded Document", "Existing Portal Document", "Client Revision"]);
+      const type = typeof req.body.type === "string" ? req.body.type : "";
+      if (!allowed.has(type)) return res.status(400).json({ error: "Invalid client response type" });
+      return res.status(201).json(await db.createPortalResponse(
+        portalTokenHash(req.params.token), req.params.requestId, type,
+        typeof req.body.content === "string" ? req.body.content : null,
+        typeof req.body.documentId === "string" ? req.body.documentId : null,
+        typeof req.body.draftId === "string" ? req.body.draftId : null
+      ));
+    } catch {
+      return res.status(404).json({ error: "Client request or attachment not found" });
+    }
+  });
+
+  app.post("/api/portal/:token/assistant", async (req, res) => {
+    try {
+      const draftIds: string[] = Array.isArray(req.body.draftIds)
+        ? req.body.draftIds.filter((id: unknown): id is string => typeof id === "string") : [];
+      const documentIds: string[] = Array.isArray(req.body.documentIds)
+        ? req.body.documentIds.filter((id: unknown): id is string => typeof id === "string") : [];
+      const query = typeof req.body.query === "string" ? req.body.query.trim() : "";
+      const temporaryText = typeof req.body.temporaryText === "string" ? req.body.temporaryText.trim() : "";
+      if (!query) return res.status(400).json({ error: "Question is required" });
+      const bundle = await db.getPortalAssistantSources(
+        portalTokenHash(req.params.token), draftIds, documentIds
+      );
+      if (!bundle) return res.status(404).json({ error: "Client Portal access is unavailable" });
+      const sources = [...bundle.sources];
+      if (temporaryText) sources.push({ id: "temporary", title: "Temporary client upload", text: temporaryText });
+      if (sources.length === 0) return res.status(400).json({ error: "Select or attach at least one permitted document" });
+      const context = sources.map((source, index) =>
+        `DOCUMENT ${index + 1}: ${source.title}\n${source.text.slice(0, 16000)}`
+      ).join("\n\n---\n\n").slice(0, 60000);
+      const prompt = `You are a document-understanding assistant for an external legal client.
+Answer ONLY from the documents selected below. Provide a plain-language explanation, summary, clause clarification, or grounded answer. Cite sources as [Source: exact title].
+Do not provide external legal research, do not imply access to the Firm Library, Matter Intelligence, lawyer conversations, or unshared material, and do not present yourself as a replacement for the lawyer's advice.
+
+CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
+      const result = await callModel("client-assistant", [{ role: "user", content: prompt }], { temperature: 0.2 });
+      res.setHeader("Cache-Control", "no-store");
+      return res.json({ text: result.text.trim(), sources: sources.map(({ id, title }) => ({ id, title })) });
+    } catch (err: any) {
+      const status = /not available/i.test(err.message) ? 404 : 500;
+      return res.status(status).json({ error: err.message });
+    }
+  });
+
+  // All remaining API routes require a server-validated session.
+  app.use("/api", requireAuth);
 
   // Enhance/Improve Raw Prompt into Legal-Grade Query
   app.post("/api/improve-prompt", async (req, res) => {
@@ -69,26 +302,239 @@ Raw prompt: "${prompt}"`;
 
   // Cases List and Create
   app.get("/api/cases", async (req, res) => {
-    res.json(await db.getCases());
+    res.json(await db.getCases(ownership(req)));
+  });
+
+  app.get("/api/cases/:id", async (req, res) => {
+    const matter = await db.getCaseById(req.params.id, ownership(req));
+    if (!matter) return res.status(404).json({ error: "Matter not found" });
+    return res.json(matter);
   });
 
   app.post("/api/cases", async (req, res) => {
     try {
-      const { name, description } = req.body;
-      if (!name) {
-        return res.status(400).json({ error: "Case name is required" });
+      const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
+      const description = typeof req.body.description === "string" ? req.body.description.trim() : "";
+      const startingNote = typeof req.body.startingNote === "string" ? req.body.startingNote.trim() : "";
+      const startingDocument = req.body.startingDocument &&
+        typeof req.body.startingDocument.title === "string" &&
+        typeof req.body.startingDocument.text === "string" &&
+        req.body.startingDocument.title.trim() && req.body.startingDocument.text.trim()
+        ? { title: req.body.startingDocument.title.trim(), text: req.body.startingDocument.text.trim() }
+        : null;
+      const libraryDocumentIds: string[] = Array.isArray(req.body.libraryDocumentIds)
+        ? req.body.libraryDocumentIds.filter((id: unknown): id is string => typeof id === "string")
+        : [];
+      if (!name || !description) {
+        return res.status(400).json({ error: "Matter name and assignment description are required" });
       }
-      const newCase = await db.createCase(name, description || "");
+      if (!startingNote && !startingDocument && libraryDocumentIds.length === 0) {
+        return res.status(400).json({ error: "At least one starting input is required" });
+      }
+      const requestOwnership = ownership(req);
+      if (!(await db.validateFirmLibraryDocuments(libraryDocumentIds, requestOwnership))) {
+        return res.status(404).json({ error: "Firm Library starting document not found" });
+      }
+      const newCase = await db.createCase(name, description, requestOwnership, {
+        clientName: typeof req.body.clientName === "string" ? req.body.clientName.trim() : null,
+        clientEmail: typeof req.body.clientEmail === "string" ? req.body.clientEmail.trim() : null,
+      });
+      if (startingNote) {
+        await db.uploadDocument(
+          `Starting instruction — ${name}`, startingNote, requestOwnership,
+          null, null, newCase.id, "Starting Instruction", "Lawyer"
+        );
+      }
+      if (startingDocument) {
+        await db.uploadDocument(
+          startingDocument.title, startingDocument.text, requestOwnership,
+          null, null, newCase.id, "Matter Upload", "Lawyer"
+        );
+      }
+      for (const documentId of Array.from(new Set(libraryDocumentIds))) {
+        await db.linkLibraryDocument(newCase.id, documentId, "Starting Input", requestOwnership);
+      }
+      await db.touchCase(newCase.id, requestOwnership);
       res.status(201).json(newCase);
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      res.status(ownedErrorStatus(err)).json({ error: err.message });
     }
+  });
+
+  app.put("/api/cases/:id", async (req, res) => {
+    try {
+      const matter = await db.updateCase(req.params.id, req.body, ownership(req));
+      if (!matter) return res.status(404).json({ error: "Matter not found" });
+      return res.json(matter);
+    } catch (err: any) {
+      return res.status(/invalid matter status/i.test(err.message) ? 400 : ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/cases/:id/sources", async (req, res) => {
+    const matter = await db.getCaseById(req.params.id, ownership(req));
+    if (!matter) return res.status(404).json({ error: "Matter not found" });
+    return res.json(await db.getCaseSources(req.params.id, ownership(req)));
+  });
+
+  app.post("/api/cases/:id/sources", async (req, res) => {
+    try {
+      const requestOwnership = ownership(req);
+      const matter = await db.getCaseById(req.params.id, requestOwnership);
+      if (!matter) return res.status(404).json({ error: "Matter not found" });
+      if (typeof req.body.libraryDocumentId === "string") {
+        const linked = await db.linkLibraryDocument(
+          matter.id, req.body.libraryDocumentId, "Manual", requestOwnership
+        );
+        if (!linked) return res.status(404).json({ error: "Firm Library document not found" });
+        await db.touchCase(matter.id, requestOwnership);
+        return res.status(201).json({ linked: true });
+      }
+      const text = typeof req.body.text === "string" ? req.body.text.trim() : "";
+      const title = typeof req.body.title === "string" ? req.body.title.trim() : "";
+      if (!text) return res.status(400).json({ error: "Source content is required" });
+      const sourceType = req.body.sourceType === "Starting Instruction" ? "Starting Instruction" : "Matter Upload";
+      const document = await db.uploadDocument(
+        title || (sourceType === "Starting Instruction" ? "Matter instruction" : "Matter source"),
+        text, requestOwnership, null, null, matter.id, sourceType, "Lawyer"
+      );
+      await db.touchCase(matter.id, requestOwnership);
+      return res.status(201).json(document);
+    } catch (err: any) {
+      return res.status(ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
+  app.delete("/api/cases/:caseId/sources/:documentId", async (req, res) => {
+    const removed = await db.deleteDocument(
+      req.params.documentId, ownership(req), req.params.caseId
+    );
+    if (!removed) return res.status(404).json({ error: "Matter Source not found" });
+    await db.touchCase(req.params.caseId, ownership(req));
+    return res.json({ success: true });
+  });
+
+  app.get("/api/cases/:caseId/intelligence", async (req, res) => {
+    const matter = await db.getCaseById(req.params.caseId, ownership(req));
+    if (!matter) return res.status(404).json({ error: "Matter not found" });
+    return res.json(await db.getMatterIntelligence(matter.id, ownership(req)));
+  });
+
+  app.post("/api/cases/:caseId/intelligence/generate", async (req, res) => {
+    try {
+      const requestOwnership = ownership(req);
+      const bundle = await db.getMatterIntelligenceSourceBundle(req.params.caseId, requestOwnership);
+      if (bundle.sources.length === 0) {
+        return res.status(400).json({ error: "Add at least one Matter Source before generating Intelligence" });
+      }
+      const sourceText = bundle.sources.map((source, index) =>
+        `SOURCE ${index + 1}: ${source.title}\nTYPE: ${source.source_type || "Matter Source"}\n${source.extracted_text.slice(0, 12000)}`
+      ).join("\n\n---\n\n").slice(0, 60000);
+      const prompt = `Generate compact Matter Intelligence for the owned Matter below using ONLY the supplied active Matter Sources.
+Do not infer facts from other matters or external knowledge. Link material statements to a source using [Source: exact title] where possible.
+Use exactly these Markdown section headings:
+## Matter Summary
+## Key Facts and Chronology
+## Legal Issues and Authorities
+## Analysis, Risks, and Preliminary Conclusions
+## Open Questions and Recommended Next Actions
+State uncertainty clearly. Do not add assignees, due dates, or task workflow.
+
+MATTER: ${bundle.matter.name}
+ASSIGNMENT: ${bundle.matter.description}
+JURISDICTION: ${bundle.matter.jurisdiction || "Not confirmed"}
+
+ACTIVE MATTER SOURCES:
+${sourceText}`;
+      const generated = await callModel("matter-intelligence", [{ role: "user", content: prompt }], { temperature: 0.2 });
+      return res.status(201).json(
+        await db.saveGeneratedMatterIntelligence(
+          bundle.matter.id, generated.text.trim(), bundle.snapshot, requestOwnership
+        )
+      );
+    } catch (err: any) {
+      return res.status(ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
+  app.put("/api/cases/:caseId/intelligence", async (req, res) => {
+    try {
+      const content = typeof req.body.content === "string" ? req.body.content : "";
+      if (!content.trim()) return res.status(400).json({ error: "Matter Intelligence content is required" });
+      return res.json(await db.updateMatterIntelligence(req.params.caseId, content, ownership(req)));
+    } catch (err: any) {
+      return res.status(ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/cases/:caseId/collaboration", async (req, res) => {
+    try {
+      return res.json(await db.getCollaboration(req.params.caseId, ownership(req)));
+    } catch (err: any) {
+      return res.status(ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
+  app.put("/api/cases/:caseId/collaboration/client", async (req, res) => {
+    try {
+      const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
+      const email = typeof req.body.email === "string" ? req.body.email.trim().toLowerCase() : "";
+      if (!name || !email || !email.includes("@")) {
+        return res.status(400).json({ error: "Client name and valid email are required" });
+      }
+      return res.json(await db.saveClientCollaborator(req.params.caseId, name, email, ownership(req)));
+    } catch (err: any) {
+      return res.status(ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/cases/:caseId/collaboration/invite", async (req, res) => {
+    try {
+      const { token, tokenHash } = createSessionToken();
+      const access = await db.activateClientInvite(req.params.caseId, tokenHash, ownership(req));
+      res.setHeader("Cache-Control", "no-store");
+      return res.json({ access, invitePath: `/client/${encodeURIComponent(token)}` });
+    } catch (err: any) {
+      return res.status(ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/cases/:caseId/collaboration/revoke", async (req, res) => {
+    try {
+      return res.json(await db.revokeClientInvite(req.params.caseId, ownership(req)));
+    } catch (err: any) {
+      return res.status(ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/cases/:caseId/collaboration/requests", async (req, res) => {
+    try {
+      const type = typeof req.body.type === "string" ? req.body.type : "";
+      const instruction = typeof req.body.instruction === "string" ? req.body.instruction.trim() : "";
+      const draftIds: string[] = Array.isArray(req.body.draftIds)
+        ? req.body.draftIds.filter((id: unknown): id is string => typeof id === "string") : [];
+      if (!instruction) return res.status(400).json({ error: "Request instruction is required" });
+      return res.status(201).json(
+        await db.createCollaborationRequest(req.params.caseId, type, instruction, draftIds, ownership(req))
+      );
+    } catch (err: any) {
+      const status = /invalid|select at least/i.test(err.message) ? 400 : ownedErrorStatus(err);
+      return res.status(status).json({ error: err.message });
+    }
+  });
+
+  app.put("/api/cases/:caseId/collaboration/responses/:responseId/read", async (req, res) => {
+    const updated = await db.markCollaborationResponseRead(
+      req.params.caseId, req.params.responseId, ownership(req)
+    );
+    if (!updated) return res.status(404).json({ error: "Client response not found" });
+    return res.json({ success: true });
   });
 
   // Documents Library
   app.get("/api/documents", async (req, res) => {
-    const caseId = (req.query.caseId as string) || null;
-    res.json(await db.getDocuments(caseId === "null" ? null : caseId));
+    const caseId = requestedCaseId(req.query.caseId);
+    res.json(await db.getDocuments(ownership(req), caseId));
   });
 
   // Upload/create Document
@@ -102,6 +548,7 @@ Raw prompt: "${prompt}"`;
       const newDoc = await db.uploadDocument(
         title,
         text,
+        ownership(req),
         sourceUrl || null,
         driveId || null,
         caseId || null
@@ -109,38 +556,54 @@ Raw prompt: "${prompt}"`;
       res.status(201).json(newDoc);
     } catch (err: any) {
       console.error("Error creating document:", err);
-      res.status(500).json({ error: err.message });
+      res.status(ownedErrorStatus(err)).json({ error: err.message });
     }
   });
 
   app.delete("/api/documents/:id", async (req, res) => {
     try {
-      await db.deleteDocument(req.params.id);
+      if (typeof req.query.caseId !== "string") {
+        return res.status(400).json({ error: "Document context is required" });
+      }
+      const deleted = await db.deleteDocument(
+        req.params.id,
+        ownership(req),
+        requestedCaseId(req.query.caseId)
+      );
+      if (!deleted) return res.status(404).json({ error: "Document not found" });
       res.json({ success: true });
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      res.status(ownedErrorStatus(err)).json({ error: err.message });
     }
   });
 
   // Threads API
   app.get("/api/threads", async (req, res) => {
-    const caseId = (req.query.caseId as string) || null;
-    res.json(await db.getThreads(caseId === "null" ? null : caseId));
+    if (req.query.history === "true") {
+      return res.json(await db.getHistoryThreads(ownership(req)));
+    }
+    const caseId = requestedCaseId(req.query.caseId);
+    return res.json(await db.getThreads(ownership(req), caseId));
   });
 
   app.post("/api/threads", async (req, res) => {
     try {
       const { title, caseId } = req.body;
-      const newThread = await db.createThread(title || "New Legal Conversation", caseId || null);
+      const newThread = await db.createThread(
+        title || "New Legal Conversation",
+        caseId || null,
+        ownership(req)
+      );
       res.status(201).json(newThread);
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      res.status(ownedErrorStatus(err)).json({ error: err.message });
     }
   });
 
   app.delete("/api/threads/:id", async (req, res) => {
     try {
-      await db.deleteThread(req.params.id);
+      const deleted = await db.deleteThread(req.params.id, ownership(req));
+      if (!deleted) return res.status(404).json({ error: "Thread not found" });
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -148,7 +611,9 @@ Raw prompt: "${prompt}"`;
   });
 
   app.get("/api/threads/:id/messages", async (req, res) => {
-    res.json(await db.getMessages(req.params.id));
+    const thread = await db.getThreadById(req.params.id, ownership(req));
+    if (!thread) return res.status(404).json({ error: "Thread not found" });
+    return res.json(await db.getMessages(req.params.id, ownership(req)));
   });
 
   // Core Legal Search (semantic + keyword search fallback)
@@ -158,7 +623,7 @@ Raw prompt: "${prompt}"`;
       if (!query) {
         return res.status(400).json({ error: "Query is required" });
       }
-      const results = await db.vectorSearch(query, scope || "wide", 5);
+      const results = await db.vectorSearch(query, scope || "wide", ownership(req), 5);
       res.json(results);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -175,13 +640,14 @@ Raw prompt: "${prompt}"`;
     }
 
     try {
-      const thread = await db.getThreadById(threadId);
+      const requestOwnership = ownership(req);
+      const thread = await db.getThreadById(threadId, requestOwnership);
       if (!thread) {
         return res.status(404).json({ error: "Thread not found" });
       }
 
       // Save user message first
-      const userMessage = await db.addMessage(threadId, "user", content);
+      const userMessage = await db.addMessage(threadId, "user", content, requestOwnership);
 
       const scope = thread.case_id || "wide";
 
@@ -272,7 +738,7 @@ Query: "${content}"`;
           }
           
           // Vector Search Chunks with similarity threshold
-          const allLocalChunks = await db.vectorSearch(subQ, scope, 2);
+          const allLocalChunks = await db.vectorSearch(subQ, scope, requestOwnership, 2);
           const localChunks = allLocalChunks.filter(c => c.similarity >= SIMILARITY_THRESHOLD);
           
           // Connectors Query
@@ -283,12 +749,16 @@ Query: "${content}"`;
           const stepCitations: string[] = [];
 
           for (const c of localChunks) {
-            const doc = await db.getDocumentById(c.document_id);
+            const doc = await db.getDocumentById(
+              c.document_id,
+              requestOwnership,
+              thread.case_id
+            );
             const cit = registerCitation({
               type: "workspace",
               title: doc ? doc.title : "Workspace Document",
               textSnippet: cleanSourceText(c.chunk_text),
-              sourceName: "Workspace Library"
+              sourceName: thread.case_id ? "Matter Sources" : "Firm Library"
             });
             stepCitations.push(`[${cit.id}] ${cit.title}`);
           }
@@ -347,8 +817,8 @@ Query: "${content}"`;
           : "and you DO NOT have access to any external search grounding tools or internet search. You MUST rely ONLY on the provided legal references above.";
 
         const groundingInst1 = enableWebSearch === true
-          ? "1. If the section 'Gathered legal references to use and reference' above says \"No internal document matches.\" (or has no actual workspace document snippets) AND you do not have any active search grounding results or other sources, you MUST respond EXACTLY with: \"I could not find any relevant documents in your Workspace Library regarding this topic.\" and do NOT attempt to answer using your general external knowledge."
-          : "1. If the section 'Gathered legal references to use and reference' above says \"No internal document matches.\" (or has no actual workspace document snippets), you MUST respond EXACTLY with: \"I could not find any relevant documents in your Workspace Library regarding this topic.\" and you MUST NOT attempt to answer or generate any explanation using your general external knowledge. You are strictly forbidden from simulating or fabricating any search results, external knowledge, or citations.";
+          ? "1. If the section 'Gathered legal references to use and reference' above says \"No internal document matches.\" (or has no actual permitted document snippets) AND you do not have any active search grounding results or other sources, you MUST respond EXACTLY with: \"I could not find any relevant documents in the permitted context regarding this topic.\" and do NOT attempt to answer using your general external knowledge."
+          : "1. If the section 'Gathered legal references to use and reference' above says \"No internal document matches.\" (or has no actual permitted document snippets), you MUST respond EXACTLY with: \"I could not find any relevant documents in the permitted context regarding this topic.\" and you MUST NOT attempt to answer or generate any explanation using your general external knowledge. You are strictly forbidden from simulating or fabricating any search results, external knowledge, or citations.";
 
         const citationInstSearch = enableWebSearch === true
           ? "- For Google Search grounding references, cite them using the bracketed numbers (e.g., [1], [2]) that match the search grounding chunks."
@@ -441,7 +911,7 @@ ${citationInstSearch}`;
 
         // Perform parallel lookups
         const [allLocalChunks, clResults, giResults] = await Promise.all([
-          db.vectorSearch(content, scope, 3),
+          db.vectorSearch(content, scope, requestOwnership, 3),
           enableCourtListener ? CourtListenerAdapter.query(content) : Promise.resolve([]),
           enableGovInfo ? GovInfoAdapter.query(content) : Promise.resolve([])
         ]);
@@ -450,12 +920,16 @@ ${citationInstSearch}`;
 
         // Register in citations list
         for (const c of localChunks) {
-          const doc = await db.getDocumentById(c.document_id);
+          const doc = await db.getDocumentById(
+            c.document_id,
+            requestOwnership,
+            thread.case_id
+          );
           registerCitation({
             type: "workspace",
             title: doc ? doc.title : "Workspace Document",
             textSnippet: cleanSourceText(c.chunk_text),
-            sourceName: "Workspace Library"
+            sourceName: thread.case_id ? "Matter Sources" : "Firm Library"
           });
         }
 
@@ -488,8 +962,8 @@ ${citationInstSearch}`;
           : "and you DO NOT have access to any external search grounding tools or internet search. You MUST rely ONLY on the provided Sources above.";
 
         const groundingInst1 = enableWebSearch === true
-          ? "1. If the section 'Provided Sources' above says \"No internal document matches.\" (or has no actual workspace document snippets) AND you do not have any active search grounding results or other sources, you MUST respond EXACTLY with: \"I could not find any relevant documents in your Workspace Library regarding this topic.\" and do NOT attempt to answer using your general external knowledge."
-          : "1. If the section 'Provided Sources' above says \"No internal document matches.\" (or has no actual workspace document snippets), you MUST respond EXACTLY with: \"I could not find any relevant documents in your Workspace Library regarding this topic.\" and you MUST NOT attempt to answer or generate any explanation using your general external knowledge. You are strictly forbidden from simulating or fabricating any search results, external knowledge, or citations.";
+          ? "1. If the section 'Provided Sources' above says \"No internal document matches.\" (or has no actual permitted document snippets) AND you do not have any active search grounding results or other sources, you MUST respond EXACTLY with: \"I could not find any relevant documents in the permitted context regarding this topic.\" and do NOT attempt to answer using your general external knowledge."
+          : "1. If the section 'Provided Sources' above says \"No internal document matches.\" (or has no actual permitted document snippets), you MUST respond EXACTLY with: \"I could not find any relevant documents in the permitted context regarding this topic.\" and you MUST NOT attempt to answer or generate any explanation using your general external knowledge. You are strictly forbidden from simulating or fabricating any search results, external knowledge, or citations.";
 
         const citationInstSearch = enableWebSearch === true
           ? "- For Google Search grounding references, cite them using the bracketed numbers (e.g., [1], [2]) that match the search grounding chunks."
@@ -582,6 +1056,7 @@ ${citationInstSearch}`;
         threadId,
         "assistant",
         finalContent,
+        requestOwnership,
         citations,
         researchSteps
       );
@@ -601,27 +1076,49 @@ ${citationInstSearch}`;
   app.put("/api/messages/:id", async (req, res) => {
     try {
       const { content } = req.body;
-      if (!content) {
-        return res.status(400).json({ error: "Content is required" });
+      const threadId = typeof req.query.threadId === "string" ? req.query.threadId : "";
+      if (!content || !threadId) {
+        return res.status(400).json({ error: "Content and thread context are required" });
       }
-      const updatedMessage = await db.updateMessage(req.params.id, content);
+      const updatedMessage = await db.updateMessage(
+        req.params.id,
+        threadId,
+        content,
+        ownership(req)
+      );
       res.json(updatedMessage);
     } catch (err: any) {
       console.error("Error updating message:", err);
-      res.status(500).json({ error: err.message });
+      res.status(ownedErrorStatus(err)).json({ error: err.message });
     }
   });
 
   // Draft Generation and Editable View APIs
-  app.get("/api/drafts", async (req, res) => {
-    const caseId = (req.query.caseId as string) || null;
-    res.json(await db.getDrafts(caseId === "null" ? null : caseId));
+  app.get("/api/cases/:caseId/work-product", async (req, res) => {
+    const matter = await db.getCaseById(req.params.caseId, ownership(req));
+    if (!matter) return res.status(404).json({ error: "Matter not found" });
+    return res.json(await db.getDrafts(ownership(req), matter.id));
+  });
+
+  app.post("/api/cases/:caseId/work-product", async (req, res) => {
+    try {
+      const title = typeof req.body.title === "string" ? req.body.title.trim() : "";
+      const content = typeof req.body.content === "string" ? req.body.content : "";
+      if (!title) return res.status(400).json({ error: "Work Product title is required" });
+      return res.status(201).json(
+        await db.createManualDraft(req.params.caseId, title, content, ownership(req))
+      );
+    } catch (err: any) {
+      return res.status(ownedErrorStatus(err)).json({ error: err.message });
+    }
   });
 
   app.get("/api/drafts/:id", async (req, res) => {
-    const draft = await db.getDraftById(req.params.id);
+    const caseId = requestedCaseId(req.query.caseId);
+    if (!caseId) return res.status(400).json({ error: "Matter context is required" });
+    const draft = await db.getDraftById(req.params.id, caseId, ownership(req));
     if (!draft) {
-      return res.status(404).json({ error: "Draft not found" });
+      return res.status(404).json({ error: "Work Product not found" });
     }
     res.json(draft);
   });
@@ -633,12 +1130,16 @@ ${citationInstSearch}`;
         return res.status(400).json({ error: "Thread ID and format are required" });
       }
 
-      const thread = await db.getThreadById(threadId);
+      const requestOwnership = ownership(req);
+      const thread = await db.getThreadById(threadId, requestOwnership);
       if (!thread) {
         return res.status(404).json({ error: "Thread not found" });
       }
+      if (!thread.case_id) {
+        return res.status(400).json({ error: "Select a Matter before saving generated Work Product" });
+      }
 
-      const messages = await db.getMessages(threadId);
+      const messages = await db.getMessages(threadId, requestOwnership);
       if (messages.length === 0) {
         return res.status(400).json({ error: "Cannot generate draft from empty conversation" });
       }
@@ -670,31 +1171,76 @@ INSTRUCTIONS:
       });
 
       const title = `Legal ${format.charAt(0).toUpperCase() + format.slice(1)} - Thread Ref: ${thread.title.substring(0, 30)}`;
-      const newDraft = await db.createDraft(threadId, thread.case_id, title, draftResult.text);
+      const newDraft = await db.createDraft(
+        threadId,
+        thread.case_id,
+        title,
+        draftResult.text,
+        requestOwnership
+      );
 
       res.status(201).json(newDraft);
     } catch (err: any) {
       console.error("Error creating draft:", err);
-      res.status(500).json({ error: err.message });
+      res.status(ownedErrorStatus(err)).json({ error: err.message });
     }
   });
 
   app.put("/api/drafts/:id", async (req, res) => {
     try {
       const { content } = req.body;
-      const updated = await db.updateDraft(req.params.id, content);
+      const caseId = requestedCaseId(req.query.caseId);
+      if (!caseId) return res.status(400).json({ error: "Matter context is required" });
+      const updated = await db.updateDraft(req.params.id, caseId, content, ownership(req));
       res.json(updated);
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      res.status(ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/drafts/:id/duplicate", async (req, res) => {
+    try {
+      const caseId = requestedCaseId(req.query.caseId);
+      if (!caseId) return res.status(400).json({ error: "Matter context is required" });
+      return res.status(201).json(await db.duplicateDraft(req.params.id, caseId, ownership(req)));
+    } catch (err: any) {
+      return res.status(ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
+  app.put("/api/drafts/:id/sharing", async (req, res) => {
+    try {
+      const caseId = requestedCaseId(req.query.caseId);
+      if (!caseId || typeof req.body.shared !== "boolean") {
+        return res.status(400).json({ error: "Matter context and sharing state are required" });
+      }
+      return res.json(await db.setDraftSharing(req.params.id, caseId, req.body.shared, ownership(req)));
+    } catch (err: any) {
+      return res.status(ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/drafts/:id/client-revision", async (req, res) => {
+    try {
+      const caseId = requestedCaseId(req.query.caseId);
+      const content = typeof req.body.content === "string" ? req.body.content : "";
+      if (!caseId) return res.status(400).json({ error: "Matter context is required" });
+      return res.status(201).json(
+        await db.createClientRevision(req.params.id, caseId, content, ownership(req))
+      );
+    } catch (err: any) {
+      return res.status(ownedErrorStatus(err)).json({ error: err.message });
     }
   });
 
   // DOCX Export Endpoint
   app.get("/api/drafts/:id/export", async (req, res) => {
     try {
-      const draft = await db.getDraftById(req.params.id);
+      const caseId = requestedCaseId(req.query.caseId);
+      if (!caseId) return res.status(400).json({ error: "Matter context is required" });
+      const draft = await db.getDraftById(req.params.id, caseId, ownership(req));
       if (!draft) {
-        return res.status(404).json({ error: "Draft not found" });
+        return res.status(404).json({ error: "Work Product not found" });
       }
 
       // Parse the markdown draft to lines for a simple clean DOCX document
