@@ -4,13 +4,13 @@ import {
   MessageSquare, Send, Sparkles, Search, Library, AlertCircle, 
   ChevronDown, ChevronUp, FileText, Check, Paperclip, RefreshCw, 
   ExternalLink, BookOpen, Copy, Download, Pencil, X, Briefcase, 
-  Folder, Upload, Database, Globe, ThumbsUp, ThumbsDown,
+  Folder, Globe, ThumbsUp, ThumbsDown,
   Bold, Italic, Underline, Strikethrough, List, ListOrdered,
-  AlignLeft, AlignCenter, AlignRight, Paintbrush, Scissors,
+  AlignLeft, AlignCenter, AlignRight, Scissors,
   Clipboard, Undo2, Redo2, Save, Link as LinkIcon
 } from "lucide-react";
 import Markdown from "react-markdown";
-import { Case, Thread, Message, Citation, Scope, Draft, ResearchStep, Document } from "../types";
+import { Case, Thread, Message, Citation, Scope, Draft, ResearchStep } from "../types";
 
 interface AssistantViewProps {
   cases: Case[];
@@ -140,15 +140,6 @@ export default function AssistantView({
   const [enableGovInfo, setEnableGovInfo] = useState(false);
   const [filesAndSourcesOpen, setFilesAndSourcesOpen] = useState(false);
 
-  // Simulated file attachment state
-  const [isAttaching, setIsAttaching] = useState(false);
-  const [attachedFiles, setAttachedFiles] = useState<{ name: string; size: string }[]>([]);
-
-  // Real Workspace documents state and filepicker reference
-  const [workspaceDocs, setWorkspaceDocs] = useState<Document[]>([]);
-  const [showWorkspaceDocsPicker, setShowWorkspaceDocsPicker] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -161,7 +152,6 @@ export default function AssistantView({
   const [sideEditorRedoStack, setSideEditorRedoStack] = useState<string[]>([]);
   const [sideEditorTab, setSideEditorTab] = useState<"edit" | "preview">("edit");
   const [sideEditorAlignment, setSideEditorAlignment] = useState<"left" | "center" | "right">("left");
-  const [sideEditorFormatPainterActive, setSideEditorFormatPainterActive] = useState(false);
   const sideEditorTextareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Thumbs up / down feedback local state
@@ -262,21 +252,6 @@ export default function AssistantView({
       setMessages([]);
     }
   }, [activeThreadId]);
-
-  // Fetch actual Workspace Documents in case library / wide library
-  useEffect(() => {
-    const fetchDocs = async () => {
-      try {
-        const url = activeCaseId ? `/api/documents?caseId=${activeCaseId}` : "/api/documents?caseId=null";
-        const res = await fetch(url);
-        const data = await res.json();
-        setWorkspaceDocs(data);
-      } catch (err) {
-        console.error("Error fetching workspace docs:", err);
-      }
-    };
-    fetchDocs();
-  }, [activeCaseId]);
 
   // Notify messages change
   useEffect(() => {
@@ -382,7 +357,6 @@ export default function AssistantView({
 
       // Refresh messages with updated thread state
       fetchMessages(currentThreadId);
-      setAttachedFiles([]); // Reset files after prompt finishes
     } catch (err: any) {
       console.error("Error processing request:", err);
       const errAssistantMsg: Message = {
@@ -421,42 +395,6 @@ export default function AssistantView({
     } finally {
       setLoading(false);
     }
-  };
-
-  // Local device file uploader handler
-  const handleLocalFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files) return;
-    const newFilesList = Array.from(files).map(file => {
-      const sizeInKb = file.size / 1024;
-      const formattedSize = sizeInKb > 1024 
-        ? `${(sizeInKb / 1024).toFixed(1)} MB` 
-        : `${sizeInKb.toFixed(0)} KB`;
-      return {
-        name: file.name,
-        size: formattedSize
-      };
-    });
-    setAttachedFiles(prev => [...prev, ...newFilesList]);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = ""; // Reset file selection
-    }
-  };
-
-  // Mock File Upload Integration (Google Drive)
-  const handleAttachMockFile = () => {
-    setIsAttaching(true);
-    setTimeout(() => {
-      const mockFiles = [
-        { name: "Executive_Employment_Agreement.pdf", size: "342 KB" },
-        { name: "Copyright_Dispute_Summary.docx", size: "1.2 MB" },
-        { name: "Trade_Secret_Policy_v4.pdf", size: "820 KB" }
-      ];
-      const randomFile = mockFiles[Math.floor(Math.random() * mockFiles.length)];
-      setAttachedFiles((prev) => [...prev, randomFile]);
-      setIsAttaching(false);
-      setInputValue((prev) => `${prev} [Attached file: ${randomFile.name}] `);
-    }, 1200);
   };
 
   // Docked Side Editor text insertion helper
@@ -771,23 +709,10 @@ export default function AssistantView({
   const renderAskBarForm = () => {
     return (
       <form onSubmit={handleAsk} className="w-full relative flex flex-col select-none">
-        <input 
-          type="file" 
-          ref={fileInputRef} 
-          onChange={handleLocalFileUpload} 
-          multiple 
-          className="hidden" 
-        />        <div className="w-full border border-zinc-200 focus-within:border-zinc-400 rounded-lg bg-white p-3 transition-all flex flex-col gap-2.5">
+        <div className="w-full border border-zinc-200 focus-within:border-zinc-400 rounded-lg bg-white p-3 transition-all flex flex-col gap-2.5">
           {/* Selected Files / Sources Chips Bar at the top of the container */}
-          {(attachedFiles.length > 0 || enableWebSearch || enableCourtListener || enableGovInfo) && (
+          {(enableWebSearch || enableCourtListener || enableGovInfo) && (
             <div className="flex flex-wrap gap-2 select-none pb-2 border-b border-zinc-100 animate-fade-in" id="attached-chips-row">
-              {attachedFiles.map((f, i) => (
-                <span key={i} className="inline-flex items-center gap-1.5 px-2.5 py-0.5 bg-zinc-50 text-zinc-600 rounded-full text-xs font-mono border border-zinc-200 animate-fade-in">
-                  <Paperclip className="h-3 w-3 shrink-0 text-zinc-450" />
-                  <span className="truncate max-w-[150px]">{f.name} {f.size ? `(${f.size})` : ''}</span>
-                  <button type="button" onClick={() => setAttachedFiles(prev => prev.filter((_, idx) => idx !== i))} className="hover:text-zinc-900 font-bold ml-1 text-[10px] focus:outline-none cursor-pointer">✕</button>
-                </span>
-              ))}
               {enableWebSearch && (
                 <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 bg-zinc-50 text-zinc-600 rounded-full text-xs font-mono border border-zinc-200 animate-fade-in">
                   <Globe className="h-3 w-3 shrink-0 text-zinc-450" />
@@ -798,14 +723,14 @@ export default function AssistantView({
               {enableCourtListener && (
                 <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 bg-zinc-50 text-zinc-600 rounded-full text-xs font-mono border border-zinc-200 animate-fade-in">
                   <Library className="h-3 w-3 shrink-0 text-zinc-450" />
-                  <span>CourtListener</span>
+                  <span>CourtListener (Simulated)</span>
                   <button type="button" onClick={() => setEnableCourtListener(false)} className="hover:text-zinc-900 font-bold ml-1 text-[10px] focus:outline-none cursor-pointer">✕</button>
                 </span>
               )}
               {enableGovInfo && (
                 <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 bg-zinc-50 text-zinc-600 rounded-full text-xs font-mono border border-zinc-200 animate-fade-in">
                   <FileText className="h-3 w-3 shrink-0 text-zinc-450" />
-                  <span>GovInfo</span>
+                  <span>GovInfo (Simulated)</span>
                   <button type="button" onClick={() => setEnableGovInfo(false)} className="hover:text-zinc-900 font-bold ml-1 text-[10px] focus:outline-none cursor-pointer">✕</button>
                 </span>
               )}
@@ -861,10 +786,10 @@ export default function AssistantView({
                   onClick={() => setFilesAndSourcesOpen(!filesAndSourcesOpen)}
                   id="files-and-sources-picker"
                   className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-mono font-semibold text-zinc-600 hover:text-zinc-900 border border-zinc-200 rounded bg-white transition-all cursor-pointer hover:border-zinc-300"
-                  title="Choose Matter Sources and permitted external connectors"
+                  title="Choose permitted research sources"
                 >
                   <Paperclip className="h-3.5 w-3.5 shrink-0" />
-                  <span>Files and sources</span>
+                  <span>Research sources</span>
                   <ChevronDown className="h-3 w-3 shrink-0" />
                 </button>
                 
@@ -879,91 +804,6 @@ export default function AssistantView({
                     className="w-80 bg-white border border-zinc-200 rounded shadow-md p-4 z-50 flex flex-col gap-3.5 animate-fade-in text-zinc-900 font-sans"
                   >
                     
-                    {/* Additional files attachment entries */}
-                    <div className="border-b border-zinc-100 pb-3">
-                      <span className="text-[10px] font-mono uppercase text-zinc-400 font-semibold block mb-2 tracking-wider">Context Sources</span>
-                      <div className="space-y-2">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            fileInputRef.current?.click();
-                            setFilesAndSourcesOpen(false);
-                          }}
-                          className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-zinc-700 hover:text-zinc-900 hover:bg-zinc-50 border border-zinc-200 rounded transition-all text-left font-medium cursor-pointer"
-                        >
-                          <Upload className="h-4 w-4 text-zinc-500 shrink-0" />
-                          <div className="flex flex-col">
-                            <span>Upload files</span>
-                            <span className="text-[9px] text-zinc-400 font-mono font-normal">Local device uploader</span>
-                          </div>
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => {
-                            handleAttachMockFile();
-                            setFilesAndSourcesOpen(false);
-                          }}
-                          disabled={isAttaching}
-                          className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-zinc-700 hover:text-zinc-950 hover:bg-zinc-50 border border-zinc-200 rounded-md transition-all text-left font-semibold cursor-pointer"
-                        >
-                          <Paperclip className="h-4 w-4 text-zinc-500 shrink-0" />
-                          <div className="flex flex-col">
-                            <span>Add from Google Drive</span>
-                            <span className="text-[9px] text-zinc-400 font-mono font-normal">{isAttaching ? "Connecting..." : "Drive cloud OAuth picker"}</span>
-                          </div>
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => setShowWorkspaceDocsPicker(!showWorkspaceDocsPicker)}
-                          className="w-full flex items-center justify-between px-3 py-2 text-xs text-zinc-700 hover:text-zinc-950 hover:bg-zinc-50 border border-zinc-200 rounded-md transition-all text-left font-semibold cursor-pointer"
-                        >
-                          <div className="flex items-center gap-2.5">
-                            <Database className="h-4 w-4 text-zinc-500 shrink-0" />
-                            <div className="flex flex-col">
-                              <span>Add from Workspace</span>
-                              <span className="text-[9px] text-zinc-400 font-mono font-normal">Pick from indexed database</span>
-                            </div>
-                          </div>
-                          <ChevronDown className={`h-4 w-4 text-zinc-400 transition-transform ${showWorkspaceDocsPicker ? "rotate-180" : ""}`} />
-                        </button>
-
-                        {showWorkspaceDocsPicker && (
-                          <div className="max-h-40 overflow-y-auto border border-zinc-200 rounded-md bg-zinc-50 p-2 space-y-1 animate-fade-in shadow-inner">
-                            {workspaceDocs.length === 0 ? (
-                              <p className="text-[10px] text-zinc-400 p-2 italic text-center">No indexed documents found in active scope</p>
-                            ) : (
-                              workspaceDocs.map((doc) => {
-                                const isAlreadyAttached = attachedFiles.some(f => f.name === doc.title);
-                                return (
-                                  <button
-                                    key={doc.id}
-                                    type="button"
-                                    onClick={() => {
-                                      if (isAlreadyAttached) {
-                                        setAttachedFiles(prev => prev.filter(f => f.name !== doc.title));
-                                      } else {
-                                        setAttachedFiles(prev => [...prev, { name: doc.title, size: "indexed text" }]);
-                                      }
-                                    }}
-                                    className={`w-full flex items-center justify-between text-left p-1.5 rounded-md text-[11px] transition-all ${
-                                      isAlreadyAttached 
-                                        ? "bg-zinc-950 text-white font-semibold" 
-                                        : "text-zinc-700 hover:bg-zinc-200/70"
-                                    }`}
-                                  >
-                                    <span className="truncate pr-2">{doc.title}</span>
-                                    {isAlreadyAttached ? <Check className="h-3.5 w-3.5 shrink-0" /> : <span className="text-[8px] font-mono text-zinc-400 uppercase font-semibold">Select</span>}
-                                  </button>
-                                );
-                              })
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
                     {/* Toggle-style selectable sources with icons inside dropdown */}
                     <div>
                       <span className="text-[10px] font-mono uppercase text-zinc-400 font-bold block mb-2 tracking-wider">Legal Data Grounding</span>
@@ -997,7 +837,7 @@ export default function AssistantView({
                         >
                           <div className="flex items-center gap-2.5">
                             <Library className="h-4 w-4 text-blue-600 shrink-0" />
-                            <span>CourtListener Federal Case Law</span>
+                            <span>CourtListener Case Law (Simulated)</span>
                           </div>
                           <div className={`w-4 h-4 rounded border flex items-center justify-center ${enableCourtListener ? "bg-blue-600 border-blue-600 text-white" : "border-zinc-300 bg-white"}`}>
                             {enableCourtListener && <Check className="h-3 w-3" />}
@@ -1015,7 +855,7 @@ export default function AssistantView({
                         >
                           <div className="flex items-center gap-2.5">
                             <FileText className="h-4 w-4 text-purple-600 shrink-0" />
-                            <span>GovInfo Legislative Library</span>
+                            <span>GovInfo Legislative Library (Simulated)</span>
                           </div>
                           <div className={`w-4 h-4 rounded border flex items-center justify-center ${enableGovInfo ? "bg-purple-600 border-purple-600 text-white" : "border-zinc-300 bg-white"}`}>
                             {enableGovInfo && <Check className="h-3 w-3" />}
@@ -1103,7 +943,7 @@ export default function AssistantView({
             }`}
           >
             <Library className="h-4 w-4 text-blue-600" />
-            <span>CourtListener</span>
+            <span>CourtListener (Simulated)</span>
             {enableCourtListener && <Check className="h-3.5 w-3.5 ml-0.5 text-blue-700" />}
           </button>
 
@@ -1117,7 +957,7 @@ export default function AssistantView({
             }`}
           >
             <FileText className="h-4 w-4 text-purple-600" />
-            <span>GovInfo Library</span>
+            <span>GovInfo Library (Simulated)</span>
             {enableGovInfo && <Check className="h-3.5 w-3.5 ml-0.5 text-purple-700" />}
           </button>
         </div>

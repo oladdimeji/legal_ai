@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from "react";
 import { 
   FileText, Save, Download, RefreshCw, FileWarning, Eye, Edit, Check, 
-  Paintbrush, Scissors, Clipboard, Undo2, Redo2, Bold, Italic, Underline, 
+  Scissors, Clipboard, Undo2, Redo2, Bold, Italic, Underline,
   Strikethrough, List, ListOrdered, AlignLeft, AlignCenter, AlignRight, 
-  Link as LinkIcon, X, Sparkles, HelpCircle, Copy 
+  Link as LinkIcon, X, Copy
 } from "lucide-react";
 import { Draft } from "../types";
 
@@ -26,11 +26,7 @@ export default function DraftEditorView({
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">("idle");
   const [editMode, setEditMode] = useState(true);
 
-  // Requirement 8 States
   const [alignment, setAlignment] = useState<"left" | "center" | "right">("left");
-  const [formatPainterActive, setFormatPainterActive] = useState(false);
-  const [showEdits, setShowEdits] = useState(false);
-  const [selectedVersion, setSelectedVersion] = useState("current");
   const [undoStack, setUndoStack] = useState<string[]>([]);
   const [redoStack, setRedoStack] = useState<string[]>([]);
 
@@ -226,20 +222,6 @@ export default function DraftEditorView({
     setRedoStack((prev) => prev.slice(0, -1));
     setUndoStack((prev) => [...prev, content]);
     setContent(nextText);
-  };
-
-  const handleVersionChange = (version: string) => {
-    setSelectedVersion(version);
-    if (version === "v1") {
-      updateContentWithHistory(`# MEMORANDUM OF COUNSEL\n\nTO: Case File\nFROM: Lead Counsel\nDATE: July 15, 2026\n\nSUBJECT: Preliminary Analysis (Version 1.0)\n\n[Initial drafting data returned from Gemini Legal Service]`);
-    } else if (version === "v2") {
-      updateContentWithHistory(`# MEMORANDUM OF COUNSEL\n\nTO: Case File\nFROM: Lead Counsel\nDATE: July 15, 2026\n\nSUBJECT: Case Analysis and Secondary Research (Version 2.0)\n\n[Updated with citations from GovInfo and CourtListener libraries]`);
-    } else {
-      // Restore active draft's core content
-      if (activeDraft) {
-        updateContentWithHistory(activeDraft.content);
-      }
-    }
   };
 
   return (
@@ -465,22 +447,6 @@ export default function DraftEditorView({
 
               <div className="w-[1px] h-5 bg-zinc-300 mx-1 shrink-0" />
 
-              {/* Format Painter */}
-              <button
-                type="button"
-                onClick={() => {
-                  setFormatPainterActive(!formatPainterActive);
-                  if (!formatPainterActive) {
-                    alert("Format Painter Activated. Copying current selection formatting style.");
-                  }
-                }}
-                id="tb-btn-painter"
-                className={`p-1.5 rounded transition-all ${formatPainterActive ? "bg-amber-100 text-amber-950 border border-amber-300 animate-pulse" : "text-zinc-600 hover:text-zinc-950 hover:bg-zinc-200/60"}`}
-                title="Format Painter"
-              >
-                <Paintbrush className="h-3.5 w-3.5" />
-              </button>
-
               {/* Insert Link */}
               <button
                 type="button"
@@ -545,38 +511,6 @@ export default function DraftEditorView({
                 <Redo2 className="h-3.5 w-3.5" />
               </button>
 
-              <div className="w-[1px] h-5 bg-zinc-300 mx-1 shrink-0" />
-
-              {/* Show edits toggle */}
-              <button
-                type="button"
-                onClick={() => {
-                  setShowEdits(!showEdits);
-                  if (!showEdits) {
-                    alert("Showing annotated draft changes, deleted phrases, and suggested corrections.");
-                  }
-                }}
-                id="tb-btn-show-edits"
-                className={`flex items-center gap-1.5 px-2 py-1 text-[10px] font-mono font-bold rounded transition-all ${showEdits ? "bg-green-100 text-green-950 border border-green-300" : "text-zinc-600 hover:text-zinc-950 hover:bg-zinc-200/60"}`}
-                title="Toggle visual edit markups"
-              >
-                <Sparkles className="h-3.5 w-3.5 text-green-700" />
-                <span>Show Edits</span>
-              </button>
-
-              {/* Version selector dropdown */}
-              <select
-                id="version-selector"
-                value={selectedVersion}
-                onChange={(e) => handleVersionChange(e.target.value)}
-                className="bg-white border border-zinc-250 rounded px-2 py-1 text-[11px] font-semibold text-zinc-700 hover:border-zinc-400 focus:outline-none cursor-pointer h-7 ml-1"
-                title="Select Draft Version"
-              >
-                <option value="current">V3 (Current Work Product)</option>
-                <option value="v2">V2 (Added Connector Context)</option>
-                <option value="v1">V1 (Initial AI Generation)</option>
-              </select>
-
               <div className="flex-1" />
 
               {/* Close Button */}
@@ -601,16 +535,6 @@ export default function DraftEditorView({
                 {/* Visual margin border lines simulating formal docket styles */}
                 <div className="absolute left-10 top-0 bottom-0 border-l border-red-100" />
 
-                {/* Show Edits Banner Indicator */}
-                {showEdits && (
-                  <div className="mb-6 p-3 bg-green-50 border border-green-200 text-green-950 rounded text-xs flex items-center gap-2 animate-fade-in select-none">
-                    <Sparkles className="h-4 w-4 text-green-700 shrink-0" />
-                    <div>
-                      <strong>Document Change Tracking:</strong> Displaying insertions <ins className="bg-green-100 text-green-950 no-underline px-1 rounded">like this</ins> and deletions <del className="line-through text-red-500 bg-red-50 px-1 rounded">like that</del>.
-                    </div>
-                  </div>
-                )}
-
                 {editMode ? (
                   <textarea
                     value={content}
@@ -620,29 +544,7 @@ export default function DraftEditorView({
                   />
                 ) : (
                   <div className="whitespace-pre-wrap font-sans text-zinc-800 leading-relaxed text-sm pl-4">
-                    {showEdits ? (
-                      <div>
-                        {/* We inject annotations into preview when showEdits is toggled */}
-                        {content
-                          .replace(/outweighed/gi, "outweighed [ins: by unfair prejudice]")
-                          .split("\n")
-                          .map((line, idx) => {
-                            if (line.includes("[ins:")) {
-                              const before = line.substring(0, line.indexOf("outweighed") + "outweighed".length);
-                              const after = line.substring(line.indexOf("]") + 1);
-                              return (
-                                <p key={idx} className="mb-2">
-                                  {before} <ins className="bg-green-100 text-green-950 no-underline px-1 rounded font-semibold">by unfair prejudice</ins> {after}
-                                </p>
-                              );
-                            }
-                            return <p key={idx} className="mb-2">{line}</p>;
-                          })
-                        }
-                      </div>
-                    ) : (
-                      content
-                    )}
+                    {content}
                   </div>
                 )}
               </div>

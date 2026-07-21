@@ -181,3 +181,36 @@ test("migration 009 adds portal comments while temporary Assistant text remains 
   assert.match(portal, /temporary external document text \(not saved\)/);
   assert.match(portal, /Edit a Copy/);
 });
+
+test("Phase 10 removes obsolete combined and global Draft surfaces", async () => {
+  const [app, sidebar, server] = await Promise.all([
+    readFile("src/App.tsx", "utf8"),
+    readFile("src/components/Sidebar.tsx", "utf8"),
+    readFile("server.ts", "utf8"),
+  ]);
+  await assert.rejects(readFile("src/components/WorkspaceView.tsx", "utf8"));
+  assert.doesNotMatch(app, /components\/WorkspaceView|components\/DraftsView/);
+  assert.doesNotMatch(sidebar, /Wide Library|Drafts & Documents|Workspace & Library/);
+  assert.doesNotMatch(server, /app\.get\("\/api\/drafts",/);
+  assert.match(server, /app\.get\("\/api\/cases\/:caseId\/work-product"/);
+});
+
+test("Phase 10 removes misleading editor and attachment controls", async () => {
+  const [assistant, editor] = await Promise.all([
+    readFile("src/components/AssistantView.tsx", "utf8"),
+    readFile("src/components/DraftEditorView.tsx", "utf8"),
+  ]);
+  assert.doesNotMatch(assistant, /Add from Google Drive|Drive cloud OAuth picker|handleAttachMockFile|handleLocalFileUpload|Add from Workspace/);
+  assert.match(assistant, /CourtListener Case Law \(Simulated\)/);
+  assert.match(assistant, /GovInfo Legislative Library \(Simulated\)/);
+  assert.doesNotMatch(editor, /Format Painter|Show Edits|version-selector|V3 \(Current Work Product\)/);
+});
+
+test("Phase 10 preserves SQL-before-ranking and direct-ID ownership guards", async () => {
+  const database = await readFile("server/db.ts", "utf8");
+  assert.match(database, /d\.firm_id = \$2\s+AND d\.case_id IS NULL[\s\S]{0,500}ORDER BY dc\.embedding <=> \$1/);
+  assert.match(database, /c\.id = \$3 AND c\.firm_id = \$2[\s\S]{0,900}ORDER BY dc\.embedding <=> \$1/);
+  assert.match(database, /t\.id = \$1 AND t\.user_id = \$2[\s\S]{0,250}c\.firm_id = \$3/);
+  assert.match(database, /d\.id = \$1 AND d\.case_id = \$2 AND c\.firm_id = \$3/);
+  assert.match(database, /ca\.token_hash = \$1 AND ca\.invitation_status = 'Active' AND ca\.revoked_at IS NULL/);
+});

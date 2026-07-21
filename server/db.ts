@@ -1385,7 +1385,7 @@ class DatabaseService {
       [content, id, caseId, context.firmId, new Date().toISOString()]
     );
     if (rows.length === 0) {
-      throw new Error("Draft not found");
+      throw new Error("Work Product not found");
     }
     return rows[0];
   }

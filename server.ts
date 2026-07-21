@@ -758,7 +758,7 @@ Query: "${content}"`;
               type: "workspace",
               title: doc ? doc.title : "Workspace Document",
               textSnippet: cleanSourceText(c.chunk_text),
-              sourceName: "Workspace Library"
+              sourceName: thread.case_id ? "Matter Sources" : "Firm Library"
             });
             stepCitations.push(`[${cit.id}] ${cit.title}`);
           }
@@ -817,8 +817,8 @@ Query: "${content}"`;
           : "and you DO NOT have access to any external search grounding tools or internet search. You MUST rely ONLY on the provided legal references above.";
 
         const groundingInst1 = enableWebSearch === true
-          ? "1. If the section 'Gathered legal references to use and reference' above says \"No internal document matches.\" (or has no actual workspace document snippets) AND you do not have any active search grounding results or other sources, you MUST respond EXACTLY with: \"I could not find any relevant documents in your Workspace Library regarding this topic.\" and do NOT attempt to answer using your general external knowledge."
-          : "1. If the section 'Gathered legal references to use and reference' above says \"No internal document matches.\" (or has no actual workspace document snippets), you MUST respond EXACTLY with: \"I could not find any relevant documents in your Workspace Library regarding this topic.\" and you MUST NOT attempt to answer or generate any explanation using your general external knowledge. You are strictly forbidden from simulating or fabricating any search results, external knowledge, or citations.";
+          ? "1. If the section 'Gathered legal references to use and reference' above says \"No internal document matches.\" (or has no actual permitted document snippets) AND you do not have any active search grounding results or other sources, you MUST respond EXACTLY with: \"I could not find any relevant documents in the permitted context regarding this topic.\" and do NOT attempt to answer using your general external knowledge."
+          : "1. If the section 'Gathered legal references to use and reference' above says \"No internal document matches.\" (or has no actual permitted document snippets), you MUST respond EXACTLY with: \"I could not find any relevant documents in the permitted context regarding this topic.\" and you MUST NOT attempt to answer or generate any explanation using your general external knowledge. You are strictly forbidden from simulating or fabricating any search results, external knowledge, or citations.";
 
         const citationInstSearch = enableWebSearch === true
           ? "- For Google Search grounding references, cite them using the bracketed numbers (e.g., [1], [2]) that match the search grounding chunks."
@@ -929,7 +929,7 @@ ${citationInstSearch}`;
             type: "workspace",
             title: doc ? doc.title : "Workspace Document",
             textSnippet: cleanSourceText(c.chunk_text),
-            sourceName: "Workspace Library"
+            sourceName: thread.case_id ? "Matter Sources" : "Firm Library"
           });
         }
 
@@ -962,8 +962,8 @@ ${citationInstSearch}`;
           : "and you DO NOT have access to any external search grounding tools or internet search. You MUST rely ONLY on the provided Sources above.";
 
         const groundingInst1 = enableWebSearch === true
-          ? "1. If the section 'Provided Sources' above says \"No internal document matches.\" (or has no actual workspace document snippets) AND you do not have any active search grounding results or other sources, you MUST respond EXACTLY with: \"I could not find any relevant documents in your Workspace Library regarding this topic.\" and do NOT attempt to answer using your general external knowledge."
-          : "1. If the section 'Provided Sources' above says \"No internal document matches.\" (or has no actual workspace document snippets), you MUST respond EXACTLY with: \"I could not find any relevant documents in your Workspace Library regarding this topic.\" and you MUST NOT attempt to answer or generate any explanation using your general external knowledge. You are strictly forbidden from simulating or fabricating any search results, external knowledge, or citations.";
+          ? "1. If the section 'Provided Sources' above says \"No internal document matches.\" (or has no actual permitted document snippets) AND you do not have any active search grounding results or other sources, you MUST respond EXACTLY with: \"I could not find any relevant documents in the permitted context regarding this topic.\" and do NOT attempt to answer using your general external knowledge."
+          : "1. If the section 'Provided Sources' above says \"No internal document matches.\" (or has no actual permitted document snippets), you MUST respond EXACTLY with: \"I could not find any relevant documents in the permitted context regarding this topic.\" and you MUST NOT attempt to answer or generate any explanation using your general external knowledge. You are strictly forbidden from simulating or fabricating any search results, external knowledge, or citations.";
 
         const citationInstSearch = enableWebSearch === true
           ? "- For Google Search grounding references, cite them using the bracketed numbers (e.g., [1], [2]) that match the search grounding chunks."
@@ -1113,17 +1113,12 @@ ${citationInstSearch}`;
     }
   });
 
-  app.get("/api/drafts", async (req, res) => {
-    const caseId = requestedCaseId(req.query.caseId);
-    res.json(await db.getDrafts(ownership(req), caseId));
-  });
-
   app.get("/api/drafts/:id", async (req, res) => {
     const caseId = requestedCaseId(req.query.caseId);
     if (!caseId) return res.status(400).json({ error: "Matter context is required" });
     const draft = await db.getDraftById(req.params.id, caseId, ownership(req));
     if (!draft) {
-      return res.status(404).json({ error: "Draft not found" });
+      return res.status(404).json({ error: "Work Product not found" });
     }
     res.json(draft);
   });
@@ -1245,7 +1240,7 @@ INSTRUCTIONS:
       if (!caseId) return res.status(400).json({ error: "Matter context is required" });
       const draft = await db.getDraftById(req.params.id, caseId, ownership(req));
       if (!draft) {
-        return res.status(404).json({ error: "Draft not found" });
+        return res.status(404).json({ error: "Work Product not found" });
       }
 
       // Parse the markdown draft to lines for a simple clean DOCX document

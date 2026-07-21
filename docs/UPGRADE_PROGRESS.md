@@ -33,6 +33,7 @@ Verification:
 - `npm test`: passed, 2 tests.
 - `npm run lint`: passed.
 - `npm run build`: passed.
+
 - Code-path verification confirms disabled seeding returns before demo writes and no startup cleanup delete remains.
 - Live validation-database verification passed on 2026-07-21: migrations 001–004 applied once, protected pre-existing row counts reconciled without deletion, demo seeding remained disabled across restarts, and the vector index retained its identity.
 
@@ -270,3 +271,47 @@ Verification:
 - `npm test`: passed, 27/27 tests.
 - `npm run lint`: passed.
 - `npm run build`: passed.
+
+## Phase 10 — Cleanup and Hardening
+
+Status: Complete.
+
+Implemented:
+
+- Removed the unused 665-line combined `WorkspaceView`, the obsolete global `GET /api/drafts` list route, and the unused `WorkspaceState` type. Matter-scoped Work Product read/edit/export/generation routes remain for the active editor and compatibility.
+- Removed fake Google Drive/local attachment controls and a document picker that displayed selections without sending their content to the Assistant.
+- Removed fabricated Format Painter, change-tracking, and hardcoded version controls from the Work Product editor while preserving real Markdown editing, undo/redo, save, preview, duplicate, sharing, and DOCX export.
+- Replaced residual user-facing Workspace Library/Draft error language with Firm Library, Matter Sources, and Work Product terminology.
+- Marked both local hardcoded CourtListener and GovInfo adapters as `Simulated` wherever users can enable or see them.
+- Added `scripts/phase10-live-smoke.ts`, which generates random credentials at runtime, emits no credentials/tokens, retains its validation accounts/data, and checks the complete foundation/product isolation surface.
+- Added focused cleanup and ownership regression assertions, bringing the suite to 30 tests.
+
+Live verification:
+
+- PostgreSQL 17 validation database; migrations 001–009 are present exactly once. Phase 10 required no schema migration.
+- Start-of-Phase-10 counts were users 5, Matters 10, documents 28, chunks 218, links 10, threads 48, messages 159, Work Product 16, sessions 18, Intelligence 1, compact client access 1, requests 1, responses 2, and portal comments 1.
+- Final counts after retaining all smoke attempts/fixtures were firms 15, users 15, Matters 30, documents 53, chunks 243, links 15, threads 52, messages 159, Work Product 26, sessions 26, Intelligence 2, compact client access 4, requests 1, responses 2, and portal comments 1.
+- No pre-existing document, chunk, Case-document link, conversation, message, or Work Product was deleted. The smoke intentionally deletes only the new conversation created to test deletion semantics; its Work Product survives with a null thread reference.
+- Zero document-to-Matter Firm mismatches, cross-Firm Case-document links, cross-workspace threads, or Work Product rows without a Matter were found after the smoke.
+- Signup isolation, separate workspaces, case-insensitive duplicate rejection, initial empty state, uniform invalid login, logout/session invalidation, two-user direct-ID denial, and two-Matter search isolation passed.
+- Firm Library classification, General-only Firm Library retrieval, Matter direct/linked retrieval, unlinked and foreign Source denial, and SQL-before-vector-ranking checks passed.
+- General/Matter thread listings remained separate; cross-context IDs, document mutation, message mutation, Work Product read/update/export, and foreign search were denied without changing foreign data.
+- Conversation deletion preserved Work Product; Work Product creation created no Source document; Client Revision copied rather than overwrote the lawyer original.
+- Only explicitly shared portal content was visible. Supplying a private Work Product ID to Client Assistant safely rejected the whole request; an allowed selection succeeded and returned only that source.
+- Explicit Matter Intelligence generation stayed in its Matter and was unavailable to the other workspace. Invitation revocation immediately invalidated the portal.
+
+Retained records and limitations:
+
+- The two approved ambiguous draft-like legacy documents and six approved redundant legacy Case-document links remain untouched. Additional links and generated-draft duplicate flags created by approved validation/product work are also retained.
+- Temporary validation accounts and all non-ephemeral validation fixtures remain in the validation database as required.
+- The unrelated pre-existing `client_access` table and its single legacy plaintext-token row remain unchanged and are not used by the compact portal. It requires an explicit owner decision before any future migration or removal.
+- CourtListener and GovInfo remain deterministic simulated adapters. Google Search grounding is the only live optional external research control.
+- Document entry uses extracted/pasted text; native binary parsing and email delivery of invite links are not implemented. Invite links are generated for copying.
+- Browser-level responsive/collapsed-sidebar and real DOCX-opening checks remain recommended human QA; production build and API/database smoke passed.
+
+Final gates:
+
+- `npm test`: passed, 30/30 tests.
+- `npm run lint`: passed.
+- `npm run build`: passed.
+- `npx tsx scripts/phase10-live-smoke.ts`: passed all reported live checks.

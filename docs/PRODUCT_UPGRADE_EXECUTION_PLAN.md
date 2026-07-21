@@ -160,14 +160,14 @@ Rollback/failure: revoke access tokens first; temporary records are additive and
 
 ### Checklist
 
-- [ ] Search all visible frontend strings and remove obsolete Case/Wide Library/Workspace & Library/global Draft terminology.
-- [ ] Remove unused combined workspace/global Draft frontend files and compatibility UI paths; retain server compatibility aliases only where existing clients may depend on them.
-- [ ] Remove or relabel misleading simulated controls, version selectors, OAuth/file connectors, change tracking, and other placeholders that conflict with completed behavior.
-- [ ] Clearly label retained CourtListener/GovInfo local connectors as simulated; never imply live integration.
-- [ ] Audit every new query for internal-session or portal-token ownership and SQL-before-ranking filtering.
-- [ ] Add comprehensive migration, auth/logout, direct-ID, cross-user, cross-Matter, Firm Library, revocation, Client Revision, Work Product survival, Intelligence, and Client Assistant isolation tests.
-- [ ] Run full smoke verification without deleting validation fixtures or preserved ambiguous/redundant records.
-- [ ] Update progress/final limitations with exact simulated integrations and retained records.
+- [x] Search all visible frontend strings and remove obsolete Case/Wide Library/Workspace & Library/global Draft terminology.
+- [x] Remove unused combined workspace/global Draft frontend files and the global Work Product list route while retaining Matter-scoped compatibility endpoints used by the editor.
+- [x] Remove or relabel misleading simulated controls, version selectors, OAuth/file connectors, change tracking, and other placeholders that conflict with completed behavior.
+- [x] Clearly label retained CourtListener/GovInfo local connectors as simulated; never imply live integration.
+- [x] Audit every new query for internal-session or portal-token ownership and SQL-before-ranking filtering.
+- [x] Add comprehensive migration, auth/logout, direct-ID, cross-user, cross-Matter, Firm Library, revocation, Client Revision, Work Product survival, Intelligence, and Client Assistant isolation tests.
+- [x] Run full smoke verification without deleting validation accounts, retained smoke fixtures, or preserved ambiguous/redundant legacy records.
+- [x] Update progress/final limitations with exact simulated integrations and retained records.
 
 Database migrations: none expected; any discovered constraint/index need must be additive and separately justified.  
 Manual verification: authenticated navigation, all Matter tabs, General/Matter Assistant/History, legacy Work Product, Intelligence, Collaboration, portal revocation, responsive/collapsed sidebar, and direct URL/ID attacks.  

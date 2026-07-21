@@ -152,7 +152,3 @@ export interface CollaborationRequest {
   documents: Draft[];
   responses: CollaborationResponse[];
 }
-
-export interface WorkspaceState {
-  currentCaseId: string | null; // null means Wide Library
-}
