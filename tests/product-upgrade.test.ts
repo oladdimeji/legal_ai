@@ -107,3 +107,31 @@ test("migration 007 stores one simple Matter Intelligence version and Source sna
   assert.match(migrations, /source_snapshot JSONB/);
   assert.match(migrations, /version INTEGER NOT NULL DEFAULT 1/);
 });
+
+test("Phase 8 collaboration invite stores only a token hash and supports revocation", async () => {
+  const [server, database] = await Promise.all([
+    readFile("server.ts", "utf8"),
+    readFile("server/db.ts", "utf8"),
+  ]);
+  assert.match(server, /const \{ token, tokenHash \} = createSessionToken\(\)/);
+  assert.match(server, /activateClientInvite\(req\.params\.caseId, tokenHash/);
+  assert.match(server, /invitePath: `\/client\/\$\{encodeURIComponent\(token\)\}`/);
+  assert.match(database, /SET token_hash = NULL, invitation_status = 'Revoked'/);
+  assert.doesNotMatch(database, /INSERT INTO matter_client_access[\s\S]{0,200}\btoken\b(?!_hash)/);
+});
+
+test("Phase 8 requests validate Matter-owned Work Product before linking", async () => {
+  const database = await readFile("server/db.ts", "utf8");
+  assert.match(database, /d\.id = ANY\(\$1::text\[\]\) AND d\.case_id = \$2 AND c\.firm_id = \$3/);
+  assert.match(database, /collaboration_request_documents/);
+  assert.match(database, /markCollaborationResponseRead/);
+});
+
+test("migration 008 adds one-client collaboration records without an external account", async () => {
+  const migrations = await readFile("server/migrations.ts", "utf8");
+  assert.match(migrations, /version: 8/);
+  assert.match(migrations, /CREATE TABLE IF NOT EXISTS matter_client_access/);
+  assert.match(migrations, /case_id TEXT NOT NULL UNIQUE REFERENCES cases/);
+  assert.match(migrations, /collaboration_requests/);
+  assert.match(migrations, /client_responses/);
+});

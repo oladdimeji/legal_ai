@@ -346,6 +346,70 @@ ${sourceText}`;
     }
   });
 
+  app.get("/api/cases/:caseId/collaboration", async (req, res) => {
+    try {
+      return res.json(await db.getCollaboration(req.params.caseId, ownership(req)));
+    } catch (err: any) {
+      return res.status(ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
+  app.put("/api/cases/:caseId/collaboration/client", async (req, res) => {
+    try {
+      const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
+      const email = typeof req.body.email === "string" ? req.body.email.trim().toLowerCase() : "";
+      if (!name || !email || !email.includes("@")) {
+        return res.status(400).json({ error: "Client name and valid email are required" });
+      }
+      return res.json(await db.saveClientCollaborator(req.params.caseId, name, email, ownership(req)));
+    } catch (err: any) {
+      return res.status(ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/cases/:caseId/collaboration/invite", async (req, res) => {
+    try {
+      const { token, tokenHash } = createSessionToken();
+      const access = await db.activateClientInvite(req.params.caseId, tokenHash, ownership(req));
+      res.setHeader("Cache-Control", "no-store");
+      return res.json({ access, invitePath: `/client/${encodeURIComponent(token)}` });
+    } catch (err: any) {
+      return res.status(ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/cases/:caseId/collaboration/revoke", async (req, res) => {
+    try {
+      return res.json(await db.revokeClientInvite(req.params.caseId, ownership(req)));
+    } catch (err: any) {
+      return res.status(ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/cases/:caseId/collaboration/requests", async (req, res) => {
+    try {
+      const type = typeof req.body.type === "string" ? req.body.type : "";
+      const instruction = typeof req.body.instruction === "string" ? req.body.instruction.trim() : "";
+      const draftIds: string[] = Array.isArray(req.body.draftIds)
+        ? req.body.draftIds.filter((id: unknown): id is string => typeof id === "string") : [];
+      if (!instruction) return res.status(400).json({ error: "Request instruction is required" });
+      return res.status(201).json(
+        await db.createCollaborationRequest(req.params.caseId, type, instruction, draftIds, ownership(req))
+      );
+    } catch (err: any) {
+      const status = /invalid|select at least/i.test(err.message) ? 400 : ownedErrorStatus(err);
+      return res.status(status).json({ error: err.message });
+    }
+  });
+
+  app.put("/api/cases/:caseId/collaboration/responses/:responseId/read", async (req, res) => {
+    const updated = await db.markCollaborationResponseRead(
+      req.params.caseId, req.params.responseId, ownership(req)
+    );
+    if (!updated) return res.status(404).json({ error: "Client response not found" });
+    return res.json({ success: true });
+  });
+
   // Documents Library
   app.get("/api/documents", async (req, res) => {
     const caseId = requestedCaseId(req.query.caseId);

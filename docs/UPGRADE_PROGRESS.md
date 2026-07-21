@@ -222,3 +222,26 @@ Verification:
 - `npm test`: passed, 20/20 tests.
 - `npm run lint`: passed.
 - `npm run build`: passed.
+
+## Phase 8 — Collaboration
+
+Status: Complete.
+
+Implemented:
+
+- Migration 008 creates `matter_client_access`, collaboration requests, request-to-Work-Product links, client responses, and ownership-path indexes.
+- A pre-existing unrelated `client_access` table with one legacy row and a plaintext `token` column caused the first migration attempt to roll back. It was inspected read-only and preserved unchanged; the compact feature uses the namespaced hash-only table instead.
+- One client collaborator can be saved per Matter, prefilled from Matter details, activated with a cryptographically random invite link, rotated by generating a new link, and revoked immediately.
+- Only the token hash is stored; the raw token is returned once in a no-store response for copying and is never logged.
+- Collaboration summarizes shared Work Product without copying documents.
+- Lawyers can send the six approved request types with one or more validated Matter Work Product documents and an instruction.
+- Responses are displayed with a compact unread count on the Collaboration tab and can be marked read; no global notification center was added.
+
+Verification:
+
+- Migration 008 applied exactly once after the safe table namespace correction.
+- Live validation confirmed one-client storage, hash-only activation, shared-document summary, request links, incoming response/unread/read behavior, foreign-workspace denial, and immediate token removal on revoke.
+- The unrelated legacy `client_access` row had an identical fingerprint before and after Phase 8 verification.
+- `npm test`: passed, 23/23 tests.
+- `npm run lint`: passed.
+- `npm run build`: passed.

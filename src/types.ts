@@ -119,6 +119,40 @@ export interface MatterIntelligenceRecord {
   sources_changed: boolean;
 }
 
+export interface ClientAccess {
+  id: string;
+  case_id: string;
+  client_name: string;
+  client_email: string;
+  invitation_status: "Pending" | "Active" | "Revoked";
+  created_at: string;
+  activated_at: string | null;
+  revoked_at: string | null;
+}
+
+export interface CollaborationResponse {
+  id: string;
+  request_id: string;
+  response_type: string;
+  content: string | null;
+  document_id: string | null;
+  draft_id: string | null;
+  is_read: boolean;
+  created_at: string;
+}
+
+export interface CollaborationRequest {
+  id: string;
+  case_id: string;
+  request_type: string;
+  instruction: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  documents: Draft[];
+  responses: CollaborationResponse[];
+}
+
 export interface WorkspaceState {
   currentCaseId: string | null; // null means Wide Library
 }

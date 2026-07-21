@@ -567,6 +567,136 @@ class DatabaseService {
     return { ...rows[0], sources_changed: false };
   }
 
+  public async getCollaboration(caseId: string, context: OwnershipContext): Promise<any> {
+    const matter = await this.getCaseById(caseId, context);
+    if (!matter) throw new Error("Matter not found");
+    const access = (await this.query(
+      `SELECT id, case_id, client_name, client_email, invitation_status, created_at,
+        activated_at, revoked_at FROM matter_client_access WHERE case_id = $1`, [caseId]
+    ))[0] || null;
+    const shared = await this.query(
+      `SELECT d.* FROM drafts d JOIN cases c ON c.id = d.case_id
+       WHERE d.case_id = $1 AND c.firm_id = $2 AND d.shared_with_client = TRUE
+       ORDER BY COALESCE(d.updated_at, d.created_at) DESC`, [caseId, context.firmId]
+    );
+    const requests = await this.query(
+      `SELECT cr.* FROM collaboration_requests cr JOIN cases c ON c.id = cr.case_id
+       WHERE cr.case_id = $1 AND c.firm_id = $2 ORDER BY cr.created_at DESC`,
+      [caseId, context.firmId]
+    );
+    for (const request of requests) {
+      request.documents = await this.query(
+        `SELECT d.* FROM collaboration_request_documents rd JOIN drafts d ON d.id = rd.draft_id
+         WHERE rd.request_id = $1 AND d.case_id = $2`, [request.id, caseId]
+      );
+      request.responses = await this.query(
+        `SELECT r.* FROM client_responses r WHERE r.request_id = $1 ORDER BY r.created_at DESC`,
+        [request.id]
+      );
+    }
+    const unread = requests.reduce(
+      (count: number, request: any) => count + request.responses.filter((response: any) => !response.is_read).length,
+      0
+    );
+    return { matter, access, shared, requests, unread };
+  }
+
+  public async saveClientCollaborator(
+    caseId: string, name: string, email: string, context: OwnershipContext
+  ): Promise<any> {
+    const id = `client_${randomUUID()}`;
+    const now = new Date().toISOString();
+    const rows = await this.query(
+      `INSERT INTO matter_client_access
+        (id, case_id, client_name, client_email, invitation_status, created_at)
+       SELECT $1, c.id, $3, $4, 'Pending', $5 FROM cases c
+       WHERE c.id = $2 AND c.firm_id = $6
+       ON CONFLICT (case_id) DO UPDATE SET client_name = EXCLUDED.client_name,
+         client_email = EXCLUDED.client_email
+       RETURNING id, case_id, client_name, client_email, invitation_status, created_at,
+         activated_at, revoked_at`,
+      [id, caseId, name, email, now, context.firmId]
+    );
+    if (!rows[0]) throw new Error("Matter not found");
+    return rows[0];
+  }
+
+  public async activateClientInvite(
+    caseId: string, tokenHash: string, context: OwnershipContext
+  ): Promise<any> {
+    const now = new Date().toISOString();
+    const rows = await this.query(
+      `UPDATE matter_client_access ca SET token_hash = $1, invitation_status = 'Active',
+         activated_at = $2, revoked_at = NULL
+       WHERE ca.case_id = $3 AND EXISTS (
+         SELECT 1 FROM cases c WHERE c.id = ca.case_id AND c.firm_id = $4
+       ) RETURNING id, case_id, client_name, client_email, invitation_status,
+         created_at, activated_at, revoked_at`,
+      [tokenHash, now, caseId, context.firmId]
+    );
+    if (!rows[0]) throw new Error("Client collaborator not found");
+    return rows[0];
+  }
+
+  public async revokeClientInvite(caseId: string, context: OwnershipContext): Promise<any> {
+    const rows = await this.query(
+      `UPDATE matter_client_access ca SET token_hash = NULL, invitation_status = 'Revoked', revoked_at = $1
+       WHERE ca.case_id = $2 AND EXISTS (
+         SELECT 1 FROM cases c WHERE c.id = ca.case_id AND c.firm_id = $3
+       ) RETURNING id, case_id, client_name, client_email, invitation_status,
+         created_at, activated_at, revoked_at`,
+      [new Date().toISOString(), caseId, context.firmId]
+    );
+    if (!rows[0]) throw new Error("Client collaborator not found");
+    return rows[0];
+  }
+
+  public async createCollaborationRequest(
+    caseId: string, requestType: string, instruction: string, draftIds: string[], context: OwnershipContext
+  ): Promise<any> {
+    const allowed = new Set(["Review", "Comment", "Confirm information", "Upload a document", "Edit and return a copy", "Provide a written response"]);
+    if (!allowed.has(requestType)) throw new Error("Invalid collaboration request type");
+    const unique = Array.from(new Set(draftIds));
+    if (unique.length === 0) throw new Error("Select at least one Work Product document");
+    const owned = await this.query(
+      `SELECT d.id FROM drafts d JOIN cases c ON c.id = d.case_id
+       WHERE d.id = ANY($1::text[]) AND d.case_id = $2 AND c.firm_id = $3`,
+      [unique, caseId, context.firmId]
+    );
+    if (owned.length !== unique.length) throw new Error("Work Product not found");
+    const id = `request_${randomUUID()}`;
+    const now = new Date().toISOString();
+    const inserted = await this.query(
+      `INSERT INTO collaboration_requests
+        (id, case_id, request_type, instruction, status, created_at, updated_at)
+       SELECT $1, c.id, $3, $4, 'Sent', $5, $5 FROM cases c
+       WHERE c.id = $2 AND c.firm_id = $6 RETURNING *`,
+      [id, caseId, requestType, instruction, now, context.firmId]
+    );
+    if (!inserted[0]) throw new Error("Matter not found");
+    for (const draftId of unique) {
+      await this.query(
+        "INSERT INTO collaboration_request_documents(request_id, draft_id) VALUES($1, $2)",
+        [id, draftId]
+      );
+    }
+    return { ...inserted[0], documents: owned, responses: [] };
+  }
+
+  public async markCollaborationResponseRead(
+    caseId: string, responseId: string, context: OwnershipContext
+  ): Promise<boolean> {
+    const rows = await this.query(
+      `UPDATE client_responses r SET is_read = TRUE
+       WHERE r.id = $1 AND EXISTS (
+         SELECT 1 FROM collaboration_requests cr JOIN cases c ON c.id = cr.case_id
+         WHERE cr.id = r.request_id AND cr.case_id = $2 AND c.firm_id = $3
+       ) RETURNING r.id`,
+      [responseId, caseId, context.firmId]
+    );
+    return rows.length === 1;
+  }
+
   public async getDocuments(context: OwnershipContext, caseId: string | null): Promise<Document[]> {
     if (!caseId) {
       return await this.query(

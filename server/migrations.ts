@@ -302,6 +302,62 @@ const migrations: Migration[] = [
       );
     },
   },
+  {
+    version: 8,
+    name: "matter_collaboration",
+    async run(client) {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS matter_client_access (
+          id TEXT PRIMARY KEY,
+          case_id TEXT NOT NULL UNIQUE REFERENCES cases(id) ON DELETE CASCADE,
+          client_name TEXT NOT NULL,
+          client_email TEXT NOT NULL,
+          token_hash TEXT UNIQUE,
+          invitation_status TEXT NOT NULL DEFAULT 'Pending',
+          created_at TEXT NOT NULL,
+          activated_at TEXT,
+          revoked_at TEXT
+        )
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS collaboration_requests (
+          id TEXT PRIMARY KEY,
+          case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+          request_type TEXT NOT NULL,
+          instruction TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'Sent',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS collaboration_request_documents (
+          request_id TEXT NOT NULL REFERENCES collaboration_requests(id) ON DELETE CASCADE,
+          draft_id TEXT NOT NULL REFERENCES drafts(id) ON DELETE CASCADE,
+          PRIMARY KEY (request_id, draft_id)
+        )
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS client_responses (
+          id TEXT PRIMARY KEY,
+          request_id TEXT NOT NULL REFERENCES collaboration_requests(id) ON DELETE CASCADE,
+          response_type TEXT NOT NULL,
+          content TEXT,
+          document_id TEXT REFERENCES documents(id) ON DELETE SET NULL,
+          draft_id TEXT REFERENCES drafts(id) ON DELETE SET NULL,
+          is_read BOOLEAN NOT NULL DEFAULT FALSE,
+          created_at TEXT NOT NULL
+        )
+      `);
+      await client.query("CREATE INDEX IF NOT EXISTS matter_client_access_token_idx ON matter_client_access(token_hash)");
+      await client.query(
+        "CREATE INDEX IF NOT EXISTS collaboration_requests_case_idx ON collaboration_requests(case_id, created_at DESC)"
+      );
+      await client.query(
+        "CREATE INDEX IF NOT EXISTS client_responses_request_idx ON client_responses(request_id, created_at DESC)"
+      );
+    },
+  },
 ];
 
 export async function runMigrations(pool: Pool): Promise<void> {

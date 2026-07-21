@@ -121,14 +121,14 @@ Rollback/failure: generation is transactional at record write; existing Sources 
 
 ### Checklist
 
-- [ ] Add migration 008 for one `client_access` row per Matter, token hash/status/revocation fields, `collaboration_requests`, request-document links, `client_responses`, and response-document links.
-- [ ] Add ownership-path indexes and constraints without deleting duplicate legacy data.
-- [ ] Modify `server/db.ts` for owned invite create/rotate/revoke, shared Work Product summary, request create/list, response list, and unread/read state.
-- [ ] Modify `server.ts` with lawyer-authenticated Collaboration APIs; return the raw invite token only at generation time and never log/store it.
-- [ ] Create `src/components/MatterCollaboration.tsx` for invite fields, generate/copy/revoke, shared documents, requests, responses, and a small unread indicator.
-- [ ] Integrate Collaboration into `MatterWorkspaceView` and prefill client details from Matter metadata.
-- [ ] Reuse Work Product share flags and Matter ownership checks; do not create a parallel document store.
-- [ ] Add tests for token hashing/randomness, one-client constraint, ownership, request document validation, response visibility, unread state, and immediate revocation.
+- [x] Add migration 008 for one `matter_client_access` row per Matter, token hash/status/revocation fields, `collaboration_requests`, request-document links, and `client_responses` attachment references.
+- [x] Add ownership-path indexes and constraints without modifying the unrelated legacy `client_access` table discovered during migration verification.
+- [x] Modify `server/db.ts` for owned invite create/rotate/revoke, shared Work Product summary, request create/list, response list, and unread/read state.
+- [x] Modify `server.ts` with lawyer-authenticated Collaboration APIs; return the raw invite token only at generation time and never log/store it.
+- [x] Create `src/components/MatterCollaboration.tsx` for invite fields, generate/copy/revoke, shared documents, requests, responses, and a small unread indicator.
+- [x] Integrate Collaboration into `MatterWorkspaceView` and prefill client details from Matter metadata.
+- [x] Reuse Work Product share flags and Matter ownership checks; do not create a parallel document store.
+- [x] Add tests for token hashing/randomness, one-client constraint, ownership, request document validation, response visibility, unread state, and immediate revocation.
 
 Backfill: none; existing Matters have no client access/request rows.  
 Manual verification: invite one client, copy/rotate/revoke link, share Work Product, send each supported request type, and verify response/unread summaries with owned fixtures.  
