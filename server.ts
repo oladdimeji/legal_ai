@@ -114,6 +114,39 @@ ${answer.slice(0, 5000)}`;
   }
 }
 
+async function suggestMatterOverview(input: {
+  name: string;
+  description: string;
+  startingContent: string;
+}): Promise<Partial<{
+  client_name: string;
+  matter_type: string;
+  jurisdiction: string;
+  preliminary_objectives: string;
+}>> {
+  try {
+    const prompt = `Suggest Matter Overview fields from only the supplied Matter name, assignment, and starting content.
+Return strict JSON with any clearly supported fields only: {"client_name":"","matter_type":"","jurisdiction":"","preliminary_objectives":""}.
+Omit or use empty strings for absent/unclear values. Do not fabricate.
+
+MATTER NAME: ${input.name}
+ASSIGNMENT: ${input.description}
+STARTING CONTENT:
+${input.startingContent.slice(0, 20000)}`;
+    const result = await callModel("classify-complexity", [{ role: "user", content: prompt }], {
+      responseMimeType: "application/json",
+      temperature: 0.1,
+    });
+    const parsed = JSON.parse(result.text);
+    return Object.fromEntries(
+      Object.entries(parsed).filter(([, value]) => typeof value === "string" && value.trim())
+    ) as any;
+  } catch (error) {
+    console.error("Matter Overview suggestion failed:", error);
+    return {};
+  }
+}
+
 async function startServer() {
   const app = express();
   app.use(express.json());
@@ -390,25 +423,18 @@ Raw prompt: "${prompt}"`;
     return res.json(matter);
   });
 
-  app.post("/api/cases", async (req, res) => {
+  app.post("/api/cases", upload.array("files", MAX_FILE_COUNT), async (req, res) => {
     try {
       const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
       const description = typeof req.body.description === "string" ? req.body.description.trim() : "";
-      const startingNote = typeof req.body.startingNote === "string" ? req.body.startingNote.trim() : "";
-      const startingDocument = req.body.startingDocument &&
-        typeof req.body.startingDocument.title === "string" &&
-        typeof req.body.startingDocument.text === "string" &&
-        req.body.startingDocument.title.trim() && req.body.startingDocument.text.trim()
-        ? { title: req.body.startingDocument.title.trim(), text: req.body.startingDocument.text.trim() }
-        : null;
-      const libraryDocumentIds: string[] = Array.isArray(req.body.libraryDocumentIds)
-        ? req.body.libraryDocumentIds.filter((id: unknown): id is string => typeof id === "string")
+      const rawLibraryIds = typeof req.body.libraryDocumentIds === "string"
+        ? JSON.parse(req.body.libraryDocumentIds || "[]")
+        : req.body.libraryDocumentIds;
+      const libraryDocumentIds: string[] = Array.isArray(rawLibraryIds)
+        ? rawLibraryIds.filter((id: unknown): id is string => typeof id === "string")
         : [];
       if (!name || !description) {
         return res.status(400).json({ error: "Matter name and assignment description are required" });
-      }
-      if (!startingNote && !startingDocument && libraryDocumentIds.length === 0) {
-        return res.status(400).json({ error: "At least one starting input is required" });
       }
       const requestOwnership = ownership(req);
       if (!(await db.validateFirmLibraryDocuments(libraryDocumentIds, requestOwnership))) {
@@ -418,23 +444,36 @@ Raw prompt: "${prompt}"`;
         clientName: typeof req.body.clientName === "string" ? req.body.clientName.trim() : null,
         clientEmail: typeof req.body.clientEmail === "string" ? req.body.clientEmail.trim() : null,
       });
-      if (startingNote) {
-        await db.uploadDocument(
-          `Starting instruction — ${name}`, startingNote, requestOwnership,
-          null, null, newCase.id, "Starting Instruction", "Lawyer"
-        );
-      }
-      if (startingDocument) {
-        await db.uploadDocument(
-          startingDocument.title, startingDocument.text, requestOwnership,
-          null, null, newCase.id, "Matter Upload", "Lawyer"
-        );
+      const warnings: string[] = [];
+      const startingTexts: string[] = [description];
+      try {
+        const extracted = await extractUploads((req.files || []) as Express.Multer.File[]);
+        for (const file of extracted) {
+          await db.uploadDocument(file.filename, file.text, requestOwnership, null, null, newCase.id, "Matter Upload", "Lawyer");
+          startingTexts.push(`${file.filename}\n${file.text}`);
+        }
+      } catch (error) {
+        warnings.push(error instanceof Error ? error.message : "An optional file could not be processed.");
       }
       for (const documentId of Array.from(new Set(libraryDocumentIds))) {
         await db.linkLibraryDocument(newCase.id, documentId, "Starting Input", requestOwnership);
       }
+      const suggestions = await suggestMatterOverview({ name, description, startingContent: startingTexts.join("\n\n") });
+      let finalCase = newCase;
+      if (Object.keys(suggestions).length > 0) {
+        finalCase = await db.updateCase(newCase.id, {
+          ...newCase,
+          client_name: suggestions.client_name || newCase.client_name || null,
+          matter_type: suggestions.matter_type || null,
+          jurisdiction: suggestions.jurisdiction || null,
+          preliminary_objectives: suggestions.preliminary_objectives || null,
+          matter_type_suggested: Boolean(suggestions.matter_type),
+          jurisdiction_suggested: Boolean(suggestions.jurisdiction),
+          objectives_suggested: Boolean(suggestions.preliminary_objectives),
+        }, requestOwnership) || newCase;
+      }
       await db.touchCase(newCase.id, requestOwnership);
-      res.status(201).json(newCase);
+      res.status(201).json({ ...finalCase, warnings });
     } catch (err: any) {
       res.status(ownedErrorStatus(err)).json({ error: err.message });
     }
@@ -1295,6 +1334,8 @@ ${citationInstSearch}`;
       if (!thread.case_id) {
         return res.status(400).json({ error: "Select a Matter before saving generated Work Product" });
       }
+      const matter = await db.getCaseById(thread.case_id, requestOwnership);
+      if (!matter) return res.status(404).json({ error: "Matter not found" });
 
       const messages = await db.getMessages(threadId, requestOwnership);
       if (messages.length === 0) {
@@ -1306,8 +1347,25 @@ ${citationInstSearch}`;
         .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
         .join("\n\n");
 
-      const draftPrompt = `You are a meticulous legal counsel drafting an formal document based on legal research.
+      const currentDate = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric", timeZone: "UTC" });
+      const matterMetadata = [
+        `Matter name: ${matter.name}`,
+        `Assignment description: ${matter.description}`,
+        matter.client_name ? `Client name: ${matter.client_name}` : "",
+        matter.client_email ? `Client email: ${matter.client_email}` : "",
+        matter.matter_type ? `Practice area: ${matter.matter_type}` : "",
+        matter.jurisdiction ? `Jurisdiction: ${matter.jurisdiction}` : "",
+        matter.preliminary_objectives ? `Preliminary objectives: ${matter.preliminary_objectives}` : "",
+        `Lawyer name: ${(req as AuthenticatedRequest).auth!.user.name}`,
+        `Firm name: ${(req as AuthenticatedRequest).auth!.firm.name}`,
+        `Current date: ${currentDate}`,
+      ].filter(Boolean).join("\n");
+
+      const draftPrompt = `You are a meticulous legal counsel drafting a formal document based on legal research.
 Draft a high-quality ${format.toUpperCase()} (e.g., memo, email advice, or legal summary) based on the legal consultation conversation history and references provided below.
+
+Matter and account metadata:
+${matterMetadata}
 
 Conversation History:
 ${convoHistory}
@@ -1321,7 +1379,9 @@ INSTRUCTIONS:
    - Professional Legal Email: Include clear greeting, analytical overview, breakdown of issues, next steps, and professional disclaimer.
    - Legal Summary: Analytical breakdown of the primary matter, facts, governing laws, and key recommendations.
 2. Carry over all relevant citation references (like [cit_1] or external case names) inline or as footnotes.
-3. Output the draft using elegant, rich markdown with readable headers. Do not wrap in generic JSON, just output the clean draft text.`;
+3. Use the server-provided current date exactly when a date is needed. Do not invent another date.
+4. Do not emit bracketed placeholders such as [Client Name], [Your Name], or [Firm Name] when the metadata supplies those values. If optional metadata is missing, omit that field or use a neutral professional phrasing.
+5. Output the draft using elegant, rich markdown with readable headers. Do not wrap in generic JSON, just output the clean draft text.`;
 
       const draftResult = await callModel("draft-generation", [{ role: "user", content: draftPrompt }], {
         temperature: 0.3

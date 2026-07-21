@@ -10,7 +10,7 @@ export default function FirmLibraryView() {
   const [section, setSection] = useState<string | null>(null);
   const [preview, setPreview] = useState<Document | null>(null);
   const [title, setTitle] = useState("");
-  const [text, setText] = useState("");
+  const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
 
   const load = async () => {
@@ -20,10 +20,7 @@ export default function FirmLibraryView() {
 
   useEffect(() => { void load(); }, []);
 
-  const sections = useMemo(
-    () => Array.from(new Set(documents.map((document) => document.section))).sort(),
-    [documents]
-  );
+  const sections = useMemo(() => Array.from(new Set(documents.map((document) => document.section))).sort(), [documents]);
   const visible = documents.filter((document) => {
     if (section && document.section !== section) return false;
     if (!query.trim() || results.length > 0) return results.length === 0 || results.includes(document.id);
@@ -46,17 +43,16 @@ export default function FirmLibraryView() {
 
   const upload = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!title.trim() || !text.trim()) return;
+    if (!file) return;
     setUploading(true);
     try {
-      const response = await fetch("/api/documents", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title, text }),
-      });
+      const form = new FormData();
+      form.append("title", title.trim() || file.name);
+      form.append("files", file);
+      const response = await fetch("/api/documents", { method: "POST", body: form });
       if (!response.ok) throw new Error((await response.json()).error || "Upload failed");
       setTitle("");
-      setText("");
+      setFile(null);
       await load();
     } catch (error) {
       alert(error instanceof Error ? error.message : "Upload failed");
@@ -88,38 +84,41 @@ export default function FirmLibraryView() {
         <form onSubmit={search} className="flex gap-2 rounded border border-zinc-200 bg-zinc-50 p-3">
           <Search className="h-4 w-4 self-center text-zinc-400" />
           <input value={query} onChange={(event) => { setQuery(event.target.value); setResults([]); }} className="flex-1 bg-transparent text-xs outline-none" placeholder="Search the Firm Library" />
-          <button type="button" onClick={() => { setSemantic(!semantic); setResults([]); }} className="rounded border border-zinc-300 bg-white px-3 text-[9px] font-mono uppercase">{semantic ? "Semantic" : "Keyword"}</button>
-          <button className="rounded bg-zinc-950 px-4 py-2 text-[10px] font-mono font-bold uppercase text-white">Search</button>
+          <button type="button" onClick={() => { setSemantic(!semantic); setResults([]); }} className="rounded border border-zinc-300 bg-white px-3 text-[9px] font-mono uppercase hover:bg-zinc-50 cursor-pointer">{semantic ? "Semantic" : "Keyword"}</button>
+          <button className="rounded bg-zinc-950 px-4 py-2 text-[10px] font-mono font-bold uppercase text-white hover:bg-zinc-800 cursor-pointer">Search</button>
         </form>
 
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-[220px_1fr_300px]">
           <aside className="rounded border border-zinc-200 p-4">
             <p className="mb-3 text-[10px] font-mono font-bold uppercase text-zinc-500">Sections</p>
-            <button onClick={() => setSection(null)} className={`mb-1 flex w-full items-center gap-2 rounded px-2 py-2 text-left text-xs ${section === null ? "bg-zinc-100 font-semibold" : "hover:bg-zinc-50"}`}><FolderOpen className="h-3.5 w-3.5" />All documents</button>
-            {sections.map((item) => <button key={item} onClick={() => setSection(item)} className={`mb-1 block w-full rounded px-2 py-2 text-left text-xs ${section === item ? "bg-zinc-100 font-semibold" : "hover:bg-zinc-50"}`}>{item}</button>)}
+            <button onClick={() => setSection(null)} className={`mb-1 flex w-full items-center gap-2 rounded px-2 py-2 text-left text-xs cursor-pointer ${section === null ? "bg-zinc-100 font-semibold" : "hover:bg-zinc-50"}`}><FolderOpen className="h-3.5 w-3.5" />All documents</button>
+            {sections.map((item) => <button key={item} onClick={() => setSection(item)} className={`mb-1 block w-full rounded px-2 py-2 text-left text-xs cursor-pointer ${section === item ? "bg-zinc-100 font-semibold" : "hover:bg-zinc-50"}`}>{item}</button>)}
           </aside>
 
           <section className="space-y-2">
             {visible.length === 0 ? <div className="rounded border border-dashed border-zinc-300 p-10 text-center text-xs text-zinc-500">No Firm Library documents match this view.</div> : visible.map((document) => (
               <div key={document.id} className="flex items-start gap-3 rounded border border-zinc-200 p-4 hover:border-zinc-400">
                 <FileText className="mt-0.5 h-4 w-4 text-zinc-400" />
-                <button onClick={() => setPreview(document)} className="min-w-0 flex-1 text-left"><p className="truncate text-xs font-semibold">{document.title}</p><p className="mt-1 text-[10px] font-mono uppercase text-zinc-400">{document.section} · {new Date(document.uploaded_at).toLocaleDateString()}</p></button>
-                <button onClick={() => setPreview(document)} title="Preview"><Eye className="h-4 w-4 text-zinc-500" /></button>
-                <button onClick={() => void remove(document)} title="Remove"><Trash2 className="h-4 w-4 text-zinc-400 hover:text-red-700" /></button>
+                <button onClick={() => setPreview(document)} className="min-w-0 flex-1 text-left cursor-pointer"><p className="truncate text-xs font-semibold">{document.title}</p><p className="mt-1 text-[10px] font-mono uppercase text-zinc-400">{document.section} · {new Date(document.uploaded_at).toLocaleDateString()}</p></button>
+                <button onClick={() => setPreview(document)} title="Preview" className="rounded p-1 hover:bg-zinc-100 cursor-pointer"><Eye className="h-4 w-4 text-zinc-500" /></button>
+                <button onClick={() => void remove(document)} title="Remove" className="rounded p-1 hover:bg-zinc-100 cursor-pointer"><Trash2 className="h-4 w-4 text-zinc-400 hover:text-red-700" /></button>
               </div>
             ))}
           </section>
 
           <form onSubmit={upload} className="h-fit space-y-3 rounded border border-zinc-200 bg-zinc-50 p-4">
             <div className="flex items-center gap-2"><Upload className="h-4 w-4" /><h3 className="text-[10px] font-mono font-bold uppercase">Add Firm Library Document</h3></div>
-            <input value={title} onChange={(event) => setTitle(event.target.value)} className="w-full rounded border border-zinc-300 bg-white px-3 py-2 text-xs" placeholder="Document title" />
-            <textarea value={text} onChange={(event) => setText(event.target.value)} className="h-40 w-full resize-none rounded border border-zinc-300 bg-white px-3 py-2 text-xs" placeholder="Paste extracted document text" />
-            <button disabled={uploading || !title.trim() || !text.trim()} className="w-full rounded bg-zinc-950 px-3 py-2 text-[10px] font-mono font-bold uppercase text-white disabled:opacity-40">{uploading ? "Processing…" : "Upload and index"}</button>
+            <label className="block rounded border border-dashed border-zinc-300 bg-white px-3 py-5 text-center text-xs text-zinc-500 hover:bg-zinc-50 cursor-pointer">
+              {file ? file.name : "Choose PDF, DOCX, or TXT"}
+              <input type="file" className="sr-only" accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" onChange={(event) => { const next = event.target.files?.[0] || null; setFile(next); if (next && !title.trim()) setTitle(next.name); }} />
+            </label>
+            <input value={title} onChange={(event) => setTitle(event.target.value)} className="w-full rounded border border-zinc-300 bg-white px-3 py-2 text-xs" placeholder="Title defaults to filename" />
+            <button disabled={uploading || !file} className="w-full rounded bg-zinc-950 px-3 py-2 text-[10px] font-mono font-bold uppercase text-white disabled:cursor-not-allowed disabled:opacity-40">{uploading ? "Processing..." : "Upload and index"}</button>
           </form>
         </div>
       </div>
 
-      {preview && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-6"><div className="flex max-h-[85vh] w-full max-w-3xl flex-col rounded border border-zinc-300 bg-white shadow-xl"><header className="flex items-center justify-between border-b p-4"><div><h3 className="text-sm font-semibold">{preview.title}</h3><p className="text-[10px] font-mono uppercase text-zinc-400">Firm Library · {preview.section}</p></div><button onClick={() => setPreview(null)}><X className="h-4 w-4" /></button></header><div className="overflow-y-auto whitespace-pre-wrap p-6 text-sm leading-relaxed text-zinc-700">{preview.extracted_text}</div></div></div>}
+      {preview && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-6"><div className="flex max-h-[85vh] w-full max-w-3xl flex-col rounded border border-zinc-300 bg-white shadow-xl"><header className="flex items-center justify-between border-b p-4"><div><h3 className="text-sm font-semibold">{preview.title}</h3><p className="text-[10px] font-mono uppercase text-zinc-400">Firm Library · {preview.section}</p></div><button onClick={() => setPreview(null)} className="rounded p-1 hover:bg-zinc-100"><X className="h-4 w-4" /></button></header><div className="overflow-y-auto whitespace-pre-wrap p-6 text-sm leading-relaxed text-zinc-700">{preview.extracted_text}</div></div></div>}
     </div>
   );
 }

@@ -6,6 +6,10 @@ import {
   Link as LinkIcon, X, Copy
 } from "lucide-react";
 import { Draft } from "../types";
+import MDEditor from "@uiw/react-md-editor";
+import FormattedMarkdown from "./FormattedMarkdown";
+import "@uiw/react-md-editor/markdown-editor.css";
+import "@uiw/react-markdown-preview/markdown.css";
 
 interface DraftEditorViewProps {
   initialDraftId: string | null;
@@ -25,6 +29,7 @@ export default function DraftEditorView({
   const [saving, setSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">("idle");
   const [editMode, setEditMode] = useState(true);
+  const [sharingBusy, setSharingBusy] = useState<"sharing" | "stopping" | null>(null);
 
   const [alignment, setAlignment] = useState<"left" | "center" | "right">("left");
   const [undoStack, setUndoStack] = useState<string[]>([]);
@@ -142,15 +147,23 @@ export default function DraftEditorView({
   };
 
   const handleSharing = async () => {
-    if (!caseId || !activeDraft) return;
-    const response = await fetch(`/api/drafts/${activeDraft.id}/sharing?caseId=${caseId}`, {
-      method: "PUT", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ shared: !activeDraft.shared_with_client }),
-    });
-    const data = await response.json();
-    if (!response.ok) return alert(data.error || "Sharing could not be updated");
-    setActiveDraft(data);
-    setDrafts((current) => current.map((draft) => draft.id === data.id ? data : draft));
+    if (!caseId || !activeDraft || sharingBusy) return;
+    const nextShared = !activeDraft.shared_with_client;
+    setSharingBusy(nextShared ? "sharing" : "stopping");
+    try {
+      const response = await fetch(`/api/drafts/${activeDraft.id}/sharing?caseId=${caseId}`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shared: nextShared }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Sharing could not be updated");
+      setActiveDraft(data);
+      setDrafts((current) => current.map((draft) => draft.id === data.id ? data : draft));
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Sharing could not be updated");
+    } finally {
+      setSharingBusy(null);
+    }
   };
 
   // Requirement 8 Text Manipulations
@@ -282,7 +295,7 @@ export default function DraftEditorView({
 
               <div className="flex items-center gap-3 shrink-0">
                 <button onClick={() => void handleDuplicate()} className="inline-flex items-center gap-1 rounded border border-zinc-300 px-3 py-1.5 text-[10px] font-mono font-bold uppercase"><Copy className="h-3.5 w-3.5" />Duplicate</button>
-                <button onClick={() => void handleSharing()} className="rounded border border-zinc-300 px-3 py-1.5 text-[10px] font-mono font-bold uppercase">{activeDraft.shared_with_client ? "Stop sharing" : "Share with client"}</button>
+                <button onClick={() => void handleSharing()} disabled={Boolean(sharingBusy)} className="rounded border border-zinc-300 px-3 py-1.5 text-[10px] font-mono font-bold uppercase hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50">{sharingBusy === "sharing" ? "Sharing..." : sharingBusy === "stopping" ? "Stopping..." : activeDraft.shared_with_client ? "Stop sharing" : "Share with client"}</button>
                 <div className="flex bg-zinc-100 p-0.5 rounded border border-zinc-200 text-[10px] font-mono font-semibold uppercase">
                   <button
                     onClick={() => setEditMode(true)}
@@ -529,22 +542,22 @@ export default function DraftEditorView({
             <div className="flex-1 bg-zinc-100 overflow-y-auto p-12 flex justify-center">
               <div 
                 id="paper-layout"
-                className={`w-full max-w-3xl bg-white border border-zinc-200 shadow-lg rounded-md p-16 font-sans text-sm leading-relaxed text-zinc-800 focus-within:ring-1 focus-within:ring-zinc-300 transition-all min-h-[1056px] relative select-text text-${alignment}`}
+                className={`w-full max-w-3xl bg-white border border-zinc-200 shadow-lg rounded-md p-12 font-sans text-sm leading-relaxed text-zinc-800 focus-within:ring-1 focus-within:ring-zinc-300 transition-all min-h-[1056px] relative select-text text-${alignment}`}
               >
-                
-                {/* Visual margin border lines simulating formal docket styles */}
-                <div className="absolute left-10 top-0 bottom-0 border-l border-red-100" />
-
                 {editMode ? (
-                  <textarea
-                    value={content}
-                    onChange={(e) => updateContentWithHistory(e.target.value)}
-                    className="w-full h-full min-h-[900px] border-none outline-none resize-none focus:ring-0 text-zinc-800 font-sans leading-relaxed text-sm bg-transparent pl-4"
-                    placeholder="Attorney work product..."
-                  />
+                  <div data-color-mode="light" className="work-product-formatted-editor">
+                    <MDEditor
+                      value={content}
+                      onChange={(value) => updateContentWithHistory(value || "")}
+                      preview="edit"
+                      height={900}
+                      hideToolbar={false}
+                      textareaProps={{ placeholder: "Attorney work product..." }}
+                    />
+                  </div>
                 ) : (
-                  <div className="whitespace-pre-wrap font-sans text-zinc-800 leading-relaxed text-sm pl-4">
-                    {content}
+                  <div className="font-sans text-zinc-800 leading-relaxed text-sm">
+                    <FormattedMarkdown content={content} />
                   </div>
                 )}
               </div>

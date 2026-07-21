@@ -357,3 +357,45 @@ Known limitations:
 
 - PDF support is extractable text only; scanned/image PDFs require OCR, which remains intentionally unsupported.
 - CourtListener and GovInfo remain local deterministic adapters; the visible UI no longer labels them as simulated, and no live connector claim was added.
+
+## Phase 12 - Lawyer Matter and Work Product Corrections
+
+Status: Complete.
+
+Implemented:
+
+- Simplified Create Matter so only Matter name and assignment description are required. Optional starting files and Firm Library selections are processed after the Matter is created, with partial-failure warnings instead of deleting the created Matter.
+- Added non-blocking AI Overview suggestions for client name, practice area, jurisdiction, and preliminary objectives using only Matter name, assignment description, and optional starting content. Suggested values use existing suggestion flags.
+- Redesigned Matter Overview as display-first with Edit Overview, Save, Cancel, `Saving...`, saved/error feedback, and suggested-value indicators.
+- Converted Matter Intelligence and Work Product read-only surfaces to formatted Markdown rendering. Matter Intelligence and Work Product DOCX exports use Markdown-to-DOCX conversion for headings, lists, paragraphs, bold/italic text, and citation text.
+- Replaced pasted-text Firm Library upload with local PDF/DOCX/TXT upload and a title defaulting to the filename.
+- Replaced pasted-text Matter Source upload with a local PDF/DOCX/TXT picker while preserving Note and Firm Library source paths.
+- Added formatted Work Product editing with `@uiw/react-md-editor` while keeping Markdown as the canonical stored content.
+- Added `Sharing...` and `Stopping...` states for Work Product sharing controls, with duplicate-click prevention.
+- Grounded generated draft prompts with Matter name, assignment description, client details when present, practice area, jurisdiction, preliminary objectives, authenticated lawyer name, firm name, and a server-controlled current date.
+- Added async labels/disabled feedback to the main Phase 12 flows touched by this phase.
+
+Schema changes:
+
+- None. Phase 12 uses existing Matter detail fields, suggestion flags, Sources, Work Product, and Phase 11 message metadata.
+
+Dependencies added:
+
+- `@uiw/react-md-editor` and its bundled Markdown preview styling dependency tree.
+
+API changes:
+
+- `POST /api/cases` now accepts multipart files, no longer requires a starting note/document/source, and may return `warnings` for optional source failures.
+- Generated draft creation now includes server-derived Matter/account/date metadata in the model prompt.
+
+Verification:
+
+- `npm test`: passed, 40/40 tests.
+- `npm run lint`: passed.
+- `npm run build`: passed. Vite emitted a large-chunk warning after adding the focused Markdown editor dependency.
+
+Known limitations:
+
+- OCR remains unsupported for scanned PDFs.
+- Work Product editing is Markdown-backed with a formatted editor/preview rather than a full legal word processor.
+- Client Portal upload/editing still has earlier compact behavior and was not broadened beyond the requested lawyer-side corrections.

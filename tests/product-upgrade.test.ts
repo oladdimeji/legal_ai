@@ -16,12 +16,18 @@ test("Firm Library has no Matter navigation or creation controls", async () => {
   assert.doesNotMatch(library, /Create Matter|Matter list|activeCaseId/);
 });
 
-test("Phase 4 Matter creation requires an assignment and starting input", async () => {
-  const server = await readFile("server.ts", "utf8");
+test("Phase 12 Matter creation requires only an assignment and supports optional files/library", async () => {
+  const [server, matters] = await Promise.all([
+    readFile("server.ts", "utf8"),
+    readFile("src/components/MattersView.tsx", "utf8"),
+  ]);
   assert.match(server, /Matter name and assignment description are required/);
-  assert.match(server, /At least one starting input is required/);
+  assert.doesNotMatch(server, /At least one starting input is required|startingNote|startingDocument/);
   assert.match(server, /validateFirmLibraryDocuments/);
-  assert.ok(server.indexOf("At least one starting input is required") < server.indexOf("db.createCase"));
+  assert.match(server, /upload\.array\("files", MAX_FILE_COUNT\)/);
+  assert.match(matters, /Matter name and assignment description are required/);
+  assert.doesNotMatch(matters, /Starting instruction|Starting document title|Document text/);
+  assert.match(matters, /Optional Firm Library/);
 });
 
 test("Phase 4 Source links and details remain workspace scoped", async () => {
@@ -274,6 +280,51 @@ test("Phase 11 Matter Intelligence DOCX export remains Matter-owned", async () =
   assert.match(server, /\/api\/cases\/:caseId\/intelligence\/export/);
   assert.match(server, /db\.getMatterIntelligence\(req\.params\.caseId, ownership\(req\)\)/);
   assert.match(server, /markdownToDocxDocument/);
+});
+
+test("Phase 12 Overview suggestions are non-blocking and flagged", async () => {
+  const [server, overview] = await Promise.all([
+    readFile("server.ts", "utf8"),
+    readFile("src/components/MatterOverview.tsx", "utf8"),
+  ]);
+  assert.match(server, /suggestMatterOverview/);
+  assert.match(server, /Matter Overview suggestion failed/);
+  assert.match(server, /matter_type_suggested: Boolean/);
+  assert.match(overview, /Edit Overview/);
+  assert.match(overview, /Cancel/);
+  assert.match(overview, /Suggested/);
+});
+
+test("Phase 12 Firm Library and Matter Source uploads use real file pickers", async () => {
+  const [library, sources, server] = await Promise.all([
+    readFile("src/components/FirmLibraryView.tsx", "utf8"),
+    readFile("src/components/MatterSources.tsx", "utf8"),
+    readFile("server.ts", "utf8"),
+  ]);
+  assert.match(library, /Choose PDF, DOCX, or TXT/);
+  assert.doesNotMatch(library, /Paste extracted document text/);
+  assert.match(sources, /Choose PDF, DOCX, or TXT/);
+  assert.match(sources, /Write Source note/);
+  assert.match(server, /app\.post\("\/api\/documents", upload\.array\("files", 1\)/);
+  assert.match(server, /app\.post\("\/api\/cases\/:id\/sources", upload\.array\("files", 1\)/);
+});
+
+test("Phase 12 Work Product uses formatted preview/editor and sharing progress", async () => {
+  const editor = await readFile("src/components/DraftEditorView.tsx", "utf8");
+  assert.match(editor, /@uiw\/react-md-editor/);
+  assert.match(editor, /<FormattedMarkdown content=\{content\}/);
+  assert.match(editor, /Sharing\.\.\./);
+  assert.match(editor, /Stopping\.\.\./);
+  assert.match(editor, /disabled:cursor-not-allowed/);
+});
+
+test("Phase 12 generated draft prompt uses actual Matter account and date metadata", async () => {
+  const server = await readFile("server.ts", "utf8");
+  assert.match(server, /Matter and account metadata/);
+  assert.match(server, /Lawyer name:/);
+  assert.match(server, /Firm name:/);
+  assert.match(server, /Current date:/);
+  assert.match(server, /Do not emit bracketed placeholders/);
 });
 
 test("Phase 10 preserves SQL-before-ranking and direct-ID ownership guards", async () => {
