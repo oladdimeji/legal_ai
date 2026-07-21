@@ -199,3 +199,26 @@ Verification:
 - `npm test`: passed, 18/18 tests.
 - `npm run lint`: passed.
 - `npm run build`: passed.
+
+## Phase 7 — Matter Intelligence
+
+Status: Complete.
+
+Implemented:
+
+- Migration 007 creates one compact Matter Intelligence record per Matter with Markdown content, Source snapshot, generated/edited dates, and an internal version number.
+- Intelligence has no automatic generation path; the empty state exposes only `Generate Matter Intelligence`.
+- Generation receives the owned Matter and its active Sources from Matter-scoped SQL, uses exactly the five approved sections, requests title-based Source citations, and excludes task-management controls.
+- The page states that lawyer review is required and supports direct edit/save/regenerate.
+- Source snapshot comparison displays the approved stale-Source warning without automatically regenerating.
+- Matter Intelligence uses a dedicated existing Gemini lightweight-model task configuration after the drafting model returned a temporary high-demand response during live verification.
+
+Verification:
+
+- Migration 007 applied exactly once.
+- Live explicit generation returned all five sections and a non-empty Source snapshot; editing persisted, a new Source triggered the stale warning, and regeneration incremented the internal version and cleared the warning.
+- A foreign workspace received a safe not-found response for the Matter Intelligence route.
+- No record existed before the explicit generation action.
+- `npm test`: passed, 20/20 tests.
+- `npm run lint`: passed.
+- `npm run build`: passed.

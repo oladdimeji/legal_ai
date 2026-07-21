@@ -109,6 +109,16 @@ export interface Draft {
   revision_type?: "Lawyer Original" | "Duplicate" | "Client Revision";
 }
 
+export interface MatterIntelligenceRecord {
+  case_id: string;
+  content: string;
+  source_snapshot: Array<{ id: string; uploaded_at: string; processing_state: string; link_origin: string | null }>;
+  generated_at: string;
+  last_edited_at: string;
+  version: number;
+  sources_changed: boolean;
+}
+
 export interface WorkspaceState {
   currentCaseId: string | null; // null means Wide Library
 }

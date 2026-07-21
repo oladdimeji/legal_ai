@@ -494,6 +494,79 @@ class DatabaseService {
     );
   }
 
+  public async getMatterSourceSnapshot(caseId: string, context: OwnershipContext): Promise<
+    Array<{ id: string; uploaded_at: string; processing_state: string; link_origin: string | null }>
+  > {
+    return await this.query(
+      `SELECT d.id, d.uploaded_at, d.processing_state,
+         CASE WHEN d.case_id = $2 THEN NULL ELSE cd.link_origin END AS link_origin
+       FROM cases c JOIN documents d ON d.firm_id = c.firm_id
+       LEFT JOIN case_documents cd ON cd.case_id = c.id AND cd.document_id = d.id
+       WHERE c.id = $2 AND c.firm_id = $1 AND d.is_generated_draft_duplicate = FALSE
+         AND (d.case_id = c.id OR (d.case_id IS NULL AND cd.document_id IS NOT NULL))
+       ORDER BY d.id`,
+      [context.firmId, caseId]
+    );
+  }
+
+  public async getMatterIntelligence(caseId: string, context: OwnershipContext): Promise<any | null> {
+    const rows = await this.query(
+      `SELECT mi.* FROM matter_intelligence mi JOIN cases c ON c.id = mi.case_id
+       WHERE mi.case_id = $1 AND c.firm_id = $2`,
+      [caseId, context.firmId]
+    );
+    if (!rows[0]) return null;
+    const current = await this.getMatterSourceSnapshot(caseId, context);
+    const stored = typeof rows[0].source_snapshot === "string"
+      ? JSON.parse(rows[0].source_snapshot) : rows[0].source_snapshot;
+    return { ...rows[0], source_snapshot: stored, sources_changed: JSON.stringify(stored) !== JSON.stringify(current) };
+  }
+
+  public async getMatterIntelligenceSourceBundle(caseId: string, context: OwnershipContext): Promise<{
+    matter: Case; sources: Document[]; snapshot: any[];
+  }> {
+    const matter = await this.getCaseById(caseId, context);
+    if (!matter) throw new Error("Matter not found");
+    const sources = await this.getCaseSources(caseId, context);
+    const snapshot = await this.getMatterSourceSnapshot(caseId, context);
+    return { matter, sources, snapshot };
+  }
+
+  public async saveGeneratedMatterIntelligence(
+    caseId: string, content: string, snapshot: any[], context: OwnershipContext
+  ): Promise<any> {
+    const now = new Date().toISOString();
+    const rows = await this.query(
+      `INSERT INTO matter_intelligence
+        (case_id, content, source_snapshot, generated_at, last_edited_at, version)
+       SELECT c.id, $2, $3::jsonb, $4, $4, 1 FROM cases c
+       WHERE c.id = $1 AND c.firm_id = $5
+       ON CONFLICT (case_id) DO UPDATE SET content = EXCLUDED.content,
+         source_snapshot = EXCLUDED.source_snapshot, generated_at = EXCLUDED.generated_at,
+         last_edited_at = EXCLUDED.last_edited_at,
+         version = matter_intelligence.version + 1
+       RETURNING *`,
+      [caseId, content, JSON.stringify(snapshot), now, context.firmId]
+    );
+    if (!rows[0]) throw new Error("Matter not found");
+    await this.touchCase(caseId, context);
+    return { ...rows[0], sources_changed: false };
+  }
+
+  public async updateMatterIntelligence(
+    caseId: string, content: string, context: OwnershipContext
+  ): Promise<any> {
+    const rows = await this.query(
+      `UPDATE matter_intelligence mi SET content = $1, last_edited_at = $2
+       WHERE mi.case_id = $3 AND EXISTS (
+         SELECT 1 FROM cases c WHERE c.id = mi.case_id AND c.firm_id = $4
+       ) RETURNING *`,
+      [content, new Date().toISOString(), caseId, context.firmId]
+    );
+    if (!rows[0]) throw new Error("Matter Intelligence not found");
+    return { ...rows[0], sources_changed: false };
+  }
+
   public async getDocuments(context: OwnershipContext, caseId: string | null): Promise<Document[]> {
     if (!caseId) {
       return await this.query(

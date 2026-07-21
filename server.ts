@@ -293,6 +293,59 @@ Raw prompt: "${prompt}"`;
     return res.json({ success: true });
   });
 
+  app.get("/api/cases/:caseId/intelligence", async (req, res) => {
+    const matter = await db.getCaseById(req.params.caseId, ownership(req));
+    if (!matter) return res.status(404).json({ error: "Matter not found" });
+    return res.json(await db.getMatterIntelligence(matter.id, ownership(req)));
+  });
+
+  app.post("/api/cases/:caseId/intelligence/generate", async (req, res) => {
+    try {
+      const requestOwnership = ownership(req);
+      const bundle = await db.getMatterIntelligenceSourceBundle(req.params.caseId, requestOwnership);
+      if (bundle.sources.length === 0) {
+        return res.status(400).json({ error: "Add at least one Matter Source before generating Intelligence" });
+      }
+      const sourceText = bundle.sources.map((source, index) =>
+        `SOURCE ${index + 1}: ${source.title}\nTYPE: ${source.source_type || "Matter Source"}\n${source.extracted_text.slice(0, 12000)}`
+      ).join("\n\n---\n\n").slice(0, 60000);
+      const prompt = `Generate compact Matter Intelligence for the owned Matter below using ONLY the supplied active Matter Sources.
+Do not infer facts from other matters or external knowledge. Link material statements to a source using [Source: exact title] where possible.
+Use exactly these Markdown section headings:
+## Matter Summary
+## Key Facts and Chronology
+## Legal Issues and Authorities
+## Analysis, Risks, and Preliminary Conclusions
+## Open Questions and Recommended Next Actions
+State uncertainty clearly. Do not add assignees, due dates, or task workflow.
+
+MATTER: ${bundle.matter.name}
+ASSIGNMENT: ${bundle.matter.description}
+JURISDICTION: ${bundle.matter.jurisdiction || "Not confirmed"}
+
+ACTIVE MATTER SOURCES:
+${sourceText}`;
+      const generated = await callModel("matter-intelligence", [{ role: "user", content: prompt }], { temperature: 0.2 });
+      return res.status(201).json(
+        await db.saveGeneratedMatterIntelligence(
+          bundle.matter.id, generated.text.trim(), bundle.snapshot, requestOwnership
+        )
+      );
+    } catch (err: any) {
+      return res.status(ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
+  app.put("/api/cases/:caseId/intelligence", async (req, res) => {
+    try {
+      const content = typeof req.body.content === "string" ? req.body.content : "";
+      if (!content.trim()) return res.status(400).json({ error: "Matter Intelligence content is required" });
+      return res.json(await db.updateMatterIntelligence(req.params.caseId, content, ownership(req)));
+    } catch (err: any) {
+      return res.status(ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
   // Documents Library
   app.get("/api/documents", async (req, res) => {
     const caseId = requestedCaseId(req.query.caseId);

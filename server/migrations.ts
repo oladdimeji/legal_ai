@@ -283,6 +283,25 @@ const migrations: Migration[] = [
       );
     },
   },
+  {
+    version: 7,
+    name: "matter_intelligence",
+    async run(client) {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS matter_intelligence (
+          case_id TEXT PRIMARY KEY REFERENCES cases(id) ON DELETE CASCADE,
+          content TEXT NOT NULL,
+          source_snapshot JSONB NOT NULL DEFAULT '[]'::jsonb,
+          generated_at TEXT NOT NULL,
+          last_edited_at TEXT NOT NULL,
+          version INTEGER NOT NULL DEFAULT 1
+        )
+      `);
+      await client.query(
+        "CREATE INDEX IF NOT EXISTS matter_intelligence_generated_idx ON matter_intelligence(generated_at DESC)"
+      );
+    },
+  },
 ];
 
 export async function runMigrations(pool: Pool): Promise<void> {

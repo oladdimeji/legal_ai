@@ -85,3 +85,25 @@ test("migration 006 and copy operations preserve Work Product originals", async 
   assert.match(database, /'Client Revision', d\.id, 'Client Revision'/);
   assert.doesNotMatch(database, /UPDATE drafts[\s\S]{0,120}revision_type = 'Client Revision'/);
 });
+
+test("Phase 7 Matter Intelligence is explicit, source-scoped, and snapshot-backed", async () => {
+  const [server, database, view] = await Promise.all([
+    readFile("server.ts", "utf8"),
+    readFile("server/db.ts", "utf8"),
+    readFile("src/components/MatterIntelligence.tsx", "utf8"),
+  ]);
+  assert.match(server, /\/api\/cases\/:caseId\/intelligence\/generate/);
+  assert.match(server, /using ONLY the supplied active Matter Sources/);
+  assert.match(database, /getMatterIntelligenceSourceBundle/);
+  assert.match(database, /c\.id = \$2 AND c\.firm_id = \$1/);
+  assert.match(view, /Generate Matter Intelligence/);
+  assert.match(view, /Sources have changed since this Matter Intelligence was generated/);
+});
+
+test("migration 007 stores one simple Matter Intelligence version and Source snapshot", async () => {
+  const migrations = await readFile("server/migrations.ts", "utf8");
+  assert.match(migrations, /version: 7/);
+  assert.match(migrations, /case_id TEXT PRIMARY KEY REFERENCES cases/);
+  assert.match(migrations, /source_snapshot JSONB/);
+  assert.match(migrations, /version INTEGER NOT NULL DEFAULT 1/);
+});

@@ -103,12 +103,12 @@ Rollback/failure: additive columns/routes are safe; retain compatibility endpoin
 
 ### Checklist
 
-- [ ] Add migration 007 creating one owned-through-Matter `matter_intelligence` record with content, source snapshot JSON, generated/edited timestamps, and internal version.
-- [ ] Modify `server/db.ts` for owned load/save/generate snapshot operations and Source-change comparison.
-- [ ] Modify `server.ts` with owned GET, explicit generate/regenerate, and save endpoints; build prompts only from active Sources returned by Matter-scoped SQL.
-- [ ] Create `src/components/MatterIntelligence.tsx` with initial action, five sections, review warning, edit/save/regenerate, dates, and Source-changed warning.
-- [ ] Integrate the page into the existing Matter Intelligence tab.
-- [ ] Add tests for explicit-only generation, owned Matter lookup, source snapshot/version behavior, edit save, and cross-Matter prompt isolation.
+- [x] Add migration 007 creating one owned-through-Matter `matter_intelligence` record with content, source snapshot JSON, generated/edited timestamps, and internal version.
+- [x] Modify `server/db.ts` for owned load/save/generate snapshot operations and Source-change comparison.
+- [x] Modify `server.ts` with owned GET, explicit generate/regenerate, and save endpoints; build prompts only from active Sources returned by Matter-scoped SQL.
+- [x] Create `src/components/MatterIntelligence.tsx` with initial action, five sections, review warning, edit/save/regenerate, dates, and Source-changed warning.
+- [x] Integrate the page into the existing Matter Intelligence tab.
+- [x] Add tests for explicit-only generation, owned Matter lookup, source snapshot/version behavior, edit save, and cross-Matter prompt isolation.
 
 Backfill: none; existing Matters begin with no Intelligence.  
 Reusable capabilities: Gemini model call, Source text/citations, Matter workspace tabs, owned Matter lookup.
