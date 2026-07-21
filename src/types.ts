@@ -1,0 +1,92 @@
+export interface User {
+  id: string;
+  firm_id: string;
+  name: string;
+  email: string;
+}
+
+export interface Firm {
+  id: string;
+  name: string;
+}
+
+export interface Document {
+  id: string;
+  firm_id: string;
+  case_id: string | null; // nullable, can attach to a case
+  title: string;
+  source_url: string | null;
+  drive_id: string | null;
+  extracted_text: string;
+  section: string; // category, e.g. "Corporate Law", "Litigation", "IP", "Draft"
+  uploaded_at: string;
+}
+
+export interface DocumentChunk {
+  id: string;
+  document_id: string;
+  chunk_text: string;
+  embedding: number[]; // 768 float array
+}
+
+export interface Case {
+  id: string;
+  firm_id: string;
+  name: string;
+  description: string;
+  created_at: string;
+}
+
+export interface CaseDocument {
+  case_id: string;
+  document_id: string;
+}
+
+export type Scope = "wide" | "case";
+
+export interface Thread {
+  id: string;
+  user_id: string;
+  case_id: string | null;
+  scope: Scope;
+  title: string;
+  created_at: string;
+}
+
+export interface Citation {
+  id: string; // e.g., "doc_1", "web_1", "court_1"
+  type: "workspace" | "connector" | "web";
+  title: string;
+  url?: string;
+  textSnippet: string;
+  sourceName: string; // e.g., "Internal Document", "CourtListener", "Google Search"
+}
+
+export interface ResearchStep {
+  subQuestion: string;
+  retrievedContext: string;
+  note: string;
+}
+
+export interface Message {
+  id: string;
+  thread_id: string;
+  role: "user" | "assistant";
+  content: string;
+  citations: Citation[];
+  steps: ResearchStep[] | null; // log when deep research is run
+  created_at: string;
+}
+
+export interface Draft {
+  id: string;
+  thread_id: string;
+  case_id: string | null;
+  title: string;
+  content: string; // markdown or plain text editable
+  created_at: string;
+}
+
+export interface WorkspaceState {
+  currentCaseId: string | null; // null means Wide Library
+}

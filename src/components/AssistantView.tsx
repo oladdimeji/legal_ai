@@ -1,0 +1,1768 @@
+import React, { useState, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
+import { 
+  MessageSquare, Send, Sparkles, Search, Library, AlertCircle, 
+  ChevronDown, ChevronUp, FileText, Check, Paperclip, RefreshCw, 
+  ExternalLink, BookOpen, Copy, Download, Pencil, X, Briefcase, 
+  Folder, Upload, Database, Globe, ThumbsUp, ThumbsDown,
+  Bold, Italic, Underline, Strikethrough, List, ListOrdered,
+  AlignLeft, AlignCenter, AlignRight, Paintbrush, Scissors,
+  Clipboard, Undo2, Redo2, Save, Link as LinkIcon
+} from "lucide-react";
+import Markdown from "react-markdown";
+import { Case, Thread, Message, Citation, Scope, Draft, ResearchStep, Document } from "../types";
+
+interface AssistantViewProps {
+  cases: Case[];
+  activeCaseId: string | null;
+  setActiveCaseId: (id: string | null) => void;
+  activeThreadId: string | null;
+  setActiveThreadId: (id: string | null) => void;
+  onMessagesChange: (count: number) => void;
+  onNavigateToDrafts: (draftId: string) => void;
+}
+
+const STOP_WORDS = new Set([
+  "the", "and", "for", "with", "that", "this", "there", "their", "them", "then", "have", "has", "had", "been", "were", "are", "was", "will", "would", "could", "should", "from", "into", "about", "above", "below", "what", "how", "why", "who", "where", "when", "which", "under", "over", "between", "through", "during", "before", "after", "here", "there", "both", "each", "some", "any", "all", "most", "more", "other", "such", "only", "own", "same", "than", "too", "very", "can", "just", "should"
+]);
+
+function getProcessedSnippet(snippet: string, queryText: string, maxLen: number = 300): { element: React.ReactNode; isTruncated: boolean } {
+  if (!snippet) {
+    return { element: <span></span>, isTruncated: false };
+  }
+
+  // Split snippet into sentences using regex that preserves spaces and punctuation
+  const sentenceRegex = /([^.!?]+[.!?]+(?:\s+|$))/g;
+  const sentences = snippet.match(sentenceRegex) || [snippet];
+
+  // Tokenize the query
+  const queryWords = new Set<string>();
+  const rawWords = queryText.toLowerCase().replace(/[^\w\s]/g, "").split(/\s+/);
+  for (const w of rawWords) {
+    if (w && w.length > 2 && !STOP_WORDS.has(w)) {
+      queryWords.add(w);
+    }
+  }
+
+  // Find the sentence with the highest match score
+  let bestSentenceIdx = 0;
+  let maxScore = -1;
+
+  sentences.forEach((sentence, idx) => {
+    const sWords = sentence.toLowerCase().replace(/[^\w\s]/g, "").split(/\s+/);
+    let score = 0;
+    sWords.forEach((word) => {
+      if (queryWords.has(word)) {
+        score += 1;
+      }
+    });
+
+    if (score > maxScore) {
+      maxScore = score;
+      bestSentenceIdx = idx;
+    }
+  });
+
+  // Reconstruct snippet around the best matching sentence, maintaining sentence boundaries, under the maxLen limit
+  let keptSentences: string[] = [];
+  let currentLen = 0;
+  let isTruncated = false;
+  let truncatedBestSentenceIdx = -1;
+
+  // Center around best sentence
+  const startIdx = Math.max(0, bestSentenceIdx - 1);
+  for (let i = startIdx; i < sentences.length; i++) {
+    const s = sentences[i];
+    if (currentLen + s.length > maxLen) {
+      isTruncated = true;
+      break;
+    }
+    keptSentences.push(s);
+    currentLen += s.length;
+    if (i === bestSentenceIdx) {
+      truncatedBestSentenceIdx = keptSentences.length - 1;
+    }
+  }
+
+  if (truncatedBestSentenceIdx === -1) {
+    keptSentences = [sentences[bestSentenceIdx]];
+    currentLen = sentences[bestSentenceIdx].length;
+    if (currentLen > maxLen) {
+      keptSentences = [sentences[bestSentenceIdx].substring(0, maxLen - 3) + "..."];
+    }
+    isTruncated = true;
+    truncatedBestSentenceIdx = 0;
+  }
+
+  // Render kept sentences and apply continuous highlight on the best one
+  const element = (
+    <>
+      {keptSentences.map((sentence, idx) => {
+        if (idx === truncatedBestSentenceIdx) {
+          return (
+            <mark key={idx} className="bg-amber-100 text-amber-950 font-semibold px-0.5 rounded border-b border-amber-200 inline">
+              {sentence}
+            </mark>
+          );
+        }
+        return <span key={idx}>{sentence}</span>;
+      })}
+    </>
+  );
+
+  return { element, isTruncated };
+}
+
+export default function AssistantView({ 
+  cases, 
+  activeCaseId, 
+  setActiveCaseId,
+  activeThreadId,
+  setActiveThreadId,
+  onMessagesChange,
+  onNavigateToDrafts
+}: AssistantViewProps) {
+  const [threads, setThreads] = useState<Thread[]>([]);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [inputValue, setInputValue] = useState("");
+  const [deepResearchEnabled, setDeepResearchEnabled] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [citationPanelSource, setCitationPanelSource] = useState<Citation | null>(null);
+  const [activeMessageCitations, setActiveMessageCitations] = useState<Citation[]>([]);
+  const [draftingMessageId, setDraftingMessageId] = useState<string | null>(null);
+  const [draftFormat, setDraftFormat] = useState<"memo" | "email" | "summary">("memo");
+  const [draftInstructions, setDraftInstructions] = useState("");
+  const [draftingInProgress, setDraftingInProgress] = useState(false);
+  
+  // Custom states for toggleable retrieval sources
+  const [enableWebSearch, setEnableWebSearch] = useState(false);
+  const [enableCourtListener, setEnableCourtListener] = useState(false);
+  const [enableGovInfo, setEnableGovInfo] = useState(false);
+  const [filesAndSourcesOpen, setFilesAndSourcesOpen] = useState(false);
+
+  // Simulated file attachment state
+  const [isAttaching, setIsAttaching] = useState(false);
+  const [attachedFiles, setAttachedFiles] = useState<{ name: string; size: string }[]>([]);
+
+  // Real Workspace documents state and filepicker reference
+  const [workspaceDocs, setWorkspaceDocs] = useState<Document[]>([]);
+  const [showWorkspaceDocsPicker, setShowWorkspaceDocsPicker] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // New docked side editor state declarations
+  const [sideEditorMessageId, setSideEditorMessageId] = useState<string | null>(null);
+  const [sideEditorContent, setSideEditorContent] = useState<string>("");
+  const [sideEditorSaving, setSideEditorSaving] = useState(false);
+  const [sideEditorSaveStatus, setSideEditorSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [sideEditorUndoStack, setSideEditorUndoStack] = useState<string[]>([]);
+  const [sideEditorRedoStack, setSideEditorRedoStack] = useState<string[]>([]);
+  const [sideEditorTab, setSideEditorTab] = useState<"edit" | "preview">("edit");
+  const [sideEditorAlignment, setSideEditorAlignment] = useState<"left" | "center" | "right">("left");
+  const [sideEditorFormatPainterActive, setSideEditorFormatPainterActive] = useState(false);
+  const sideEditorTextareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Thumbs up / down feedback local state
+  const [messageFeedbacks, setMessageFeedbacks] = useState<Record<string, "up" | "down" | null>>({});
+
+  // Refs and states for portal positioning & click-outside
+  const filesAndSourcesTriggerRef = useRef<HTMLButtonElement>(null);
+  const filesAndSourcesDropdownRef = useRef<HTMLDivElement>(null);
+  const [dropdownPosition, setDropdownPosition] = useState<{ left: number; bottom: number } | null>(null);
+
+  // Hover citation portal state
+  const [hoveredCitation, setHoveredCitation] = useState<{
+    citation: Citation;
+    rect: DOMRect;
+    lastUserQuery: string;
+  } | null>(null);
+
+  // Auto-resize search input textarea useEffect
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (textarea) {
+      textarea.style.height = "auto";
+      const scrollHeight = textarea.scrollHeight;
+      const maxHeight = 200; // max-height in pixels
+      textarea.style.height = `${Math.min(scrollHeight, maxHeight)}px`;
+      textarea.style.overflowY = scrollHeight > maxHeight ? "auto" : "hidden";
+    }
+  }, [inputValue]);
+
+  useEffect(() => {
+    if (filesAndSourcesOpen && filesAndSourcesTriggerRef.current) {
+      const rect = filesAndSourcesTriggerRef.current.getBoundingClientRect();
+      setDropdownPosition({
+        left: rect.left,
+        bottom: window.innerHeight - rect.top + 8,
+      });
+    } else {
+      setDropdownPosition(null);
+    }
+  }, [filesAndSourcesOpen]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      if (filesAndSourcesOpen && filesAndSourcesTriggerRef.current) {
+        const rect = filesAndSourcesTriggerRef.current.getBoundingClientRect();
+        setDropdownPosition({
+          left: rect.left,
+          bottom: window.innerHeight - rect.top + 8,
+        });
+      }
+    };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, [filesAndSourcesOpen]);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (
+        filesAndSourcesOpen &&
+        filesAndSourcesTriggerRef.current &&
+        !filesAndSourcesTriggerRef.current.contains(target) &&
+        filesAndSourcesDropdownRef.current &&
+        !filesAndSourcesDropdownRef.current.contains(target)
+      ) {
+        setFilesAndSourcesOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [filesAndSourcesOpen]);
+
+  // Global dismiss for citation hover card on click or scroll
+  useEffect(() => {
+    const handleGlobalDismiss = () => {
+      setHoveredCitation(null);
+    };
+    window.addEventListener("click", handleGlobalDismiss);
+    window.addEventListener("scroll", handleGlobalDismiss, true);
+    return () => {
+      window.removeEventListener("click", handleGlobalDismiss);
+      window.removeEventListener("scroll", handleGlobalDismiss, true);
+    };
+  }, []);
+
+  // Load threads on mount / change active case
+  useEffect(() => {
+    fetchThreads();
+  }, [activeCaseId]);
+
+  // Load messages when thread changes
+  useEffect(() => {
+    if (activeThreadId) {
+      fetchMessages(activeThreadId);
+    } else {
+      setMessages([]);
+    }
+  }, [activeThreadId]);
+
+  // Fetch actual Workspace Documents in case library / wide library
+  useEffect(() => {
+    const fetchDocs = async () => {
+      try {
+        const url = activeCaseId ? `/api/documents?caseId=${activeCaseId}` : "/api/documents?caseId=null";
+        const res = await fetch(url);
+        const data = await res.json();
+        setWorkspaceDocs(data);
+      } catch (err) {
+        console.error("Error fetching workspace docs:", err);
+      }
+    };
+    fetchDocs();
+  }, [activeCaseId]);
+
+  // Notify messages change
+  useEffect(() => {
+    if (onMessagesChange) {
+      onMessagesChange(messages.length);
+    }
+  }, [messages.length, onMessagesChange]);
+
+  // Scroll to bottom
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, loading]);
+
+  const fetchThreads = async () => {
+    try {
+      const url = activeCaseId ? `/api/threads?caseId=${activeCaseId}` : "/api/threads?caseId=null";
+      const res = await fetch(url);
+      const data = await res.json();
+      setThreads(data);
+    } catch (err) {
+      console.error("Error fetching threads:", err);
+    }
+  };
+
+  const fetchMessages = async (threadId: string) => {
+    try {
+      const res = await fetch(`/api/threads/${threadId}/messages`);
+      const data = await res.json();
+      setMessages(data);
+    } catch (err) {
+      console.error("Error fetching messages:", err);
+    }
+  };
+
+  const handleStartNewThread = async () => {
+    try {
+      const title = inputValue.trim() 
+        ? (inputValue.trim().substring(0, 45) + "...") 
+        : `Consultation on ${new Date().toLocaleDateString()}`;
+
+      const res = await fetch("/api/threads", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title,
+          caseId: activeCaseId
+        })
+      });
+      const newThread = await res.json();
+      setThreads((prev) => [newThread, ...prev]);
+      setActiveThreadId(newThread.id);
+      return newThread.id;
+    } catch (err) {
+      console.error("Error creating thread:", err);
+    }
+  };
+
+  const handleAsk = async (e?: React.FormEvent, customQuery?: string) => {
+    if (e) e.preventDefault();
+    const queryText = (customQuery || inputValue).trim();
+    if (!queryText || loading) return;
+
+    setInputValue("");
+    setFilesAndSourcesOpen(false);
+
+    let currentThreadId = activeThreadId;
+    if (!currentThreadId) {
+      currentThreadId = await handleStartNewThread();
+    }
+
+    if (!currentThreadId) return;
+
+    // Optimistically add user message
+    const tempUserMsg: Message = {
+      id: `temp_user_${Date.now()}`,
+      thread_id: currentThreadId,
+      role: "user",
+      content: queryText,
+      citations: [],
+      steps: null,
+      created_at: new Date().toISOString()
+    };
+    setMessages((prev) => [...prev, tempUserMsg]);
+    setLoading(true);
+
+    try {
+      const res = await fetch(`/api/threads/${currentThreadId}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          content: queryText,
+          forceDeepResearch: deepResearchEnabled,
+          enableWebSearch,
+          enableCourtListener,
+          enableGovInfo
+        })
+      });
+      
+      const data = await res.json();
+      if (data.error) {
+        throw new Error(data.error);
+      }
+
+      // Refresh messages with updated thread state
+      fetchMessages(currentThreadId);
+      setAttachedFiles([]); // Reset files after prompt finishes
+    } catch (err: any) {
+      console.error("Error processing request:", err);
+      const errAssistantMsg: Message = {
+        id: `temp_err_${Date.now()}`,
+        thread_id: currentThreadId,
+        role: "assistant",
+        content: `❌ Error: ${err.message || "Failed to contact Legal AI model service."} Please verify your GEMINI_API_KEY in Secrets.`,
+        citations: [],
+        steps: null,
+        created_at: new Date().toISOString()
+      };
+      setMessages((prev) => [...prev, errAssistantMsg]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Enhance / Improve Prompt using AI
+  const handleImprovePrompt = async () => {
+    const rawPrompt = inputValue.trim();
+    if (!rawPrompt) return;
+
+    setLoading(true);
+    try {
+      const res = await fetch("/api/improve-prompt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: rawPrompt })
+      });
+      const data = await res.json();
+      if (data.improved) {
+        setInputValue(data.improved);
+      }
+    } catch (err) {
+      console.error("Failed to improve prompt:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Local device file uploader handler
+  const handleLocalFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files) return;
+    const newFilesList = Array.from(files).map(file => {
+      const sizeInKb = file.size / 1024;
+      const formattedSize = sizeInKb > 1024 
+        ? `${(sizeInKb / 1024).toFixed(1)} MB` 
+        : `${sizeInKb.toFixed(0)} KB`;
+      return {
+        name: file.name,
+        size: formattedSize
+      };
+    });
+    setAttachedFiles(prev => [...prev, ...newFilesList]);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ""; // Reset file selection
+    }
+  };
+
+  // Mock File Upload Integration (Google Drive)
+  const handleAttachMockFile = () => {
+    setIsAttaching(true);
+    setTimeout(() => {
+      const mockFiles = [
+        { name: "Executive_Employment_Agreement.pdf", size: "342 KB" },
+        { name: "Copyright_Dispute_Summary.docx", size: "1.2 MB" },
+        { name: "Trade_Secret_Policy_v4.pdf", size: "820 KB" }
+      ];
+      const randomFile = mockFiles[Math.floor(Math.random() * mockFiles.length)];
+      setAttachedFiles((prev) => [...prev, randomFile]);
+      setIsAttaching(false);
+      setInputValue((prev) => `${prev} [Attached file: ${randomFile.name}] `);
+    }, 1200);
+  };
+
+  // Docked Side Editor text insertion helper
+  const insertSideEditorTextMarkup = (prefix: string, suffix: string = prefix) => {
+    const textarea = sideEditorTextareaRef.current;
+    if (!textarea) return;
+
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const text = textarea.value;
+    const selected = text.substring(start, end);
+
+    const replacement = prefix + selected + suffix;
+    const newVal = text.substring(0, start) + replacement + text.substring(end);
+    
+    setSideEditorUndoStack((prev) => [...prev, sideEditorContent]);
+    setSideEditorRedoStack([]);
+    setSideEditorContent(newVal);
+
+    setTimeout(() => {
+      textarea.focus();
+      textarea.setSelectionRange(start + prefix.length, start + prefix.length + selected.length);
+    }, 10);
+  };
+
+  // Docked Side Editor Save Handler
+  const handleSideEditorSave = async () => {
+    if (!sideEditorMessageId) return;
+    setSideEditorSaving(true);
+    setSideEditorSaveStatus("saving");
+    try {
+      const res = await fetch(`/api/messages/${sideEditorMessageId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: sideEditorContent })
+      });
+      const data = await res.json();
+      if (data.id) {
+        setSideEditorSaveStatus("saved");
+        setMessages((prev) =>
+          prev.map((m) => (m.id === sideEditorMessageId ? { ...m, content: sideEditorContent } : m))
+        );
+        setTimeout(() => setSideEditorSaveStatus("idle"), 2000);
+      } else {
+        setSideEditorSaveStatus("error");
+        setTimeout(() => setSideEditorSaveStatus("idle"), 3000);
+      }
+    } catch (err) {
+      console.error("Error saving side editor content:", err);
+      setSideEditorSaveStatus("error");
+      setTimeout(() => setSideEditorSaveStatus("idle"), 3000);
+    } finally {
+      setSideEditorSaving(false);
+    }
+  };
+
+  // Side Editor Undo Handler
+  const handleSideEditorUndo = () => {
+    if (sideEditorUndoStack.length <= 1) return;
+    const current = sideEditorUndoStack[sideEditorUndoStack.length - 1];
+    const previous = sideEditorUndoStack[sideEditorUndoStack.length - 2];
+    
+    setSideEditorUndoStack((prev) => prev.slice(0, -1));
+    setSideEditorRedoStack((prev) => [...prev, current]);
+    setSideEditorContent(previous);
+  };
+
+  // Side Editor Redo Handler
+  const handleSideEditorRedo = () => {
+    if (sideEditorRedoStack.length === 0) return;
+    const next = sideEditorRedoStack[sideEditorRedoStack.length - 1];
+    
+    setSideEditorRedoStack((prev) => prev.slice(0, -1));
+    setSideEditorUndoStack((prev) => [...prev, sideEditorContent]);
+    setSideEditorContent(next);
+  };
+
+  // Side Editor Content Change Handler (to record to undo stack when user types)
+  const handleSideEditorContentChange = (newVal: string) => {
+    setSideEditorContent(newVal);
+    setSideEditorUndoStack((prev) => {
+      if (prev[prev.length - 1] === newVal) return prev;
+      return [...prev, newVal];
+    });
+    setSideEditorRedoStack([]);
+  };
+
+  // Thumbs up / down feedback toggle handler
+  const handleFeedback = (messageId: string, type: "up" | "down") => {
+    setMessageFeedbacks((prev) => {
+      const current = prev[messageId];
+      return {
+        ...prev,
+        [messageId]: current === type ? null : type
+      };
+    });
+  };
+
+  // Dynamic context-driven follow-up suggestions generator
+  const getFollowUpSuggestions = (content: string): string[] => {
+    const text = content.toLowerCase();
+    
+    if (text.includes("16600") || text.includes("non-compete") || text.includes("restrained from engaging")) {
+      return [
+        "Are there exemptions for LLC partners or business sales?",
+        "What are the employer notice requirements under SB 699?",
+        "How does BPC 17200 apply to unlawful non-competes?",
+        "What are the remedies available to employees under AB 1076?"
+      ];
+    }
+    
+    if (text.includes("fair use") || text.includes("copyright act") || text.includes("section 107")) {
+      return [
+        "How is the 'transformative' factor weighted in fair use?",
+        "Does commercial intent automatically disqualify fair use?",
+        "Can fair use protect unpublished manuscript drafts?",
+        "What is the market effect evaluation under the fourth factor?"
+      ];
+    }
+    
+    if (text.includes("executive privilege") || text.includes("nixon") || text.includes("presidential")) {
+      return [
+        "Is executive privilege recognized for civil subpoenas?",
+        "Who can assert presidential privilege besides the President?",
+        "How do courts conduct in camera reviews of privileged tapes?",
+        "Does executive privilege apply to transition team communications?"
+      ];
+    }
+    
+    if (text.includes("rule 403") || text.includes("unfair prejudice") || text.includes("probative value")) {
+      return [
+        "What constitutes 'unfair' prejudice under Rule 403?",
+        "Can a judge exclude evidence solely for wasting time?",
+        "How is the balance of probative value versus prejudice reviewed on appeal?",
+        "Does cumulative evidence rule out key corroborating witness testimonies?"
+      ];
+    }
+    
+    if (text.includes("fourteenth amendment") || text.includes("due process") || text.includes("equal protection")) {
+      return [
+        "What is the difference between procedural and substantive due process?",
+        "How does the Equal Protection Clause apply to state-level entities?",
+        "What standards of scrutiny apply to Fourteenth Amendment claims?",
+        "How does the incorporation doctrine apply the Bill of Rights to states?"
+      ];
+    }
+
+    if (text.includes("patent") || text.includes("infringement")) {
+      return [
+        "What is the statutory defense of prior commercial use?",
+        "How are reasonable royalty damages calculated in patent cases?",
+        "What is the standard for proving willful patent infringement?",
+        "Can an abstract software algorithm be patented under Section 101?"
+      ];
+    }
+
+    if (text.includes("contract") || text.includes("agreement") || text.includes("breach")) {
+      return [
+        "What is the difference between material and minor breach?",
+        "Are oral modifications valid if the contract requires written ones?",
+        "How do courts interpret ambiguous terms in commercial contracts?",
+        "What are the prerequisites for claiming specific performance?"
+      ];
+    }
+
+    return [
+      "What are the immediate next steps to protect the client's interests?",
+      "Are there any specific jurisdictional or venue limitations to consider?",
+      "What key evidence or documentation should be gathered first?",
+      "How have federal appellate courts recently ruled on this specific issue?"
+    ];
+  };
+
+  const handleGenerateDraft = async (messageId: string) => {
+    setDraftingMessageId(messageId);
+    setDraftInstructions("");
+  };
+
+  const submitDraftRequest = async () => {
+    if (!activeThreadId || !draftingMessageId) return;
+    
+    setDraftingInProgress(true);
+    try {
+      const res = await fetch("/api/drafts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          threadId: activeThreadId,
+          format: draftFormat,
+          instructions: draftInstructions
+        })
+      });
+      const data = await res.json();
+      if (data.id) {
+        setDraftingMessageId(null);
+        onNavigateToDrafts(data.id);
+      } else {
+        alert("Failed to generate draft: " + (data.error || "Unknown error"));
+      }
+    } catch (err: any) {
+      alert("Error generating draft: " + err.message);
+    } finally {
+      setDraftingInProgress(false);
+    }
+  };
+
+  // Parse text using react-markdown to support full formatting and custom citation links
+  const renderMessageTextWithCitations = (text: string, citationsList: Citation[]) => {
+    if (!text) return null;
+
+    const findCitation = (rawId: string) => {
+      const trimmed = rawId.trim();
+      let citation = citationsList.find((c) => c.id === trimmed || c.id === `cit_${trimmed}`);
+      if (!citation && !isNaN(Number(trimmed))) {
+        citation = citationsList[Number(trimmed) - 1];
+      }
+      return citation;
+    };
+
+    const preprocessed = text.replace(/\[([^\]]+)\]/g, (match, inner) => {
+      const items = inner.split(",");
+      const formattedCitations: string[] = [];
+      let isAllCitations = true;
+
+      for (const item of items) {
+        const trimmed = item.trim();
+        const isCitPattern = /^cit_\d+$/.test(trimmed) || /^\d+$/.test(trimmed);
+        
+        if (isCitPattern) {
+          const cit = findCitation(trimmed);
+          if (cit) {
+            formattedCitations.push(`[${cit.id}](#${cit.id})`);
+          } else {
+            isAllCitations = false;
+            break;
+          }
+        } else {
+          isAllCitations = false;
+          break;
+        }
+      }
+
+      if (isAllCitations && formattedCitations.length > 0) {
+        return formattedCitations.join("");
+      }
+      return match;
+    });
+
+    return (
+      <div className="prose max-w-none text-zinc-800 leading-relaxed space-y-3 font-sans select-text text-sm md:text-[14.5px]">
+        <Markdown
+          components={{
+            a: ({ href, children, ...props }: any) => {
+              if (href && href.startsWith("#cit_")) {
+                const citationId = href.replace("#", "");
+                const citation = citationsList.find((c) => c.id === citationId);
+                if (citation) {
+                  const lastUserQuery = [...messages].reverse().find(m => m.role === "user")?.content || "";
+                  return (
+                    <span className="inline-block">
+                      <button
+                        type="button"
+                        onMouseEnter={(e) => {
+                          const rect = e.currentTarget.getBoundingClientRect();
+                          const lastUserQuery = [...messages].reverse().find(m => m.role === "user")?.content || "";
+                          setHoveredCitation({ citation, rect, lastUserQuery });
+                        }}
+                        onMouseLeave={() => {
+                          setHoveredCitation(null);
+                        }}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setCitationPanelSource(citation);
+                          setActiveMessageCitations(citationsList);
+                        }}
+                        className="text-xs text-zinc-500 hover:text-zinc-800 hover:underline font-mono font-semibold align-super cursor-pointer select-none transition-all focus:outline-none ml-0.5"
+                      >
+                        [{citationId.replace("cit_", "")}]
+                      </button>
+                    </span>
+                  );
+                }
+              }
+              return (
+                <a
+                  href={href}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-zinc-950 underline hover:text-zinc-600 transition-all font-semibold"
+                  {...props}
+                >
+                  {children}
+                </a>
+              );
+            },
+            li: ({ children }: any) => <li className="list-disc pl-1 ml-4 my-1.5 text-sm md:text-[14.5px]">{children}</li>,
+            ul: ({ children }: any) => <ul className="my-2.5 space-y-1.5">{children}</ul>,
+            ol: ({ children }: any) => <ol className="list-decimal pl-1 ml-4 my-2.5 space-y-1.5">{children}</ol>,
+            p: ({ children }: any) => <p className="mb-2.5 last:mb-0 leading-relaxed text-sm md:text-[14.5px]">{children}</p>,
+            strong: ({ children }: any) => <strong className="font-semibold text-zinc-950 text-sm md:text-[14.5px]">{children}</strong>,
+            h1: ({ children }: any) => <h1 className="text-lg font-bold text-zinc-950 mt-5 mb-2.5">{children}</h1>,
+            h2: ({ children }: any) => <h2 className="text-base font-bold text-zinc-950 mt-4 mb-2">{children}</h2>,
+            h3: ({ children }: any) => <h3 className="text-sm font-bold text-zinc-950 mt-3 mb-1.5">{children}</h3>,
+          }}
+        >
+          {preprocessed}
+        </Markdown>
+      </div>
+    );
+  };  // Reusable Ask Bar Form component
+  const renderAskBarForm = () => {
+    return (
+      <form onSubmit={handleAsk} className="w-full relative flex flex-col select-none">
+        <input 
+          type="file" 
+          ref={fileInputRef} 
+          onChange={handleLocalFileUpload} 
+          multiple 
+          className="hidden" 
+        />        <div className="w-full border border-zinc-200 focus-within:border-zinc-400 rounded-lg bg-white p-3 transition-all flex flex-col gap-2.5">
+          {/* Selected Files / Sources Chips Bar at the top of the container */}
+          {(attachedFiles.length > 0 || enableWebSearch || enableCourtListener || enableGovInfo) && (
+            <div className="flex flex-wrap gap-2 select-none pb-2 border-b border-zinc-100 animate-fade-in" id="attached-chips-row">
+              {attachedFiles.map((f, i) => (
+                <span key={i} className="inline-flex items-center gap-1.5 px-2.5 py-0.5 bg-zinc-50 text-zinc-600 rounded-full text-xs font-mono border border-zinc-200 animate-fade-in">
+                  <Paperclip className="h-3 w-3 shrink-0 text-zinc-450" />
+                  <span className="truncate max-w-[150px]">{f.name} {f.size ? `(${f.size})` : ''}</span>
+                  <button type="button" onClick={() => setAttachedFiles(prev => prev.filter((_, idx) => idx !== i))} className="hover:text-zinc-900 font-bold ml-1 text-[10px] focus:outline-none cursor-pointer">✕</button>
+                </span>
+              ))}
+              {enableWebSearch && (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 bg-zinc-50 text-zinc-600 rounded-full text-xs font-mono border border-zinc-200 animate-fade-in">
+                  <Globe className="h-3 w-3 shrink-0 text-zinc-450" />
+                  <span>Web search</span>
+                  <button type="button" onClick={() => setEnableWebSearch(false)} className="hover:text-zinc-900 font-bold ml-1 text-[10px] focus:outline-none cursor-pointer">✕</button>
+                </span>
+              )}
+              {enableCourtListener && (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 bg-zinc-50 text-zinc-600 rounded-full text-xs font-mono border border-zinc-200 animate-fade-in">
+                  <Library className="h-3 w-3 shrink-0 text-zinc-450" />
+                  <span>CourtListener</span>
+                  <button type="button" onClick={() => setEnableCourtListener(false)} className="hover:text-zinc-900 font-bold ml-1 text-[10px] focus:outline-none cursor-pointer">✕</button>
+                </span>
+              )}
+              {enableGovInfo && (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 bg-zinc-50 text-zinc-600 rounded-full text-xs font-mono border border-zinc-200 animate-fade-in">
+                  <FileText className="h-3 w-3 shrink-0 text-zinc-450" />
+                  <span>GovInfo</span>
+                  <button type="button" onClick={() => setEnableGovInfo(false)} className="hover:text-zinc-900 font-bold ml-1 text-[10px] focus:outline-none cursor-pointer">✕</button>
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* Textarea inside the container */}
+          <textarea
+            ref={textareaRef}
+            value={inputValue}
+            onChange={(e) => setInputValue(e.target.value)}
+            placeholder={activeCaseId ? "Analyze or query specific documents in this case..." : "Ask a legal question across your wide legal database..."}
+            className="w-full min-h-[64px] max-h-[180px] p-1.5 border-none outline-none focus:ring-0 text-sm text-zinc-900 placeholder-zinc-400 font-sans transition-all resize-none bg-white"
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                handleAsk();
+              }
+            }}
+          />
+
+          {/* Bottom control row inside the unified container */}
+          <div className="flex items-center justify-between select-none pt-2 border-t border-zinc-100 bg-white">
+            <div className="flex items-center gap-2 relative">
+              {/* Streamlined Workspace project selector dropdown */}
+              <div className="relative inline-block">
+                <select
+                  value={activeCaseId || "wide"}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setActiveCaseId(val === "wide" ? null : val);
+                  }}
+                  className="appearance-none bg-white border border-zinc-200 text-xs font-mono font-semibold text-zinc-600 hover:text-zinc-900 px-2.5 py-1.5 pr-7 rounded focus:outline-none cursor-pointer hover:border-zinc-300 transition-all"
+                >
+                  <option value="wide">📁 Wide Library</option>
+                  {cases.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      💼 {c.name.length > 15 ? `${c.name.substring(0, 15)}...` : c.name}
+                    </option>
+                  ))}
+                </select>
+                <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-1.5 text-zinc-400">
+                  <ChevronDown className="h-3 w-3" />
+                </div>
+              </div>
+
+              {/* Redesigned Files and Sources Dropdown Menu */}
+              <div className="relative">
+                <button
+                  ref={filesAndSourcesTriggerRef}
+                  type="button"
+                  onClick={() => setFilesAndSourcesOpen(!filesAndSourcesOpen)}
+                  id="files-and-sources-picker"
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-mono font-semibold text-zinc-600 hover:text-zinc-900 border border-zinc-200 rounded bg-white transition-all cursor-pointer hover:border-zinc-300"
+                  title="Toggle case attachments and external connector APIs"
+                >
+                  <Paperclip className="h-3.5 w-3.5 shrink-0" />
+                  <span>Files and sources</span>
+                  <ChevronDown className="h-3 w-3 shrink-0" />
+                </button>
+                
+                {filesAndSourcesOpen && dropdownPosition && createPortal(
+                  <div 
+                    ref={filesAndSourcesDropdownRef}
+                    style={{
+                      position: "fixed",
+                      left: `${dropdownPosition.left}px`,
+                      bottom: `${dropdownPosition.bottom}px`,
+                    }}
+                    className="w-80 bg-white border border-zinc-200 rounded shadow-md p-4 z-50 flex flex-col gap-3.5 animate-fade-in text-zinc-900 font-sans"
+                  >
+                    
+                    {/* Additional files attachment entries */}
+                    <div className="border-b border-zinc-100 pb-3">
+                      <span className="text-[10px] font-mono uppercase text-zinc-400 font-semibold block mb-2 tracking-wider">Workspace & Attachments</span>
+                      <div className="space-y-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            fileInputRef.current?.click();
+                            setFilesAndSourcesOpen(false);
+                          }}
+                          className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-zinc-700 hover:text-zinc-900 hover:bg-zinc-50 border border-zinc-200 rounded transition-all text-left font-medium cursor-pointer"
+                        >
+                          <Upload className="h-4 w-4 text-zinc-500 shrink-0" />
+                          <div className="flex flex-col">
+                            <span>Upload files</span>
+                            <span className="text-[9px] text-zinc-400 font-mono font-normal">Local device uploader</span>
+                          </div>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            handleAttachMockFile();
+                            setFilesAndSourcesOpen(false);
+                          }}
+                          disabled={isAttaching}
+                          className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-zinc-700 hover:text-zinc-950 hover:bg-zinc-50 border border-zinc-200 rounded-md transition-all text-left font-semibold cursor-pointer"
+                        >
+                          <Paperclip className="h-4 w-4 text-zinc-500 shrink-0" />
+                          <div className="flex flex-col">
+                            <span>Add from Google Drive</span>
+                            <span className="text-[9px] text-zinc-400 font-mono font-normal">{isAttaching ? "Connecting..." : "Drive cloud OAuth picker"}</span>
+                          </div>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setShowWorkspaceDocsPicker(!showWorkspaceDocsPicker)}
+                          className="w-full flex items-center justify-between px-3 py-2 text-xs text-zinc-700 hover:text-zinc-950 hover:bg-zinc-50 border border-zinc-200 rounded-md transition-all text-left font-semibold cursor-pointer"
+                        >
+                          <div className="flex items-center gap-2.5">
+                            <Database className="h-4 w-4 text-zinc-500 shrink-0" />
+                            <div className="flex flex-col">
+                              <span>Add from Workspace</span>
+                              <span className="text-[9px] text-zinc-400 font-mono font-normal">Pick from indexed database</span>
+                            </div>
+                          </div>
+                          <ChevronDown className={`h-4 w-4 text-zinc-400 transition-transform ${showWorkspaceDocsPicker ? "rotate-180" : ""}`} />
+                        </button>
+
+                        {showWorkspaceDocsPicker && (
+                          <div className="max-h-40 overflow-y-auto border border-zinc-200 rounded-md bg-zinc-50 p-2 space-y-1 animate-fade-in shadow-inner">
+                            {workspaceDocs.length === 0 ? (
+                              <p className="text-[10px] text-zinc-400 p-2 italic text-center">No indexed documents found in active scope</p>
+                            ) : (
+                              workspaceDocs.map((doc) => {
+                                const isAlreadyAttached = attachedFiles.some(f => f.name === doc.title);
+                                return (
+                                  <button
+                                    key={doc.id}
+                                    type="button"
+                                    onClick={() => {
+                                      if (isAlreadyAttached) {
+                                        setAttachedFiles(prev => prev.filter(f => f.name !== doc.title));
+                                      } else {
+                                        setAttachedFiles(prev => [...prev, { name: doc.title, size: "indexed text" }]);
+                                      }
+                                    }}
+                                    className={`w-full flex items-center justify-between text-left p-1.5 rounded-md text-[11px] transition-all ${
+                                      isAlreadyAttached 
+                                        ? "bg-zinc-950 text-white font-semibold" 
+                                        : "text-zinc-700 hover:bg-zinc-200/70"
+                                    }`}
+                                  >
+                                    <span className="truncate pr-2">{doc.title}</span>
+                                    {isAlreadyAttached ? <Check className="h-3.5 w-3.5 shrink-0" /> : <span className="text-[8px] font-mono text-zinc-400 uppercase font-semibold">Select</span>}
+                                  </button>
+                                );
+                              })
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Toggle-style selectable sources with icons inside dropdown */}
+                    <div>
+                      <span className="text-[10px] font-mono uppercase text-zinc-400 font-bold block mb-2 tracking-wider">Legal Data Grounding</span>
+                      <div className="space-y-2">
+                        <button
+                          type="button"
+                          onClick={() => setEnableWebSearch(!enableWebSearch)}
+                          className={`w-full flex items-center justify-between px-3 py-2 text-xs rounded-md border transition-all cursor-pointer ${
+                            enableWebSearch
+                              ? "bg-amber-50 text-amber-900 border-amber-200 font-semibold"
+                              : "bg-white text-zinc-700 border-zinc-200 hover:bg-zinc-50"
+                          }`}
+                        >
+                          <div className="flex items-center gap-2.5">
+                            <Globe className="h-4 w-4 text-amber-600 shrink-0" />
+                            <span>Web search (Google Grounding)</span>
+                          </div>
+                          <div className={`w-4 h-4 rounded border flex items-center justify-center ${enableWebSearch ? "bg-amber-600 border-amber-600 text-white" : "border-zinc-300 bg-white"}`}>
+                            {enableWebSearch && <Check className="h-3 w-3" />}
+                          </div>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setEnableCourtListener(!enableCourtListener)}
+                          className={`w-full flex items-center justify-between px-3 py-2 text-xs rounded-md border transition-all cursor-pointer ${
+                            enableCourtListener
+                              ? "bg-blue-50 text-blue-900 border-blue-200 font-semibold"
+                              : "bg-white text-zinc-700 border-zinc-200 hover:bg-zinc-50"
+                          }`}
+                        >
+                          <div className="flex items-center gap-2.5">
+                            <Library className="h-4 w-4 text-blue-600 shrink-0" />
+                            <span>CourtListener Federal Case Law</span>
+                          </div>
+                          <div className={`w-4 h-4 rounded border flex items-center justify-center ${enableCourtListener ? "bg-blue-600 border-blue-600 text-white" : "border-zinc-300 bg-white"}`}>
+                            {enableCourtListener && <Check className="h-3 w-3" />}
+                          </div>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setEnableGovInfo(!enableGovInfo)}
+                          className={`w-full flex items-center justify-between px-3 py-2 text-xs rounded-md border transition-all cursor-pointer ${
+                            enableGovInfo
+                              ? "bg-purple-50 text-purple-900 border-purple-200 font-semibold"
+                              : "bg-white text-zinc-700 border-zinc-200 hover:bg-zinc-50"
+                          }`}
+                        >
+                          <div className="flex items-center gap-2.5">
+                            <FileText className="h-4 w-4 text-purple-600 shrink-0" />
+                            <span>GovInfo Legislative Library</span>
+                          </div>
+                          <div className={`w-4 h-4 rounded border flex items-center justify-center ${enableGovInfo ? "bg-purple-600 border-purple-600 text-white" : "border-zinc-300 bg-white"}`}>
+                            {enableGovInfo && <Check className="h-3 w-3" />}
+                          </div>
+                        </button>
+                      </div>
+                    </div>
+                  </div>,
+                  document.body
+                )}
+              </div>
+
+              {/* Improve button */}
+              <button
+                type="button"
+                onClick={handleImprovePrompt}
+                disabled={!inputValue.trim() || loading}
+                id="btn-improve-query"
+                className="flex items-center gap-1 px-2 py-1 text-xs font-mono font-bold text-zinc-600 hover:text-zinc-950 border border-zinc-200 rounded-md bg-white transition-all disabled:opacity-50 cursor-pointer shadow-xs hover:border-zinc-300"
+                title="Optimize query with legal-grade framing"
+              >
+                <Sparkles className="h-3.5 w-3.5 text-zinc-800 animate-pulse" />
+                <span>Improve</span>
+              </button>
+            </div>
+
+            {/* Right Side Controls */}
+            <div className="flex items-center gap-3">
+              <label className="inline-flex items-center gap-1.5 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={deepResearchEnabled}
+                  onChange={(e) => setDeepResearchEnabled(e.target.checked)}
+                  className="sr-only peer"
+                />
+                <div className="relative w-8 h-4.5 bg-zinc-200 peer-focus:outline-none rounded-full peer peer-checked:bg-zinc-950 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-3.5 after:w-3.5 after:transition-all peer-checked:after:translate-x-3.5 border border-transparent shadow-inner"></div>
+                <span className="text-[11px] font-mono uppercase font-bold text-zinc-500 peer-checked:text-zinc-950">
+                  Deep Research
+                </span>
+              </label>
+
+              <button
+                type="submit"
+                disabled={!inputValue.trim() || loading}
+                id="btn-submit-ask"
+                className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-mono uppercase font-bold text-white bg-zinc-950 hover:bg-zinc-900 border border-zinc-950 rounded shadow-xs disabled:opacity-40 transition-all cursor-pointer"
+              >
+                Ask
+                <Send className="h-3 w-3" />
+              </button>
+            </div>
+          </div>
+        </div>
+      </form>
+    );
+  };
+
+  // Clickable source suggestions on first message
+  const renderFirstMessageSuggestions = () => {
+    return (
+      <div className="flex flex-col items-center gap-3 w-full select-none" id="source-suggestions">
+        <span className="text-xs font-mono font-bold uppercase tracking-wider text-zinc-400">Quick-Enable Grounding Sources</span>
+        <div className="flex flex-wrap justify-center gap-2.5">
+          <button
+            type="button"
+            onClick={() => setEnableWebSearch(!enableWebSearch)}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-full border text-xs font-semibold transition-all cursor-pointer ${
+              enableWebSearch
+                ? "bg-amber-50 text-amber-900 border-amber-300 shadow-sm"
+                : "bg-white text-zinc-600 border-zinc-200 hover:bg-zinc-50 hover:border-zinc-300"
+            }`}
+          >
+            <Globe className="h-4 w-4 text-amber-600" />
+            <span>Web Search</span>
+            {enableWebSearch && <Check className="h-3.5 w-3.5 ml-0.5 text-amber-700" />}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setEnableCourtListener(!enableCourtListener)}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-full border text-xs font-semibold transition-all cursor-pointer ${
+              enableCourtListener
+                ? "bg-blue-50 text-blue-900 border-blue-300 shadow-sm"
+                : "bg-white text-zinc-600 border-zinc-200 hover:bg-zinc-50 hover:border-zinc-300"
+            }`}
+          >
+            <Library className="h-4 w-4 text-blue-600" />
+            <span>CourtListener</span>
+            {enableCourtListener && <Check className="h-3.5 w-3.5 ml-0.5 text-blue-700" />}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setEnableGovInfo(!enableGovInfo)}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-full border text-xs font-semibold transition-all cursor-pointer ${
+              enableGovInfo
+                ? "bg-purple-50 text-purple-900 border-purple-300 shadow-sm"
+                : "bg-white text-zinc-600 border-zinc-200 hover:bg-zinc-50 hover:border-zinc-300"
+            }`}
+          >
+            <FileText className="h-4 w-4 text-purple-600" />
+            <span>GovInfo Library</span>
+            {enableGovInfo && <Check className="h-3.5 w-3.5 ml-0.5 text-purple-700" />}
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  // Persistent Citation Metadata Panel helper
+  const renderCitationPanel = () => {
+    if (!citationPanelSource) return null;
+    return (
+      <div className="w-96 bg-white border-l border-zinc-200 flex flex-col h-full animate-fade-in shrink-0" id="citation-panel">
+        <div className="p-4.5 border-b border-zinc-200 flex items-center justify-between select-none">
+          <span className="text-xs font-mono font-semibold uppercase tracking-wider text-zinc-500 font-sans">Source Citations</span>
+          <button
+            onClick={() => {
+              setCitationPanelSource(null);
+              setActiveMessageCitations([]);
+            }}
+            className="text-xs font-mono text-zinc-400 hover:text-zinc-900 uppercase focus:outline-none cursor-pointer"
+          >
+            [Close]
+          </button>
+        </div>
+
+        <div className="p-6 flex-1 overflow-y-auto space-y-5 text-sm">
+          {/* Quick-navigation tabs for multiple sources referenced in this message */}
+          {activeMessageCitations && activeMessageCitations.length > 1 && (
+            <div className="pb-4 border-b border-zinc-200 select-none">
+              <span className="text-[10px] font-mono text-zinc-400 uppercase block mb-2 tracking-wider font-semibold">References in this response:</span>
+              <div className="flex flex-wrap gap-2">
+                {activeMessageCitations.map((cit) => (
+                  <button
+                    key={cit.id}
+                    type="button"
+                    onClick={() => setCitationPanelSource(cit)}
+                    className={`px-2.5 py-1 text-xs font-mono font-medium rounded border cursor-pointer transition-all focus:outline-none ${
+                      citationPanelSource.id === cit.id
+                        ? "bg-zinc-900 text-white border-zinc-900"
+                        : "bg-white text-zinc-600 border-zinc-200 hover:bg-zinc-50 hover:text-zinc-900"
+                    }`}
+                    title={`${cit.sourceName}: ${cit.title}`}
+                  >
+                    {cit.id.replace("cit_", "")}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div>
+            <span className="text-[10px] font-mono font-semibold text-zinc-500 uppercase tracking-wider select-none">
+              {citationPanelSource.sourceName}
+            </span>
+            <h4 className="font-sans font-bold text-zinc-900 mt-2 leading-relaxed text-base select-text">
+              {citationPanelSource.title}
+            </h4>
+          </div>
+
+          {citationPanelSource.url && (
+            <div>
+              <span className="text-[10px] font-mono text-zinc-400 uppercase block mb-1.5 select-none font-semibold">Direct URL Link:</span>
+              <a
+                href={citationPanelSource.url}
+                target="_blank"
+                rel="noreferrer"
+                className="text-zinc-900 font-mono text-xs underline hover:text-zinc-650 flex items-center gap-1.5 inline-flex break-all"
+              >
+                {citationPanelSource.url}
+                <ExternalLink className="h-3.5 w-3.5 shrink-0" />
+              </a>
+            </div>
+          )}
+
+          <div className="pt-4 border-t border-zinc-200">
+            <span className="text-[10px] font-mono text-zinc-400 uppercase block mb-1.5 select-none font-semibold">Verbatim Snippet / Context:</span>
+            <p className="font-mono text-xs leading-relaxed text-zinc-600 bg-zinc-50 p-4 border border-zinc-200 rounded-md whitespace-pre-wrap select-text">
+              "{citationPanelSource.textSnippet}"
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="flex-1 flex h-full overflow-hidden bg-white text-zinc-900" id="assistant-view-container">
+      {/* Central Consultation Screen */}
+      <div className="flex-1 flex flex-col h-full overflow-hidden relative border-r border-zinc-100">
+        
+        {messages.length > 0 ? (
+          <>
+            {/* Simple Thread Title Header (Only if there are messages) */}
+            <div className="px-8 py-4.5 bg-zinc-50 border-b border-zinc-100 flex items-center justify-between z-10 select-none shrink-0" id="active-thread-header">
+              <div>
+                <span className="text-xs font-mono font-semibold uppercase text-zinc-400 tracking-wider">Active Consultation</span>
+                <h2 className="text-sm font-sans font-semibold text-zinc-800 line-clamp-1 mt-0.5">
+                  {activeThreadId ? threads.find(t => t.id === activeThreadId)?.title || "Consultation Thread" : "New Consultation"}
+                </h2>
+              </div>
+              
+              <button 
+                onClick={() => {
+                  setActiveThreadId(null);
+                  setMessages([]);
+                  setEnableWebSearch(false);
+                  setEnableCourtListener(false);
+                  setEnableGovInfo(false);
+                }}
+                id="header-new-thread-btn"
+                className="text-xs uppercase font-mono font-bold border border-zinc-950 text-zinc-950 px-4 py-2 rounded hover:bg-zinc-100 transition-all cursor-pointer"
+              >
+                + New Consultation
+              </button>
+            </div>
+
+            {/* Message Thread History List */}
+            <div className="flex-1 overflow-y-auto px-8 py-6 space-y-2" id="chat-messages-scroll-area">
+              {messages.map((m, index) => {
+                const isLastMessage = index === messages.length - 1;
+                const lastAssistantMessageId = [...messages]
+                  .reverse()
+                  .find((msg) => msg.role === "assistant")?.id;
+
+                return (
+                  <div key={m.id} className="w-full max-w-3xl mx-auto flex flex-col py-6 border-b border-zinc-150 last:border-0 animate-fade-in" id={`message-wrapper-${m.id}`}>
+                    <div className={`w-full flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+                      {m.role === "user" ? (
+                        <div id={`message-bubble-${m.id}`} className="bg-zinc-100 text-zinc-900 rounded-2xl px-5 py-3 max-w-[75%] text-sm leading-relaxed">
+                          {/* Speaker Label */}
+                          <div className="flex items-center gap-2 mb-1 select-none">
+                            <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-zinc-400">
+                              You
+                            </span>
+                            <span className="text-[9px] font-mono text-zinc-300">
+                              {new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                          </div>
+                          <div className="whitespace-pre-wrap font-sans font-normal text-zinc-900">
+                            {m.content}
+                          </div>
+                        </div>
+                      ) : (
+                        <div id={`message-bubble-${m.id}`} className="w-full text-sm leading-relaxed text-zinc-950">
+                          {/* Speaker Label */}
+                          <div className="flex items-center gap-2 mb-2 select-none">
+                            <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-zinc-500">
+                              AI Legal Assistant
+                            </span>
+                            <span className="text-[9px] font-mono text-zinc-450">
+                              {new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                          </div>
+
+                          {/* Multi-step Deep Research Steps Panel */}
+                          {m.steps && m.steps.length > 0 && (
+                            <CollapsibleSteps steps={m.steps} />
+                          )}
+
+                          {/* Body Text */}
+                          <div className="whitespace-pre-wrap font-sans font-normal leading-relaxed text-zinc-900">
+                            {renderMessageTextWithCitations(m.content, m.citations)}
+                          </div>
+
+                          {/* Message Action Items */}
+                          {!m.content.startsWith("❌") && (
+                            <div className="mt-5 pt-3.5 border-t border-zinc-100 flex items-center justify-between flex-wrap gap-2.5 select-none">
+                              <div className="flex items-center gap-3">
+                                {m.citations && m.citations.length > 0 ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setCitationPanelSource(m.citations[0]);
+                                      setActiveMessageCitations(m.citations);
+                                    }}
+                                    id={`refs-indicator-${m.id}`}
+                                    className="inline-flex items-center gap-1.5 text-xs font-mono font-medium text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 px-2 py-1 rounded transition-colors"
+                                  >
+                                    <BookOpen className="h-3.5 w-3.5 text-zinc-400" />
+                                    {m.citations.length} {m.citations.length === 1 ? "Source" : "Sources"} Referenced
+                                  </button>
+                                ) : (
+                                  <span className="text-xs font-mono text-zinc-400">
+                                    0 sources matched
+                                  </span>
+                                )}
+
+                                {/* Thumbs Feedback Controls */}
+                                <div className="flex items-center gap-1 border-l border-zinc-200 pl-3">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleFeedback(m.id, "up")}
+                                    className={`p-1 rounded transition-all cursor-pointer border ${
+                                      messageFeedbacks[m.id] === "up"
+                                        ? "bg-zinc-100 border-zinc-200 text-zinc-900 shadow-none"
+                                        : "border-transparent text-zinc-400 hover:text-zinc-700 hover:bg-zinc-50"
+                                    }`}
+                                    title="Thumbs Up"
+                                  >
+                                    <ThumbsUp className={`h-3.5 w-3.5 ${messageFeedbacks[m.id] === "up" ? "fill-zinc-600 text-zinc-700" : ""}`} />
+                                  </button>
+                                  
+                                  <button
+                                    type="button"
+                                    onClick={() => handleFeedback(m.id, "down")}
+                                    className={`p-1 rounded transition-all cursor-pointer border ${
+                                      messageFeedbacks[m.id] === "down"
+                                        ? "bg-zinc-100 border-zinc-200 text-zinc-900 shadow-none"
+                                        : "border-transparent text-zinc-400 hover:text-zinc-700 hover:bg-zinc-50"
+                                    }`}
+                                    title="Thumbs Down"
+                                  >
+                                    <ThumbsDown className={`h-3.5 w-3.5 ${messageFeedbacks[m.id] === "down" ? "fill-zinc-600 text-zinc-700" : ""}`} />
+                                  </button>
+                                </div>
+                              </div>
+                              
+                              {/* Action buttons row */}
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    navigator.clipboard.writeText(m.content);
+                                    alert("Response copied to clipboard!");
+                                  }}
+                                  id={`action-copy-${m.id}`}
+                                  className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-mono font-medium text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 rounded transition-colors"
+                                  title="Copy response"
+                                >
+                                  <Copy className="h-3.5 w-3.5" />
+                                  <span>Copy</span>
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const blob = new Blob([m.content], { type: "text/markdown;charset=utf-8;" });
+                                    const url = URL.createObjectURL(blob);
+                                    const link = document.createElement("a");
+                                    link.href = url;
+                                    link.setAttribute("download", `AI_Response_${m.id}.md`);
+                                    document.body.appendChild(link);
+                                    link.click();
+                                    document.body.removeChild(link);
+                                  }}
+                                  id={`action-export-${m.id}`}
+                                  className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-mono font-medium text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 rounded transition-colors"
+                                  title="Export to Markdown File"
+                                >
+                                  <Download className="h-3.5 w-3.5" />
+                                  <span>Export</span>
+                                </button>
+
+                                {/* Rewrite action button - restricted to latest assistant message */}
+                                {m.id === lastAssistantMessageId && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setInputValue(`Please rewrite the previous response to make it `);
+                                      textareaRef.current?.focus();
+                                    }}
+                                    id={`action-rewrite-${m.id}`}
+                                    className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-mono font-medium text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 rounded transition-colors animate-fade-in"
+                                    title="Rewrite response"
+                                  >
+                                    <Pencil className="h-3.5 w-3.5" />
+                                    <span>Rewrite</span>
+                                  </button>
+                                )}
+
+                                <button
+                                  onClick={() => {
+                                    handleGenerateDraft(m.id);
+                                  }}
+                                  id={`action-draft-${m.id}`}
+                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono uppercase font-semibold border border-zinc-200 hover:border-zinc-900 hover:bg-zinc-50 rounded transition-colors text-zinc-700 hover:text-zinc-950"
+                                  title="Generate document draft from this response"
+                                >
+                                  <FileText className="h-3.5 w-3.5" />
+                                  <span>Generate Draft</span>
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Follow-up Suggestions (Pills) - Lifecycle restricted to latest assistant response */}
+                    {isLastMessage && m.role === "assistant" && !loading && (
+                      <div className="mt-4 flex flex-col gap-2 pl-2 animate-fade-in select-none" id="follow-up-suggestions-container">
+                        <span className="text-[10px] font-mono font-semibold uppercase tracking-wider text-zinc-400">Suggested Follow-ups:</span>
+                        <div className="flex flex-wrap gap-2">
+                          {getFollowUpSuggestions(m.content).map((suggestion, idx) => (
+                            <button
+                              key={idx}
+                              type="button"
+                              onClick={() => handleAsk(undefined, suggestion)}
+                              className="px-3 py-1 text-xs text-zinc-700 hover:text-zinc-950 hover:bg-zinc-100 bg-white border border-zinc-200 rounded-full transition-all cursor-pointer text-left shadow-2xs"
+                            >
+                              {suggestion}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+
+              {loading && (
+                <div className="flex items-start" id="chat-loading-indicator">
+                  <div className="bg-zinc-50 border border-zinc-200 rounded-lg p-6 max-w-xl flex items-center gap-3.5 select-none animate-pulse">
+                    <RefreshCw className="h-5 w-5 text-zinc-900 animate-spin" />
+                    <div className="text-sm">
+                      <p className="font-bold text-zinc-900 uppercase tracking-tight text-xs">Analyzing materials...</p>
+                      <p className="text-xs text-zinc-400 mt-1">Searching workspace chunks, legal connector API endpoints & grounding results...</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div ref={messagesEndRef} />
+            </div>
+
+            {/* Pinned bottom-anchored Ask Bar Form wrapper */}
+            <div className="px-8 py-6 bg-white border-t border-zinc-100 shrink-0" id="ask-bar-container">
+              {renderAskBarForm()}
+            </div>
+          </>
+        ) : (
+          /* Centered first-message layout - fresh chat page */
+          <div className="flex-1 flex flex-col items-center justify-center px-8 overflow-y-auto bg-white" id="centered-chat-container">
+            <div className="w-full max-w-3xl py-12 space-y-10 flex flex-col items-center text-center">
+              
+              {/* Center Banner Title */}
+              <div className="flex flex-col items-center">
+                <div className="w-12 h-12 rounded-full bg-zinc-100 border border-zinc-200 flex items-center justify-center mb-5">
+                  <MessageSquare className="h-5 w-5 text-zinc-800" />
+                </div>
+                <h1 className="text-xl font-bold text-zinc-900 uppercase tracking-tight font-sans">AI Legal Assistant</h1>
+                <p className="text-sm text-zinc-500 mt-2.5 max-w-md leading-relaxed">
+                  Formulate queries, select workspace documents, or toggle public law connectors below to initiate your high-fidelity legal consultation.
+                </p>
+              </div>
+
+              {/* Centered Ask Bar Box */}
+              <div className="w-full text-left">
+                {renderAskBarForm()}
+              </div>
+
+              {/* Suggestion pills directly beneath centered box */}
+              {renderFirstMessageSuggestions()}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Persistent Citation Metadata Panel */}
+      {renderCitationPanel()}
+
+      {/* Docked Response Editor Panel */}
+      {sideEditorMessageId && (
+        <div className="w-[450px] bg-white border-l border-zinc-200 flex flex-col h-full animate-fade-in shrink-0" id="response-editor-panel">
+          <div className="p-4 border-b border-zinc-200 flex items-center justify-between select-none bg-zinc-50">
+            <div className="flex items-center gap-2">
+              <FileText className="h-4 w-4 text-zinc-600" />
+              <span className="text-xs font-mono font-semibold uppercase tracking-wider text-zinc-500 font-sans">Response Editor</span>
+            </div>
+            <button
+              onClick={() => {
+                setSideEditorMessageId(null);
+                setSideEditorContent("");
+                setSideEditorUndoStack([]);
+                setSideEditorRedoStack([]);
+              }}
+              className="text-xs font-mono font-medium text-zinc-400 hover:text-zinc-900 uppercase focus:outline-none cursor-pointer"
+            >
+              [Close]
+            </button>
+          </div>
+
+          {/* Editor Header Toolbar */}
+          <div className="px-5 py-3 bg-white border-b border-zinc-200 flex items-center justify-between select-none">
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={handleSideEditorUndo}
+                disabled={sideEditorUndoStack.length <= 1}
+                className="p-1.5 rounded border border-zinc-200 hover:bg-zinc-50 disabled:opacity-40 text-zinc-600 hover:text-zinc-900 transition-all cursor-pointer"
+                title="Undo (Ctrl+Z)"
+              >
+                <Undo2 className="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={handleSideEditorRedo}
+                disabled={sideEditorRedoStack.length === 0}
+                className="p-1.5 rounded border border-zinc-200 hover:bg-zinc-50 disabled:opacity-40 text-zinc-600 hover:text-zinc-900 transition-all cursor-pointer"
+                title="Redo (Ctrl+Y)"
+              >
+                <Redo2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
+
+            {/* Edit / Preview Tabs */}
+            <div className="flex bg-zinc-100 p-0.5 rounded border border-zinc-200">
+              <button
+                type="button"
+                onClick={() => setSideEditorTab("edit")}
+                className={`px-3 py-1 text-xs font-semibold rounded transition-all cursor-pointer ${
+                  sideEditorTab === "edit"
+                    ? "bg-white text-zinc-900 font-bold"
+                    : "text-zinc-500 hover:text-zinc-900"
+                }`}
+              >
+                Edit
+              </button>
+              <button
+                type="button"
+                onClick={() => setSideEditorTab("preview")}
+                className={`px-3 py-1 text-xs font-semibold rounded transition-all cursor-pointer ${
+                  sideEditorTab === "preview"
+                    ? "bg-white text-zinc-900 font-bold"
+                    : "text-zinc-500 hover:text-zinc-900"
+                }`}
+              >
+                Preview
+              </button>
+            </div>
+          </div>
+
+          {/* Main Workspace Area of Response Editor */}
+          <div className="flex-1 overflow-hidden flex flex-col bg-white">
+            {sideEditorTab === "edit" ? (
+              <textarea
+                value={sideEditorContent}
+                onChange={(e) => handleSideEditorContentChange(e.target.value)}
+                placeholder="Edit legal response content here (Supports standard Markdown formatting)..."
+                className="flex-1 w-full p-6 text-sm leading-relaxed border-none outline-none focus:ring-0 text-zinc-900 font-mono placeholder-zinc-400 bg-white resize-none overflow-y-auto"
+              />
+            ) : (
+              <div className="flex-1 p-6 overflow-y-auto prose prose-zinc max-w-none text-sm select-text">
+                <Markdown
+                  components={{
+                    a: ({ href, children, ...props }: any) => (
+                      <a
+                        href={href}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-zinc-950 underline hover:text-zinc-600 transition-all font-semibold"
+                        {...props}
+                      >
+                        {children}
+                      </a>
+                    ),
+                    li: ({ children }: any) => <li className="list-disc pl-1 ml-4 my-1 text-zinc-850 leading-relaxed">{children}</li>,
+                    ul: ({ children }: any) => <ul className="my-2 space-y-1">{children}</ul>,
+                    ol: ({ children }: any) => <ol className="list-decimal pl-1 ml-4 my-2 space-y-1">{children}</ol>,
+                    p: ({ children }: any) => <p className="mb-2.5 last:mb-0 leading-relaxed text-zinc-850">{children}</p>,
+                    strong: ({ children }: any) => <strong className="font-semibold text-zinc-950">{children}</strong>,
+                    h1: ({ children }: any) => <h1 className="text-base font-bold text-zinc-950 mt-4 mb-2">{children}</h1>,
+                    h2: ({ children }: any) => <h2 className="text-sm font-bold text-zinc-950 mt-3 mb-1.5">{children}</h2>,
+                  }}
+                >
+                  {sideEditorContent}
+                </Markdown>
+              </div>
+            )}
+          </div>
+
+          {/* Footer Save Row */}
+          <div className="px-5 py-3.5 bg-zinc-50 border-t border-zinc-200 flex items-center justify-between select-none shrink-0">
+            <span className="text-[10px] font-mono text-zinc-400 font-semibold uppercase">
+              {sideEditorContent.length} chars
+            </span>
+            <div className="flex items-center gap-2">
+              {sideEditorSaveStatus === "saved" && (
+                <span className="text-xs text-green-700 font-medium flex items-center gap-1 animate-fade-in mr-2">
+                  <Check className="h-3.5 w-3.5 shrink-0" />
+                  Saved
+                </span>
+              )}
+              {sideEditorSaveStatus === "error" && (
+                <span className="text-xs text-red-600 font-medium flex items-center gap-1 animate-fade-in mr-2">
+                  Error saving
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={handleSideEditorSave}
+                disabled={sideEditorSaveStatus === "saving"}
+                className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-mono uppercase font-bold text-white bg-zinc-950 hover:bg-zinc-900 border border-zinc-950 rounded shadow-sm disabled:opacity-55 transition-all cursor-pointer"
+              >
+                {sideEditorSaveStatus === "saving" ? "Saving..." : "Save Changes"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Drafting Configurations Modal */}
+      {draftingMessageId && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" id="drafting-modal">
+          <div className="bg-white border border-zinc-200 rounded-lg shadow-lg w-full max-w-lg overflow-hidden animate-fade-in text-zinc-900">
+            <div className="px-6 py-4 bg-zinc-50 border-b border-zinc-150 text-zinc-900 flex items-center justify-between select-none">
+              <h3 className="text-xs font-mono font-bold uppercase tracking-wider text-zinc-600 font-sans">Initialize Draft Generator</h3>
+              <button 
+                onClick={() => setDraftingMessageId(null)}
+                className="text-zinc-400 hover:text-zinc-700 font-mono text-xs cursor-pointer focus:outline-none"
+              >
+                [Cancel]
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="block text-xs font-mono uppercase font-semibold text-zinc-500 mb-2 select-none">Drafting Format Style:</label>
+                <div className="grid grid-cols-3 gap-2">
+                  {(["memo", "email", "summary"] as const).map((fmt) => (
+                    <button
+                      key={fmt}
+                      onClick={() => setDraftFormat(fmt)}
+                      className={`px-3 py-2 border text-xs font-semibold rounded uppercase tracking-wide transition-all cursor-pointer ${
+                        draftFormat === fmt
+                          ? "bg-zinc-900 border-zinc-900 text-white"
+                          : "border-zinc-200 hover:bg-zinc-50 text-zinc-700 hover:border-zinc-300"
+                      }`}
+                    >
+                      {fmt}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-mono uppercase font-semibold text-zinc-500 mb-2 select-none">Custom Attorney Directives:</label>
+                <textarea
+                  value={draftInstructions}
+                  onChange={(e) => setDraftInstructions(e.target.value)}
+                  placeholder="e.g., Focus primarily on CA SB 699, include a standard liability disclaimer, frame argument as defense counsel..."
+                  className="w-full h-24 p-3 border border-zinc-200 rounded text-sm focus:outline-none focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 text-zinc-900 resize-none font-sans"
+                />
+              </div>
+            </div>
+
+            <div className="px-6 py-4 bg-zinc-50 border-t border-zinc-150 flex justify-end gap-2.5 select-none">
+              <button
+                onClick={() => setDraftingMessageId(null)}
+                className="px-4 py-2 text-xs font-mono uppercase font-semibold border border-zinc-200 hover:bg-zinc-100 rounded cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={submitDraftRequest}
+                disabled={draftingInProgress}
+                className="px-4 py-2 text-xs font-mono uppercase font-semibold text-white bg-zinc-900 hover:bg-zinc-800 rounded disabled:opacity-50 cursor-pointer"
+              >
+                {draftingInProgress ? "Drafting Document..." : "Generate & Save Draft"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {hoveredCitation && createPortal(
+        <span 
+          style={{
+            position: "fixed",
+            left: `${hoveredCitation.rect.left + hoveredCitation.rect.width / 2}px`,
+            bottom: `${window.innerHeight - hoveredCitation.rect.top + 8}px`,
+            transform: "translateX(-50%)",
+          }}
+          className="flex flex-col w-80 bg-white border border-zinc-200 rounded-md shadow-md p-4 z-50 text-left pointer-events-none animate-fade-in font-sans"
+        >
+          <span className="flex items-center gap-1.5 mb-1">
+            <span className="text-[10px] font-mono font-semibold uppercase text-zinc-400">
+              {hoveredCitation.citation.sourceName || "Source"}
+            </span>
+          </span>
+          <span className="text-xs font-bold text-zinc-900 leading-snug block">
+            {hoveredCitation.citation.title || "Untitled Reference"}
+          </span>
+          
+          {hoveredCitation.citation.url ? (
+            <span className="text-[10px] font-mono text-zinc-400 mt-1 truncate block animate-fade-in">
+              {hoveredCitation.citation.url}
+            </span>
+          ) : (
+            <span className="text-[10px] font-mono text-zinc-400 mt-1 block truncate animate-fade-in">
+              {hoveredCitation.citation.title || "Workspace Document"}
+            </span>
+          )}
+          
+          <span className="mt-3 pt-2.5 border-t border-zinc-100 block">
+            <span className="max-h-[140px] overflow-y-auto text-[11px] leading-relaxed text-zinc-600 font-mono block whitespace-pre-wrap break-words select-text">
+              {(() => {
+                const processed = getProcessedSnippet(hoveredCitation.citation.textSnippet || "", hoveredCitation.lastUserQuery);
+                return (
+                  <>
+                    "{processed.element}{processed.isTruncated ? "..." : ""}"
+                  </>
+                );
+              })()}
+            </span>
+          </span>
+          
+          <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-white border-r border-b border-zinc-200 rotate-45 block"></span>
+        </span>,
+        document.body
+      )}
+    </div>
+  );
+}
+
+// Collapsible Deep Research steps rendering subcomponent
+function CollapsibleSteps({ steps }: { steps: ResearchStep[] }) {
+  const [isOpen, setIsOpen] = useState(false);
+
+  return (
+    <div className="mb-4 text-zinc-850 select-none">
+      <button
+        type="button"
+        onClick={() => setIsOpen(!isOpen)}
+        className="flex items-center gap-1.5 text-xs text-zinc-500 hover:text-zinc-800 font-mono font-medium py-1 transition-colors cursor-pointer focus:outline-none"
+      >
+        {isOpen ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+        {isOpen ? "Hide Thinking Process" : "Show Thinking Process"} ({steps.length} steps)
+      </button>
+
+      {isOpen && (
+        <ul className="pl-4 mt-2 space-y-2.5 border-l border-zinc-200 text-xs text-zinc-600 font-sans">
+          {steps.map((step, idx) => (
+            <li key={idx} className="relative">
+              <div className="font-semibold text-zinc-800">
+                Step {idx + 1}: {step.subQuestion}
+              </div>
+              {step.note && (
+                <p className="text-zinc-500 mt-0.5 pl-2 border-l border-zinc-100 italic">
+                  {step.note}
+                </p>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}

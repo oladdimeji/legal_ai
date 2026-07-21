@@ -1,0 +1,6 @@
+{
+  "name": "Legal AI",
+  "description": "An AI legal research assistant for lawyers featuring semantic search via pgvector, chat with inline citations, deep research, and draft generation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
