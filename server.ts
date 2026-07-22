@@ -13,6 +13,8 @@ import { Packer } from "docx";
 import { extractUploads, MAX_FILE_COUNT, MAX_FILE_SIZE_BYTES } from "./server/fileExtraction.js";
 import { markdownToDocxDocument } from "./server/docxMarkdown.js";
 import { cleanMatterIntelligenceContent } from "./server/matterIntelligenceContent.js";
+import { cleanGeneratedBoilerplate } from "./server/generatedContentCleanup.js";
+import { assistantCitationsToDisplayText, canonicalizeAssistantCitations, rewriteGoogleGroundingCitations } from "./src/lib/assistantCitations.js";
 import {
   SESSION_COOKIE_NAME,
   SESSION_TTL_MS,
@@ -68,6 +70,23 @@ function ownedErrorStatus(error: unknown): number {
 
 function cleanSourceText(text: string): string {
   return text.replace(/\[cit_\d+\]/g, "");
+}
+
+function cleanGeneratedText(content: string): string {
+  return cleanGeneratedBoilerplate(content);
+}
+
+function temporaryAttachmentMetadata(files: Array<{ filename: string; text: string }>) {
+  const seen = new Set<string>();
+  const attachments = files
+    .map((file) => file.filename.trim().slice(0, 180))
+    .filter((name) => {
+      if (!name || seen.has(name)) return false;
+      seen.add(name);
+      return true;
+    })
+    .map((name) => ({ name }));
+  return attachments.length ? { attachments } : {};
 }
 
 function sanitizePlainEditableText(text: string): string {
@@ -385,7 +404,8 @@ async function startServer() {
         .join("\n\n");
       const prompt = `You are a document-understanding assistant for an external legal client.
 Answer ONLY from the documents selected below. Provide a plain-language explanation, summary, clause clarification, or grounded answer. Cite sources as [Source: exact title].
-Do not provide external legal research, do not imply access to the Firm Library, Matter Intelligence, lawyer conversations, or unshared material, and do not present yourself as a replacement for the lawyer's advice.
+Do not provide external legal research, and do not imply access to the Firm Library, Matter Intelligence, lawyer conversations, or unshared material.
+Do not append generic legal-advice, AI, lawyer-review, consultation, informational-purpose, or limitation-of-liability disclaimer boilerplate. State genuine evidentiary uncertainty directly and specifically instead.
 Prior assistant conversation is only for resolving follow-up references, not an additional source.
 
 PRIOR CHAT:
@@ -393,9 +413,10 @@ ${history || "No prior chat."}
 
 CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
       const result = await callModel("client-assistant", [{ role: "user", content: prompt }], { temperature: 0.2 });
-      const assistantMessage = await db.addPortalChatMessage(tokenHash, "assistant", result.text.trim(), selectedLabels);
+      const cleanedText = cleanGeneratedText(result.text);
+      const assistantMessage = await db.addPortalChatMessage(tokenHash, "assistant", cleanedText, selectedLabels);
       res.setHeader("Cache-Control", "no-store");
-      return res.json({ userMessage, assistantMessage, text: result.text.trim(), sources: selectedLabels });
+      return res.json({ userMessage, assistantMessage, text: cleanedText, sources: selectedLabels });
     } catch (err: any) {
       const status = /not available/i.test(err.message) ? 404 : 500;
       return res.status(status).json({ error: err.message });
@@ -629,7 +650,7 @@ ${sourceText}`;
       const generated = await callModel("matter-intelligence", [{ role: "user", content: prompt }], { temperature: 0.2 });
       return res.status(201).json(
         await db.saveGeneratedMatterIntelligence(
-          bundle.matter.id, cleanMatterIntelligenceContent(generated.text), bundle.snapshot, requestOwnership
+          bundle.matter.id, cleanMatterIntelligenceContent(cleanGeneratedText(generated.text)), bundle.snapshot, requestOwnership
         )
       );
     } catch (err: any) {
@@ -863,7 +884,15 @@ ${sourceText}`;
       const priorHistory = await db.getRecentMessages(threadId, requestOwnership, 12);
 
       // Save user message first
-      const userMessage = await db.addMessage(threadId, "user", content, requestOwnership);
+      const userMessage = await db.addMessage(
+        threadId,
+        "user",
+        content,
+        requestOwnership,
+        [],
+        null,
+        temporaryAttachmentMetadata(temporaryFiles)
+      );
       const conversationHistory = boundedConversation([...priorHistory, userMessage], 12000);
       const conversationContext = conversationHistory
         .map((message) => `${message.role.toUpperCase()}: ${message.content}`)
@@ -1059,6 +1088,7 @@ Query: "${content}"`;
 We have broken down the primary question and retrieved specialized legal sources.
 Answer the primary legal question comprehensively using ONLY the gathered sources below ${groundingToolsDesc}
 Do not invent anything. If the sources do not provide an answer, state that information is limited.
+Do not append generic legal-advice, AI, lawyer-review, consultation, informational-purpose, or limitation-of-liability disclaimer boilerplate. State genuine evidentiary uncertainty directly and specifically instead.
 
 Gathered legal references to use and reference:
 ${totalGatheredContext || "No internal document matches."}
@@ -1104,40 +1134,9 @@ ${citationInstSearch}`;
           });
         }
 
-        // Rewrite any inline grounding search numbers (e.g. [1], [2], or within multi-citations like [cit_1, 2, 3]) to use the unified [cit_X] tags
-        let text = finalResult.text;
-        if (finalResult.groundingMetadata?.groundingChunks) {
-          text = text.replace(/\[([^\]]+)\]/g, (match, inner) => {
-            const items = inner.split(",");
-            const rewrittenItems: string[] = [];
-            let hasChanges = false;
+        const text = rewriteGoogleGroundingCitations(finalResult.text, chunkIndexToCitId);
 
-            for (const item of items) {
-              const trimmed = item.trim();
-              if (/^\d+$/.test(trimmed)) {
-                const num = parseInt(trimmed, 10);
-                const index = num - 1;
-                if (chunkIndexToCitId[index]) {
-                  rewrittenItems.push(chunkIndexToCitId[index]);
-                  hasChanges = true;
-                } else {
-                  rewrittenItems.push(`cit_${trimmed}`);
-                  hasChanges = true;
-                }
-              } else {
-                rewrittenItems.push(trimmed);
-              }
-            }
-
-            if (hasChanges || items.length > 1) {
-              return rewrittenItems.map(x => `[${x}]`).join("");
-            }
-
-            return match;
-          });
-        }
-
-        finalContent = text;
+        finalContent = canonicalizeAssistantCitations(cleanGeneratedText(text), citations);
 
       } else {
         // STANDARD RESEARCH FLOW (Single shot lookup)
@@ -1216,6 +1215,7 @@ ${citationInstSearch}`;
 Answer the legal query using the provided library sources below ${groundingToolsDesc}
 Cite your statements using the inline square bracket tags matching the Source ID, e.g. [cit_1] or [cit_2].
 Stay strict, professional, objective, and use clear legal logic.
+Do not append generic legal-advice, AI, lawyer-review, consultation, informational-purpose, or limitation-of-liability disclaimer boilerplate. State genuine evidentiary uncertainty directly and specifically instead.
 
 Provided Sources:
 ${totalGatheredContext || "No internal document matches."}
@@ -1261,40 +1261,9 @@ ${citationInstSearch}`;
           });
         }
 
-        // Rewrite any inline grounding search numbers (e.g. [1], [2], or within multi-citations like [cit_1, 2, 3]) to use the unified [cit_X] tags
-        let text = finalResult.text;
-        if (finalResult.groundingMetadata?.groundingChunks) {
-          text = text.replace(/\[([^\]]+)\]/g, (match, inner) => {
-            const items = inner.split(",");
-            const rewrittenItems: string[] = [];
-            let hasChanges = false;
+        const text = rewriteGoogleGroundingCitations(finalResult.text, chunkIndexToCitId);
 
-            for (const item of items) {
-              const trimmed = item.trim();
-              if (/^\d+$/.test(trimmed)) {
-                const num = parseInt(trimmed, 10);
-                const index = num - 1;
-                if (chunkIndexToCitId[index]) {
-                  rewrittenItems.push(chunkIndexToCitId[index]);
-                  hasChanges = true;
-                } else {
-                  rewrittenItems.push(`cit_${trimmed}`);
-                  hasChanges = true;
-                }
-              } else {
-                rewrittenItems.push(trimmed);
-              }
-            }
-
-            if (hasChanges || items.length > 1) {
-              return rewrittenItems.map(x => `[${x}]`).join("");
-            }
-
-            return match;
-          });
-        }
-
-        finalContent = text;
+        finalContent = canonicalizeAssistantCitations(cleanGeneratedText(text), citations);
       }
 
       // Save assistant message with aggregated citations and steps
@@ -1398,6 +1367,7 @@ ${citationInstSearch}`;
       const convoHistory = messages
         .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
         .join("\n\n");
+      const draftCitations = messages.flatMap((message) => Array.isArray(message.citations) ? message.citations : []);
 
       const currentDate = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric", timeZone: "UTC" });
       const matterMetadata = [
@@ -1433,7 +1403,7 @@ INSTRUCTIONS:
 2. Carry over all relevant citation references (like [cit_1] or external case names) inline or as footnotes.
 3. Use the server-provided current date exactly when a date is needed. Do not invent another date.
 4. Do not emit bracketed placeholders such as [Client Name], [Your Name], or [Firm Name] when the metadata supplies those values. If optional metadata is missing, omit that field or use a neutral professional phrasing.
-5. Do not add AI disclaimers, "This is not legal advice" boilerplate, "Consult a lawyer" boilerplate, "AI may make mistakes" boilerplate, lawyer-review warnings, or generic limitation-of-liability paragraphs unless explicitly requested by the user or quoting/analyzing source content.
+5. Do not append generic legal-advice, AI, lawyer-review, consultation, informational-purpose, or limitation-of-liability disclaimer boilerplate. State genuine evidentiary uncertainty directly and specifically instead. Do not remove substantive analysis of disclaimer clauses contained in the conversation or sources.
 6. Output the draft using elegant, rich markdown with readable headers. Do not wrap in generic JSON, just output the clean draft text.`;
 
       const draftResult = await callModel("draft-generation", [{ role: "user", content: draftPrompt }], {
@@ -1445,7 +1415,7 @@ INSTRUCTIONS:
         threadId,
         thread.case_id,
         title,
-        draftResult.text,
+        cleanGeneratedText(assistantCitationsToDisplayText(draftResult.text, draftCitations)),
         requestOwnership
       );
 

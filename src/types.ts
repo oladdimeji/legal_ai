@@ -94,6 +94,7 @@ export interface Message {
   created_at: string;
   metadata?: {
     suggestions?: string[];
+    attachments?: Array<{ name: string }> | string[];
     [key: string]: unknown;
   };
 }

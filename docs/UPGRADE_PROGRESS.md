@@ -487,3 +487,41 @@ Known limitations:
 - OCR remains unsupported for scanned PDFs.
 - The rich editor is intentionally focused on paragraphs, headings, emphasis, underline, lists, links, undo/redo, and sanitized Markdown round trips rather than being a full word processor.
 - Manual browser verification remains to be performed in a live session with representative files and generated content.
+
+## Focused Assistant UX and Response Cleanup Phase
+
+Status: Complete.
+
+Implemented:
+
+- Removed the full-width separator between Assistant conversation messages by dropping the message-wrapper bottom border while preserving vertical spacing.
+- Stored ready temporary attachment filenames on the originating user message in `messages.metadata.attachments` and rendered quiet, non-clickable filename chips on optimistic and persisted user messages.
+- Added shared Assistant citation utilities for canonical persistence, defensive rendering, copy-friendly display text, and Google grounding numeric rewrite without fallback `cit_n` invention.
+- Updated Assistant response persistence and copy behavior so valid internal citations display as numbered citations and unresolved internal citation tokens are removed.
+- Added a narrow generated-boilerplate cleaner for standalone generic legal-advice, consultation, AI, lawyer-review, informational-purpose, and limitation boilerplate at the beginning or end of generated content.
+- Applied generated-output cleanup to Assistant responses, Client Assistant responses, Matter Intelligence generation, and generated Work Product.
+- Added Assistant and Client Assistant prompt instructions against generic disclaimer boilerplate while preserving missing-source and uncertainty behavior.
+
+Schema changes:
+
+- None. This phase reuses the existing `messages.metadata` JSONB column.
+
+Dependencies added:
+
+- None.
+
+API changes:
+
+- `POST /api/threads/:id/messages` now saves only submitted ready temporary attachment filenames in user-message metadata. File contents and extracted text remain request-scoped retrieval context only.
+
+Verification:
+
+- `npm ci`: passed.
+- `npm run lint`: passed before tests and will be rerun after this documentation update.
+- `npm test`: passed, 63/63 tests.
+- `npm run build` will be run after the final lint pass.
+
+Known limitations:
+
+- Manual browser verification was not performed in this non-interactive run.
+- Historical messages with no attachment metadata render as before; no backfill was performed.

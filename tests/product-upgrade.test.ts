@@ -388,7 +388,7 @@ test("Focused UX fix removes Matter Intelligence source labels without deleting 
   ]);
   assert.match(server, /Do not include \[Source: \.\.\.\]/);
   assert.match(server, /Do not include source labels, inline citation tags, footnotes, endnotes, or a bibliography/);
-  assert.match(server, /cleanMatterIntelligenceContent\(generated\.text\)/);
+  assert.match(server, /cleanMatterIntelligenceContent\(cleanGeneratedText\(generated\.text\)\)/);
   assert.match(server, /cleanMatterIntelligenceContent\(record\.content\)/);
   assert.doesNotMatch(view, /Lawyer review required|AI-generated content requires lawyer review/);
   assert.equal(

@@ -2,6 +2,7 @@ import React from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Citation } from "../types";
+import { linkAssistantCitations } from "../lib/assistantCitations";
 
 interface Props {
   content: string;
@@ -13,15 +14,7 @@ interface Props {
 }
 
 export function linkInlineCitations(content: string, citations: Citation[] = []) {
-  if (!citations.length) return content;
-  return content.replace(/\[([^\]]+)\]/g, (match, inner) => {
-    const parts = inner.split(",").map((part) => part.trim());
-    const linked = parts.map((part) => {
-      const id = /^\d+$/.test(part) ? `cit_${part}` : part;
-      return citations.some((citation) => citation.id === id) ? `[${id}](#${id})` : null;
-    });
-    return linked.every(Boolean) ? linked.join("") : match;
-  });
+  return linkAssistantCitations(content, citations);
 }
 
 export default function FormattedMarkdown({

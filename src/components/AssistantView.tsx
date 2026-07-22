@@ -12,6 +12,7 @@ import {
 import { Case, Thread, Message, Citation, ResearchStep } from "../types";
 import FormattedMarkdown from "./FormattedMarkdown";
 import { browserFileIdentity, MAX_SELECTED_FILES } from "../hooks/useCumulativeFileSelection";
+import { assistantCitationsToDisplayText } from "../lib/assistantCitations";
 
 type TemporaryFile = {
   id: string;
@@ -338,6 +339,10 @@ export default function AssistantView({
     }
 
     if (!currentThreadId) return;
+    const submittedTemporaryFiles = temporaryFiles.filter((file) => file.status === "ready");
+    const submittedAttachments = Array.from(
+      new Map(submittedTemporaryFiles.map((file) => [file.filename.trim().slice(0, 180), { name: file.filename.trim().slice(0, 180) }])).values()
+    ).filter((attachment) => attachment.name);
 
     // Optimistically add user message
     const tempUserMsg: Message = {
@@ -347,7 +352,8 @@ export default function AssistantView({
       content: queryText,
       citations: [],
       steps: null,
-      created_at: new Date().toISOString()
+      created_at: new Date().toISOString(),
+      metadata: submittedAttachments.length ? { attachments: submittedAttachments } : {},
     };
     setMessages((prev) => [...prev, tempUserMsg]);
     setLoading(true);
@@ -362,8 +368,7 @@ export default function AssistantView({
           enableWebSearch,
           enableCourtListener,
           enableGovInfo,
-          temporaryFiles: temporaryFiles
-            .filter((file) => file.status === "ready")
+          temporaryFiles: submittedTemporaryFiles
             .map(({ filename, text }) => ({ filename, text }))
         })
       });
@@ -558,6 +563,15 @@ export default function AssistantView({
         [messageId]: current === type ? null : type
       };
     });
+  };
+
+  const attachmentNamesForMessage = (message: Message): string[] => {
+    const raw = message.metadata?.attachments;
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .map((item) => typeof item === "string" ? item : item && typeof item === "object" && "name" in item && typeof item.name === "string" ? item.name : "")
+      .map((name) => name.trim())
+      .filter(Boolean);
   };
 
   const handleGenerateDraft = async (messageId: string) => {
@@ -1014,7 +1028,7 @@ export default function AssistantView({
                   .find((msg) => msg.role === "assistant")?.id;
 
                 return (
-                  <div key={m.id} className="w-full max-w-3xl mx-auto flex flex-col py-6 border-b border-zinc-150 last:border-0 animate-fade-in" id={`message-wrapper-${m.id}`}>
+                  <div key={m.id} className="w-full max-w-3xl mx-auto flex flex-col py-5 animate-fade-in" id={`message-wrapper-${m.id}`}>
                     <div className={`w-full flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
                       {m.role === "user" ? (
                         <div id={`message-bubble-${m.id}`} className="bg-zinc-100 text-zinc-900 rounded-2xl px-5 py-3 max-w-[75%] text-sm leading-relaxed">
@@ -1030,6 +1044,16 @@ export default function AssistantView({
                           <div className="whitespace-pre-wrap font-sans font-normal text-zinc-900">
                             {m.content}
                           </div>
+                          {attachmentNamesForMessage(m).length > 0 && (
+                            <div className="mt-2 flex flex-wrap gap-1.5">
+                              {attachmentNamesForMessage(m).map((name) => (
+                                <span key={name} title={name} className="inline-flex max-w-48 items-center gap-1 rounded border border-zinc-200 bg-white/70 px-2 py-0.5 text-[10px] font-mono text-zinc-500">
+                                  <Paperclip className="h-3 w-3 shrink-0" />
+                                  <span className="truncate">{name}</span>
+                                </span>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       ) : (
                         <div id={`message-bubble-${m.id}`} className="w-full text-sm leading-relaxed text-zinc-950">
@@ -1111,7 +1135,7 @@ export default function AssistantView({
                                 <button
                                   type="button"
                                   onClick={() => {
-                                    navigator.clipboard.writeText(m.content);
+                                    navigator.clipboard.writeText(assistantCitationsToDisplayText(m.content, m.citations));
                                     alert("Response copied to clipboard!");
                                   }}
                                   id={`action-copy-${m.id}`}
