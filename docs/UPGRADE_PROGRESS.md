@@ -525,3 +525,37 @@ Known limitations:
 
 - Manual browser verification was not performed in this non-interactive run.
 - Historical messages with no attachment metadata render as before; no backfill was performed.
+
+## Focused Work Product Presentation and Editing Phase
+
+Status: Complete.
+
+Implemented:
+
+- Made the Matter Work Product preview and editor scroll surfaces fully white, including empty space below short documents and the scrollable area behind long documents.
+- Added a shared `WorkProductDocument` preview surface and reused it in the Matter Work Product editor and Client Portal shared-document preview.
+- Repaired the existing Markdown-backed rich editor rather than replacing it: stored Markdown is converted before paint, editor content remains white, and underline markup no longer appears as escaped raw source.
+- Updated the Work Product header so the complete title wraps on its own row and all existing actions remain in a separate toolbar row.
+- Added `stripInternalCitationsForWorkProduct` and applied it through Work Product generation, reads, saves, duplication, sharing responses, Client Revisions, portal views, and DOCX export without a bulk database rewrite. Bare bracketed numeric markers are stripped only on freshly generated output to avoid deleting user-authored footnotes.
+- Updated Work Product generation instructions so generated memos, summaries, and emails are standalone deliverables without internal Assistant citation tokens, numbered source markers, automatic references, sources, citations, endnotes, or bibliographies unless explicitly requested.
+- Reused the existing generated-boilerplate cleaner from the Assistant cleanup phase; no duplicate disclaimer cleanup system was added.
+
+Schema changes:
+
+- None. No migration, data reset, table rename, or destructive database change was performed.
+
+Dependencies added:
+
+- None.
+
+Verification:
+
+- `npm ci`: passed.
+- `npm run lint`: passed.
+- `npm test`: passed, 71/71 tests.
+- `npm run build`: passed. Vite emitted the existing large-chunk warning.
+
+Known limitations:
+
+- Manual browser verification was not performed in this non-interactive run.
+- Historical explicit internal Assistant tokens such as `[cit_1]` are hidden without a destructive rewrite. Historical bare numeric markers such as `[1]` are not globally stripped from saved documents because they are indistinguishable from user-authored footnotes without extra metadata.

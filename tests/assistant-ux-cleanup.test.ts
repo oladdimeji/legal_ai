@@ -68,7 +68,7 @@ test("Assistant prompts and copy path prevent generic disclaimers and internal c
   ]);
   assert.match(server, /Do not append generic legal-advice, AI, lawyer-review, consultation, informational-purpose, or limitation-of-liability disclaimer boilerplate/);
   assert.match(server, /cleanGeneratedText\(text\)/);
-  assert.match(server, /cleanGeneratedText\(assistantCitationsToDisplayText\(draftResult\.text, draftCitations\)\)/);
+  assert.match(server, /cleanGeneratedWorkProductContent\(draftResult\.text\)/);
   assert.doesNotMatch(server, /professional disclaimer|standard liability disclaimer|replacement for the lawyer's advice/);
   assert.match(assistant, /assistantCitationsToDisplayText\(m\.content, m\.citations\)/);
   assert.doesNotMatch(assistant, /standard liability disclaimer|replacement for your lawyer/);

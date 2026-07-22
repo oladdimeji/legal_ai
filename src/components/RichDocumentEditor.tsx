@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from "react";
+import React, { useLayoutEffect, useRef } from "react";
 import { Bold, Italic, Link as LinkIcon, List, ListOrdered, Redo2, Type, Underline, Undo2 } from "lucide-react";
 import { editorHtmlToMarkdown, markdownToEditorHtml } from "../lib/richMarkdown";
 
@@ -10,19 +10,13 @@ interface Props {
 
 export default function RichDocumentEditor({ value, onChange, minHeight = 520 }: Props) {
   const editorRef = useRef<HTMLDivElement>(null);
-  const lastValueRef = useRef(value);
+  const lastValueRef = useRef<string | null>(null);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!editorRef.current || value === lastValueRef.current) return;
     editorRef.current.innerHTML = markdownToEditorHtml(value);
     lastValueRef.current = value;
   }, [value]);
-
-  useEffect(() => {
-    if (editorRef.current && !editorRef.current.innerHTML) {
-      editorRef.current.innerHTML = markdownToEditorHtml(value);
-    }
-  }, []);
 
   const emitChange = () => {
     if (!editorRef.current) return;
@@ -44,7 +38,7 @@ export default function RichDocumentEditor({ value, onChange, minHeight = 520 }:
   };
 
   return (
-    <div className="rounded border border-zinc-200 bg-white">
+    <div className="min-h-full rounded border border-zinc-200 bg-white">
       <div className="flex flex-wrap items-center gap-1 border-b border-zinc-200 bg-zinc-50 p-2">
         <select
           className="h-8 rounded border border-zinc-300 bg-white px-2 text-xs"
@@ -78,7 +72,7 @@ export default function RichDocumentEditor({ value, onChange, minHeight = 520 }:
         onInput={emitChange}
         onBlur={emitChange}
         onPaste={() => window.setTimeout(emitChange, 0)}
-        className="rich-document-editor prose prose-zinc max-w-none overflow-y-auto p-8 text-sm leading-relaxed text-zinc-900 outline-none"
+        className="rich-document-editor prose prose-zinc max-w-none overflow-y-auto bg-white p-8 text-sm leading-relaxed text-zinc-900 outline-none"
         style={{ minHeight }}
       />
     </div>

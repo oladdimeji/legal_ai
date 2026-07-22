@@ -14,7 +14,7 @@ import { extractUploads, MAX_FILE_COUNT, MAX_FILE_SIZE_BYTES } from "./server/fi
 import { markdownToDocxDocument } from "./server/docxMarkdown.js";
 import { cleanMatterIntelligenceContent } from "./server/matterIntelligenceContent.js";
 import { cleanGeneratedBoilerplate } from "./server/generatedContentCleanup.js";
-import { assistantCitationsToDisplayText, canonicalizeAssistantCitations, rewriteGoogleGroundingCitations } from "./src/lib/assistantCitations.js";
+import { canonicalizeAssistantCitations, rewriteGoogleGroundingCitations, stripInternalCitationsForWorkProduct } from "./src/lib/assistantCitations.js";
 import {
   SESSION_COOKIE_NAME,
   SESSION_TTL_MS,
@@ -74,6 +74,14 @@ function cleanSourceText(text: string): string {
 
 function cleanGeneratedText(content: string): string {
   return cleanGeneratedBoilerplate(content);
+}
+
+function cleanWorkProductContent(content: string): string {
+  return stripInternalCitationsForWorkProduct(cleanGeneratedBoilerplate(content));
+}
+
+function cleanGeneratedWorkProductContent(content: string): string {
+  return stripInternalCitationsForWorkProduct(cleanGeneratedBoilerplate(content), { stripNumberedMarkers: true });
 }
 
 function temporaryAttachmentMetadata(files: Array<{ filename: string; text: string }>) {
@@ -296,7 +304,7 @@ async function startServer() {
     );
     res.setHeader("Cache-Control", "no-store");
     if (!draft) return res.status(404).json({ error: "Shared Work Product not found" });
-    return res.json(draft);
+    return res.json({ ...draft, content: cleanWorkProductContent(draft.content) });
   });
 
   app.get("/api/portal/:token/work-product/:draftId/download", async (req, res) => {
@@ -304,7 +312,7 @@ async function startServer() {
       portalTokenHash(req.params.token), req.params.draftId
     );
     if (!draft) return res.status(404).json({ error: "Shared Work Product not found" });
-    const buffer = await Packer.toBuffer(markdownToDocxDocument(draft.title, draft.content));
+    const buffer = await Packer.toBuffer(markdownToDocxDocument(draft.title, cleanWorkProductContent(draft.content)));
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
     res.setHeader("Content-Disposition", `attachment; filename="${draft.title.replace(/[^a-z0-9]/gi, "_")}.docx"`);
     return res.send(buffer);
@@ -324,7 +332,7 @@ async function startServer() {
 
   app.post("/api/portal/:token/work-product/:draftId/edit-copy", async (req, res) => {
     try {
-      const content = typeof req.body.content === "string" ? req.body.content : "";
+      const content = typeof req.body.content === "string" ? cleanWorkProductContent(req.body.content) : "";
       return res.status(201).json(await db.createPortalClientRevision(
         portalTokenHash(req.params.token), req.params.draftId, content
       ));
@@ -1314,13 +1322,14 @@ ${citationInstSearch}`;
   app.get("/api/cases/:caseId/work-product", async (req, res) => {
     const matter = await db.getCaseById(req.params.caseId, ownership(req));
     if (!matter) return res.status(404).json({ error: "Matter not found" });
-    return res.json(await db.getDrafts(ownership(req), matter.id));
+    const drafts = await db.getDrafts(ownership(req), matter.id);
+    return res.json(drafts.map((draft) => ({ ...draft, content: cleanWorkProductContent(draft.content) })));
   });
 
   app.post("/api/cases/:caseId/work-product", async (req, res) => {
     try {
       const title = typeof req.body.title === "string" ? req.body.title.trim() : "";
-      const content = typeof req.body.content === "string" ? req.body.content : "";
+      const content = typeof req.body.content === "string" ? cleanWorkProductContent(req.body.content) : "";
       if (!title) return res.status(400).json({ error: "Work Product title is required" });
       return res.status(201).json(
         await db.createManualDraft(req.params.caseId, title, content, ownership(req))
@@ -1337,7 +1346,7 @@ ${citationInstSearch}`;
     if (!draft) {
       return res.status(404).json({ error: "Work Product not found" });
     }
-    res.json(draft);
+    res.json({ ...draft, content: cleanWorkProductContent(draft.content) });
   });
 
   app.post("/api/drafts", async (req, res) => {
@@ -1367,7 +1376,6 @@ ${citationInstSearch}`;
       const convoHistory = messages
         .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
         .join("\n\n");
-      const draftCitations = messages.flatMap((message) => Array.isArray(message.citations) ? message.citations : []);
 
       const currentDate = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric", timeZone: "UTC" });
       const matterMetadata = [
@@ -1400,7 +1408,7 @@ INSTRUCTIONS:
    - Legal Memo: Include To, From, Date, Subject, Question Presented, Brief Answer, Statement of Facts, Discussion, and Conclusion sections.
    - Professional Legal Email: Include clear greeting, analytical overview, breakdown of issues, and next steps.
    - Legal Summary: Analytical breakdown of the primary matter, facts, governing laws, and key recommendations.
-2. Carry over all relevant citation references (like [cit_1] or external case names) inline or as footnotes.
+2. Produce a polished standalone work product. Do not include internal source IDs, Assistant citation tokens, numbered source markers, clickable citation syntax, footnotes, endnotes, a references list, or a bibliography unless the user explicitly requests formal citations. Integrate legal authorities naturally into prose by naming the case, statute, regulation, or document when relevant.
 3. Use the server-provided current date exactly when a date is needed. Do not invent another date.
 4. Do not emit bracketed placeholders such as [Client Name], [Your Name], or [Firm Name] when the metadata supplies those values. If optional metadata is missing, omit that field or use a neutral professional phrasing.
 5. Do not append generic legal-advice, AI, lawyer-review, consultation, informational-purpose, or limitation-of-liability disclaimer boilerplate. State genuine evidentiary uncertainty directly and specifically instead. Do not remove substantive analysis of disclaimer clauses contained in the conversation or sources.
@@ -1415,7 +1423,7 @@ INSTRUCTIONS:
         threadId,
         thread.case_id,
         title,
-        cleanGeneratedText(assistantCitationsToDisplayText(draftResult.text, draftCitations)),
+        cleanGeneratedWorkProductContent(draftResult.text),
         requestOwnership
       );
 
@@ -1431,8 +1439,8 @@ INSTRUCTIONS:
       const { content } = req.body;
       const caseId = requestedCaseId(req.query.caseId);
       if (!caseId) return res.status(400).json({ error: "Matter context is required" });
-      const updated = await db.updateDraft(req.params.id, caseId, content, ownership(req));
-      res.json(updated);
+      const updated = await db.updateDraft(req.params.id, caseId, cleanWorkProductContent(content), ownership(req));
+      res.json({ ...updated, content: cleanWorkProductContent(updated.content) });
     } catch (err: any) {
       res.status(ownedErrorStatus(err)).json({ error: err.message });
     }
@@ -1442,7 +1450,13 @@ INSTRUCTIONS:
     try {
       const caseId = requestedCaseId(req.query.caseId);
       if (!caseId) return res.status(400).json({ error: "Matter context is required" });
-      return res.status(201).json(await db.duplicateDraft(req.params.id, caseId, ownership(req)));
+      const duplicate = await db.duplicateDraft(req.params.id, caseId, ownership(req));
+      const cleaned = cleanWorkProductContent(duplicate.content);
+      if (cleaned !== duplicate.content) {
+        const updatedDuplicate = await db.updateDraft(duplicate.id, caseId, cleaned, ownership(req));
+        return res.status(201).json({ ...updatedDuplicate, content: cleanWorkProductContent(updatedDuplicate.content) });
+      }
+      return res.status(201).json({ ...duplicate, content: cleaned });
     } catch (err: any) {
       return res.status(ownedErrorStatus(err)).json({ error: err.message });
     }
@@ -1454,7 +1468,8 @@ INSTRUCTIONS:
       if (!caseId || typeof req.body.shared !== "boolean") {
         return res.status(400).json({ error: "Matter context and sharing state are required" });
       }
-      return res.json(await db.setDraftSharing(req.params.id, caseId, req.body.shared, ownership(req)));
+      const draft = await db.setDraftSharing(req.params.id, caseId, req.body.shared, ownership(req));
+      return res.json({ ...draft, content: cleanWorkProductContent(draft.content) });
     } catch (err: any) {
       return res.status(ownedErrorStatus(err)).json({ error: err.message });
     }
@@ -1463,7 +1478,7 @@ INSTRUCTIONS:
   app.post("/api/drafts/:id/client-revision", async (req, res) => {
     try {
       const caseId = requestedCaseId(req.query.caseId);
-      const content = typeof req.body.content === "string" ? req.body.content : "";
+      const content = typeof req.body.content === "string" ? cleanWorkProductContent(req.body.content) : "";
       if (!caseId) return res.status(400).json({ error: "Matter context is required" });
       return res.status(201).json(
         await db.createClientRevision(req.params.id, caseId, content, ownership(req))
@@ -1483,7 +1498,7 @@ INSTRUCTIONS:
         return res.status(404).json({ error: "Work Product not found" });
       }
 
-      const buffer = await Packer.toBuffer(markdownToDocxDocument(draft.title, draft.content));
+      const buffer = await Packer.toBuffer(markdownToDocxDocument(draft.title, cleanWorkProductContent(draft.content)));
 
       // Clean title for safe attachment name
       const safeTitle = draft.title.replace(/[^a-z0-9]/gi, "_").toLowerCase();

@@ -87,3 +87,16 @@ export function assistantCitationsToDisplayText(content: string, citations: Cita
   const linked = linkAssistantCitations(content, citations);
   return linked.replace(/\[cit_(\d+)\]\(#cit_\d+\)/g, "[$1]");
 }
+
+export function stripInternalCitationsForWorkProduct(content: string, options: { stripNumberedMarkers?: boolean } = {}): string {
+  const tokenPattern = options.stripNumberedMarkers
+    ? /\\?\[(?:cit[\s_-]*\d+|\d+)(?:\s*,\s*(?:cit[\s_-]*\d+|\d+))*\]/gi
+    : /\\?\[(?:cit[\s_-]*\d+)(?:\s*,\s*cit[\s_-]*\d+)*\]/gi;
+  return content
+    .replace(tokenPattern, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/[ \t]+([.,;:])/g, "$1")
+    .replace(/([([{])\s+([)\]}])/g, "$1$2")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}

@@ -317,7 +317,8 @@ test("Phase 12 Work Product uses formatted preview/editor and sharing progress",
   const editor = await readFile("src/components/DraftEditorView.tsx", "utf8");
   assert.match(editor, /RichDocumentEditor/);
   assert.doesNotMatch(editor, /@uiw\/react-md-editor|MDEditor/);
-  assert.match(editor, /<FormattedMarkdown content=\{content\}/);
+  assert.match(editor, /WorkProductDocument/);
+  assert.match(editor, /<WorkProductDocument content=\{content\}/);
   assert.match(editor, /Sharing\.\.\./);
   assert.match(editor, /Stopping\.\.\./);
   assert.match(editor, /disabled:cursor-not-allowed/);
@@ -415,7 +416,7 @@ test("Focused UX fix rich editor hides raw Markdown editing surfaces while prese
     assert.match(view, /RichDocumentEditor/);
     assert.doesNotMatch(view, /MDEditor|@uiw\/react-md-editor|preview="edit"/);
   }
-  assert.match(server, /markdownToDocxDocument\(draft\.title, draft\.content\)/);
+  assert.match(server, /markdownToDocxDocument\(draft\.title, cleanWorkProductContent\(draft\.content\)\)/);
   assert.match(server, /markdownToDocxDocument\(`\$\{matter\.name\} Matter Intelligence`, cleanMatterIntelligenceContent\(record\.content\)\)/);
 });
 

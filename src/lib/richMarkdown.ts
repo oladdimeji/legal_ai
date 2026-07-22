@@ -13,7 +13,7 @@ function inlineMarkdownToHtml(value: string): string {
     .replace(/__([^_]+)__/g, "<strong>$1</strong>")
     .replace(/\*([^*\n]+)\*/g, "<em>$1</em>")
     .replace(/_([^_\n]+)_/g, "<em>$1</em>")
-    .replace(/<u>(.*?)<\/u>/g, "<u>$1</u>");
+    .replace(/&lt;u&gt;(.*?)&lt;\/u&gt;/g, "<u>$1</u>");
 }
 
 export function markdownToEditorHtml(markdown: string): string {
