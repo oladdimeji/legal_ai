@@ -75,7 +75,7 @@ test("Phase 6 Work Product is Matter-scoped and global Draft navigation is remov
     readFile("server.ts", "utf8"),
   ]);
   assert.doesNotMatch(sidebar, /Drafts & Documents/);
-  assert.match(workspace, /<DraftEditorView caseId=\{matter\.id\}/);
+  assert.match(workspace, /<DraftEditorView[\s\S]*caseId=\{matter\.id\}/);
   assert.match(server, /\/api\/cases\/:caseId\/work-product/);
   assert.match(server, /Matter context is required/);
 });
@@ -172,7 +172,8 @@ test("Phase 9 Client Assistant prompt disables internal and external research co
   const start = server.indexOf('app.post("/api/portal/:token/assistant"');
   const end = server.indexOf("// All remaining API routes", start);
   const route = server.slice(start, end);
-  assert.match(route, /Answer ONLY from the documents selected below/);
+  assert.match(route, /Answer only from the selected documents/);
+  assert.match(route, /do not include source labels/);
   assert.match(route, /do not imply access to the Firm Library, Matter Intelligence, lawyer conversations/);
   assert.doesNotMatch(route, /googleSearch|CourtListenerAdapter|GovInfoAdapter|vectorSearch/);
 });

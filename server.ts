@@ -13,7 +13,7 @@ import { Packer } from "docx";
 import { extractUploads, MAX_FILE_COUNT, MAX_FILE_SIZE_BYTES } from "./server/fileExtraction.js";
 import { markdownToDocxDocument } from "./server/docxMarkdown.js";
 import { cleanMatterIntelligenceContent } from "./server/matterIntelligenceContent.js";
-import { cleanGeneratedBoilerplate } from "./server/generatedContentCleanup.js";
+import { cleanClientAssistantContent, cleanGeneratedBoilerplate } from "./server/generatedContentCleanup.js";
 import { canonicalizeAssistantCitations, rewriteGoogleGroundingCitations, stripInternalCitationsForWorkProduct } from "./src/lib/assistantCitations.js";
 import {
   SESSION_COOKIE_NAME,
@@ -82,6 +82,45 @@ function cleanWorkProductContent(content: string): string {
 
 function cleanGeneratedWorkProductContent(content: string): string {
   return stripInternalCitationsForWorkProduct(cleanGeneratedBoilerplate(content), { stripNumberedMarkers: true });
+}
+
+function cleanPortalSummary(summary: any) {
+  const cleanDraft = (draft: any) => draft?.content ? { ...draft, content: cleanWorkProductContent(draft.content) } : draft;
+  return {
+    ...summary,
+    shared: (summary.shared || []).map(cleanDraft),
+    revisions: (summary.revisions || []).map(cleanDraft),
+    chatMessages: (summary.chatMessages || []).map((message: any) =>
+      message.role === "assistant" ? { ...message, content: cleanClientAssistantContent(message.content) } : message
+    ),
+  };
+}
+
+function parsePortalDraftIds(value: unknown): string[] {
+  let parsed = value;
+  if (typeof value === "string") {
+    try {
+      parsed = JSON.parse(value || "[]");
+    } catch {
+      throw new Error("Selected Work Product payload is malformed");
+    }
+  }
+  if (parsed == null || parsed === "") return [];
+  if (!Array.isArray(parsed)) throw new Error("Selected Work Product payload is malformed");
+  const ids = parsed.map((id) => {
+    if (typeof id !== "string") throw new Error("Selected Work Product payload is malformed");
+    return id.trim();
+  }).filter(Boolean);
+  if (new Set(ids).size !== ids.length) throw new Error("Select each Work Product only once");
+  return ids;
+}
+
+function portalResponseErrorStatus(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/exceeds|at most|too large/i.test(message)) return 413;
+  if (/malformed|invalid client response type|required|select at least|unsupported|could not be read|empty|extractable text|mime type/i.test(message)) return 400;
+  if (/not found|unavailable|not available/i.test(message)) return 404;
+  return 500;
 }
 
 function temporaryAttachmentMetadata(files: Array<{ filename: string; text: string }>) {
@@ -295,7 +334,7 @@ async function startServer() {
     const summary = await db.getPortalSummary(portalTokenHash(req.params.token));
     res.setHeader("Cache-Control", "no-store");
     if (!summary) return res.status(404).json({ error: "Client Portal access is unavailable" });
-    return res.json(summary);
+    return res.json(cleanPortalSummary(summary));
   });
 
   app.get("/api/portal/:token/work-product/:draftId", async (req, res) => {
@@ -364,24 +403,41 @@ async function startServer() {
       const type = typeof req.body.type === "string" ? req.body.type : "";
       if (!allowed.has(type)) return res.status(400).json({ error: "Invalid client response type" });
       const tokenHash = portalTokenHash(req.params.token);
+      const access = await db.validatePortalRequest(tokenHash, req.params.requestId);
+      if (!access) return res.status(404).json({ error: "Client request not found" });
       const content = typeof req.body.content === "string" ? req.body.content.trim() : "";
       if (type === "Comment" && !content) return res.status(400).json({ error: "Comment text is required" });
-      const uploadedDocumentIds: string[] = [];
+      const draftIds = parsePortalDraftIds(req.body.draftIds);
+      if (type !== "Shared files" && draftIds.length > 0) return res.status(400).json({ error: "Shared Work Product can only be attached to a Shared files response" });
+      if (type === "Shared files" && draftIds.length === 0) return res.status(400).json({ error: "Select at least one shared Work Product" });
+      if (type === "Shared files") {
+        for (const draftId of draftIds) {
+          if (!(await db.getPermittedPortalDraft(tokenHash, draftId))) {
+            return res.status(404).json({ error: "Selected Work Product is not available in this Client Portal" });
+          }
+        }
+      }
+      let uploadedFiles: Array<{ filename: string; text: string }> = [];
       if (type === "Upload files") {
         const extracted = await extractUploads((req.files || []) as Express.Multer.File[]);
         if (extracted.length === 0) return res.status(400).json({ error: "Select at least one file to upload" });
-        for (const file of extracted) {
-          const document = await db.uploadPortalDocument(tokenHash, file.filename, file.text);
-          uploadedDocumentIds.push(document.id);
-        }
+        uploadedFiles = extracted.map((file) => ({ filename: file.filename, text: cleanWorkProductContent(file.text) }));
+      } else if (((req.files || []) as Express.Multer.File[]).length > 0) {
+        return res.status(400).json({ error: "Files can only be attached to an Upload files response" });
       }
-      const rawDraftIds = typeof req.body.draftIds === "string" ? JSON.parse(req.body.draftIds || "[]") : req.body.draftIds;
-      const draftIds = Array.isArray(rawDraftIds) ? rawDraftIds.filter((id: unknown): id is string => typeof id === "string") : [];
       return res.status(201).json(await db.createPortalResponse(
-        tokenHash, req.params.requestId, type, content || null, uploadedDocumentIds, type === "Shared files" ? draftIds : []
+        tokenHash, req.params.requestId, type, content || null, uploadedFiles, type === "Shared files" ? draftIds : []
       ));
-    } catch {
-      return res.status(404).json({ error: "Client request or attachment not found" });
+    } catch (error) {
+      const status = portalResponseErrorStatus(error);
+      if (status === 500) {
+        console.error("Portal response creation failed", {
+          requestId: req.params.requestId,
+          responseType: req.body?.type,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return res.status(status).json({ error: error instanceof Error ? error.message : "Response could not be sent" });
     }
   });
 
@@ -408,10 +464,10 @@ async function startServer() {
       ).join("\n\n---\n\n").slice(0, 60000);
       const history = priorMessages
         .slice(-12)
-        .map((message: any) => `${message.role.toUpperCase()}: ${message.content}`)
+        .map((message: any) => `${message.role.toUpperCase()}: ${message.role === "assistant" ? cleanClientAssistantContent(message.content) : message.content}`)
         .join("\n\n");
       const prompt = `You are a document-understanding assistant for an external legal client.
-Answer ONLY from the documents selected below. Provide a plain-language explanation, summary, clause clarification, or grounded answer. Cite sources as [Source: exact title].
+Answer only from the selected documents, but do not include source labels, internal source IDs, bracketed source tags, numbered citations, footnotes, endnotes, a Sources section, a References section, or a bibliography. Integrate the answer naturally in clear plain language.
 Do not provide external legal research, and do not imply access to the Firm Library, Matter Intelligence, lawyer conversations, or unshared material.
 Do not append generic legal-advice, AI, lawyer-review, consultation, informational-purpose, or limitation-of-liability disclaimer boilerplate. State genuine evidentiary uncertainty directly and specifically instead.
 Prior assistant conversation is only for resolving follow-up references, not an additional source.
@@ -421,7 +477,7 @@ ${history || "No prior chat."}
 
 CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
       const result = await callModel("client-assistant", [{ role: "user", content: prompt }], { temperature: 0.2 });
-      const cleanedText = cleanGeneratedText(result.text);
+      const cleanedText = cleanClientAssistantContent(result.text);
       const assistantMessage = await db.addPortalChatMessage(tokenHash, "assistant", cleanedText, selectedLabels);
       res.setHeader("Cache-Control", "no-store");
       return res.json({ userMessage, assistantMessage, text: cleanedText, sources: selectedLabels });

@@ -421,6 +421,50 @@ const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 12,
+    name: "client_response_attachment_nullable_targets",
+    async run(client) {
+      await client.query("ALTER TABLE client_response_attachments ADD COLUMN IF NOT EXISTS id TEXT");
+      await client.query(`
+        UPDATE client_response_attachments
+        SET id = 'attachment_' || md5(
+          response_id || ':' || COALESCE(document_id, '') || ':' || COALESCE(draft_id, '') || ':' || created_at
+        )
+        WHERE id IS NULL
+      `);
+      await client.query(`
+        ALTER TABLE client_response_attachments
+        DROP CONSTRAINT IF EXISTS client_response_attachments_pkey
+      `);
+      await client.query("ALTER TABLE client_response_attachments ALTER COLUMN document_id DROP NOT NULL");
+      await client.query("ALTER TABLE client_response_attachments ALTER COLUMN draft_id DROP NOT NULL");
+      await client.query("ALTER TABLE client_response_attachments ALTER COLUMN id SET NOT NULL");
+      await client.query(`
+        ALTER TABLE client_response_attachments
+        ADD CONSTRAINT client_response_attachments_pkey PRIMARY KEY (id)
+      `);
+      await client.query(`
+        ALTER TABLE client_response_attachments
+        DROP CONSTRAINT IF EXISTS client_response_attachments_target_check
+      `);
+      await client.query(`
+        ALTER TABLE client_response_attachments
+        ADD CONSTRAINT client_response_attachments_target_check
+        CHECK (document_id IS NOT NULL OR draft_id IS NOT NULL)
+      `);
+      await client.query(`
+        CREATE UNIQUE INDEX IF NOT EXISTS client_response_attachments_response_document_unique
+        ON client_response_attachments(response_id, document_id)
+        WHERE document_id IS NOT NULL
+      `);
+      await client.query(`
+        CREATE UNIQUE INDEX IF NOT EXISTS client_response_attachments_response_draft_unique
+        ON client_response_attachments(response_id, draft_id)
+        WHERE draft_id IS NOT NULL
+      `);
+    },
+  },
 ];
 
 export async function runMigrations(pool: Pool): Promise<void> {

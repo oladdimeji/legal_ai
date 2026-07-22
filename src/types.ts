@@ -111,7 +111,7 @@ export interface Draft {
   shared_at?: string | null;
   origin?: string;
   parent_draft_id?: string | null;
-  revision_type?: "Lawyer Original" | "Duplicate" | "Client Revision";
+  revision_type?: "Lawyer Original" | "Duplicate" | "Client Revision" | "Client Response";
 }
 
 export interface MatterIntelligenceRecord {
@@ -146,11 +146,14 @@ export interface CollaborationResponse {
   created_at: string;
   attachments?: Array<{
     response_id: string;
+    id?: string;
     document_id: string | null;
     draft_id: string | null;
     document_title?: string | null;
     draft_title?: string | null;
+    draft_origin?: string | null;
     revision_type?: string | null;
+    created_at?: string;
   }>;
 }
 

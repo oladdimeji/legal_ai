@@ -6,7 +6,15 @@ interface SharedDraft extends Draft { client_comments?: Array<{ id: string; cont
 interface Data { matter: Case; access: ClientAccess | null; shared: SharedDraft[]; requests: CollaborationRequest[]; unread: number; }
 const requestTypes = ["Review", "Comment", "Confirm information", "Upload a document", "Edit and return a copy", "Provide a written response"];
 
-export default function MatterCollaboration({ matter, onUnreadChange }: { matter: Case; onUnreadChange: (count: number) => void }) {
+export default function MatterCollaboration({
+  matter,
+  onUnreadChange,
+  onOpenWorkProduct,
+}: {
+  matter: Case;
+  onUnreadChange: (count: number) => void;
+  onOpenWorkProduct: (draftId: string) => void;
+}) {
   const [data, setData] = useState<Data | null>(null);
   const [name, setName] = useState(matter.client_name || "");
   const [email, setEmail] = useState(matter.client_email || "");
@@ -113,6 +121,17 @@ export default function MatterCollaboration({ matter, onUnreadChange }: { matter
     await load();
   };
 
+  const openAttachment = async (responseId: string, draftId: string, isRead: boolean) => {
+    if (!isRead) await markRead(responseId);
+    onOpenWorkProduct(draftId);
+  };
+
+  const attachmentLabel = (attachment: any) => {
+    if (attachment.revision_type === "Client Response") return "Client Response";
+    if (attachment.revision_type === "Client Revision") return "Client Revision";
+    return "Shared Work Product";
+  };
+
   const sortedRequests = useMemo(() => data?.requests || [], [data]);
   if (!data) return <p className="py-16 text-center text-xs font-mono uppercase text-zinc-400">Loading Collaboration...</p>;
 
@@ -176,7 +195,34 @@ export default function MatterCollaboration({ matter, onUnreadChange }: { matter
             <div className="flex justify-between gap-3"><div><strong className="text-xs uppercase">{request.request_type}</strong><p className="mt-1 text-[10px] font-mono uppercase text-zinc-400">Sent {new Date(request.created_at).toLocaleString()}</p></div><span className="text-[9px] font-mono uppercase">{request.status}</span></div>
             <p className="mt-2 text-xs text-zinc-600">{request.instruction || "No additional instruction."}</p>
             <div className="mt-3 flex flex-wrap gap-2">{request.documents.map((draft) => <span key={draft.id} className="rounded bg-zinc-100 px-2 py-1 text-xs">{draft.title}</span>)}</div>
-            {request.responses.length === 0 ? <p className="mt-3 text-xs text-zinc-400">No client response yet.</p> : request.responses.map((response) => <button key={response.id} onClick={() => !response.is_read && void markRead(response.id)} className={`mt-3 block w-full rounded p-3 text-left text-xs ${response.is_read ? "bg-zinc-50" : "border border-zinc-900 bg-white font-semibold"}`}><span className="text-[9px] font-mono uppercase">{response.response_type}{!response.is_read && " · Unread"}</span><p className="mt-1">{response.content || "Attached response"}</p>{response.attachments?.length > 0 && <p className="mt-1 text-zinc-500">Files: {response.attachments.map((item: any) => item.document_title || item.draft_title).filter(Boolean).join(", ")}</p>}</button>)}
+            {request.responses.length === 0 ? <p className="mt-3 text-xs text-zinc-400">No client response yet.</p> : request.responses.map((response) => (
+              <article key={response.id} className={`mt-3 rounded p-3 text-xs ${response.is_read ? "bg-zinc-50" : "border border-zinc-900 bg-white font-semibold"}`}>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-[9px] font-mono uppercase">{response.response_type}{!response.is_read && " · Unread"}</span>
+                  {!response.is_read && <button onClick={() => void markRead(response.id)} className="rounded border px-2 py-1 text-[9px] font-mono uppercase hover:bg-zinc-50">Mark read</button>}
+                </div>
+                <p className="mt-1">{response.content || "Attached response"}</p>
+                {response.attachments?.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {response.attachments.map((item: any) => item.draft_id ? (
+                      <button
+                        key={item.id || `${response.id}-${item.draft_id}`}
+                        type="button"
+                        onClick={() => void openAttachment(response.id, item.draft_id, response.is_read)}
+                        className="rounded border border-zinc-200 bg-white px-2 py-1 text-left text-[10px] hover:bg-zinc-50"
+                      >
+                        <span className="mr-2 font-mono uppercase text-zinc-400">{attachmentLabel(item)}</span>
+                        {item.draft_title || item.document_title || "Attached Work Product"}
+                      </button>
+                    ) : (
+                      <span key={item.id || `${response.id}-${item.document_id}`} className="rounded border border-zinc-200 bg-white px-2 py-1 text-[10px] text-zinc-500">
+                        {item.document_title || "Attached file"}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </article>
+            ))}
           </article>
         ))}
       </section>

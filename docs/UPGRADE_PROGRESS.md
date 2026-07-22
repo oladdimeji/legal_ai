@@ -559,3 +559,40 @@ Known limitations:
 
 - Manual browser verification was not performed in this non-interactive run.
 - Historical explicit internal Assistant tokens such as `[cit_1]` are hidden without a destructive rewrite. Historical bare numeric markers such as `[1]` are not globally stripped from saved documents because they are indistinguishable from user-authored footnotes without extra metadata.
+
+## Focused Client Portal Reliability and Presentation Phase
+
+Status: Complete.
+
+Implemented:
+
+- Verified Client Portal Edit a Copy already used the shared `RichDocumentEditor` and retained that path with regression coverage.
+- Added migration 012 to correct `client_response_attachments`: each attachment now has a stable row `id`, nullable `document_id`/`draft_id` alternatives, a target check constraint, and partial unique indexes for response-document and response-draft relationships.
+- Reworked portal request responses so uploaded files and selected shared Work Product are validated before persistent writes, malformed `draftIds` returns a clear 400, and unexpected failures are logged without raw portal tokens or extracted content.
+- Moved response, uploaded Client Submission document, generated Client Response Work Product, attachment rows, and request status updates into one database transaction.
+- For each uploaded response file, created private Matter Work Product titled `Client Response — original-filename.ext` with `origin = "Client Response Upload"` and `revision_type = "Client Response"` while preserving the Client Submission document representation.
+- Attached uploaded response rows to both the Client Submission document and the matching Client Response Work Product; shared-file responses attach existing permitted Work Product without copying or renaming it.
+- Updated lawyer Collaboration responses from nested button cards to semantic response cards with separate unread and attachment-opening controls. Draft attachments open through the existing Matter Work Product tab/editor.
+- Added attachment chips to the client-side latest-response confirmation while preserving failed file selections and per-request state.
+- Removed visible source attribution from Client Assistant generation by replacing the old `[Source: exact title]` prompt instruction and adding a narrow `cleanClientAssistantContent` cleaner for generated source tags and trailing Sources/References sections.
+- Reused the existing generic generated-boilerplate cleaner for Client Assistant disclaimer cleanup.
+
+Schema changes:
+
+- Migration 012 is additive and corrective. It preserves the `client_response_attachments` table and existing rows, drops only the invalid primary-key constraint, and keeps the existing response/document/draft foreign-key behavior.
+
+Dependencies added:
+
+- None.
+
+Verification:
+
+- `npm ci`: passed.
+- `npm run lint`: passed.
+- `npm test`: passed, 79/79 tests.
+- `npm run build`: passed. Vite emitted the existing large-chunk warning.
+
+Known limitations:
+
+- Original uploaded file bytes are still not retained by the application; uploaded responses are viewable through extracted Client Submission text and the corresponding Client Response Work Product.
+- Manual browser verification remains to be performed in a live session.

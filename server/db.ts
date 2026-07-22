@@ -695,8 +695,8 @@ class DatabaseService {
 
   private async getResponseAttachments(responseId: string): Promise<any[]> {
     return await this.query(
-      `SELECT a.response_id, a.document_id, a.draft_id, a.created_at,
-         d.title AS document_title, w.title AS draft_title, w.revision_type
+      `SELECT a.id, a.response_id, a.document_id, a.draft_id, a.created_at,
+         d.title AS document_title, w.title AS draft_title, w.origin AS draft_origin, w.revision_type
        FROM client_response_attachments a
        LEFT JOIN documents d ON d.id = a.document_id
        LEFT JOIN drafts w ON w.id = a.draft_id
@@ -704,6 +704,16 @@ class DatabaseService {
        ORDER BY a.created_at`,
       [responseId]
     );
+  }
+
+  public async validatePortalRequest(tokenHash: string, requestId: string): Promise<any | null> {
+    const access = await this.resolvePortalAccess(tokenHash);
+    if (!access) return null;
+    const rows = await this.query(
+      "SELECT id FROM collaboration_requests WHERE id = $1 AND case_id = $2",
+      [requestId, access.case_id]
+    );
+    return rows[0] ? access : null;
   }
 
   public async markCollaborationResponseRead(
@@ -845,9 +855,14 @@ class DatabaseService {
   }
 
   public async createPortalResponse(
-    tokenHash: string, requestId: string, responseType: string, content: string | null,
-    documentIds: string[] = [], draftIds: string[] = []
+    tokenHash: string,
+    requestId: string,
+    responseType: string,
+    content: string | null,
+    uploadedFiles: Array<{ filename: string; text: string }> = [],
+    draftIds: string[] = []
   ): Promise<any> {
+    await this.ensureSchema();
     const access = await this.resolvePortalAccess(tokenHash);
     if (!access) throw new Error("Client access not found");
     const request = (await this.query(
@@ -855,47 +870,105 @@ class DatabaseService {
       [requestId, access.case_id]
     ))[0];
     if (!request) throw new Error("Client request not found");
-    const uniqueDocumentIds = Array.from(new Set(documentIds.filter(Boolean)));
     const uniqueDraftIds = Array.from(new Set(draftIds.filter(Boolean)));
-    if (uniqueDocumentIds.length) {
-      const documents = await this.query(
-        `SELECT id FROM documents WHERE id = ANY($1::text[]) AND case_id = $2 AND firm_id = $3
-         AND source_type = 'Client Submission'`, [uniqueDocumentIds, access.case_id, access.firm_id]
-      );
-      if (documents.length !== uniqueDocumentIds.length) throw new Error("Portal document not found");
-    }
+    const permittedDrafts: any[] = [];
     for (const draftId of uniqueDraftIds) {
-      if (!(await this.getPermittedPortalDraft(tokenHash, draftId))) {
-        throw new Error("Portal Work Product not found");
-      }
+      const draft = await this.getPermittedPortalDraft(tokenHash, draftId);
+      if (!draft) throw new Error("Portal Work Product not found");
+      permittedDrafts.push(draft);
     }
+
     const id = `response_${randomUUID()}`;
     const now = new Date().toISOString();
-    const rows = await this.query(
-      `INSERT INTO client_responses
-        (id, request_id, response_type, content, document_id, draft_id, is_read, created_at)
-       VALUES($1, $2, $3, $4, $5, $6, FALSE, $7) RETURNING *`,
-      [id, requestId, responseType, content, uniqueDocumentIds[0] || null, uniqueDraftIds[0] || null, now]
-    );
-    for (const documentId of uniqueDocumentIds) {
-      await this.query(
-        `INSERT INTO client_response_attachments(response_id, document_id, draft_id, created_at)
-         VALUES($1, $2, NULL, $3)`,
-        [id, documentId, now]
+    const client = await getPool().connect();
+    try {
+      await client.query("BEGIN");
+      const uploadedPairs: Array<{ documentId: string; draftId: string }> = [];
+      for (const file of uploadedFiles) {
+        const documentId = `doc_${randomUUID()}`;
+        await client.query(
+          `INSERT INTO documents
+            (id, firm_id, case_id, title, source_url, drive_id, extracted_text, section, uploaded_at,
+             source_type, origin, processing_state)
+           VALUES ($1, $2, $3, $4, NULL, NULL, $5, 'Client Submission', $6,
+             'Client Submission', 'Client', 'Processing')`,
+          [documentId, access.firm_id, access.case_id, file.filename, file.text, now]
+        );
+        const paragraphs = file.text
+          .split(/\n\s*\n/)
+          .map((paragraph) => paragraph.trim())
+          .filter((paragraph) => paragraph.length > 15);
+        for (let i = 0; i < paragraphs.length; i++) {
+          try {
+            const embedding = await callModel("embedding", [], { textToEmbed: paragraphs[i] }) as number[];
+            await client.query(
+              `INSERT INTO document_chunks (id, document_id, chunk_text, embedding)
+               VALUES ($1, $2, $3, $4)`,
+              [`chunk_${documentId}_${i}`, documentId, paragraphs[i], `[${embedding.join(",")}]`]
+            );
+          } catch (error) {
+            console.error(`Embedding generation failed for portal response document ${documentId}, chunk ${i}; chunk left unindexed.`, error);
+          }
+        }
+        const indexed = await client.query(
+          "SELECT COUNT(*)::int AS count FROM document_chunks WHERE document_id = $1",
+          [documentId]
+        );
+        await client.query(
+          "UPDATE documents SET processing_state = $1 WHERE id = $2 AND firm_id = $3",
+          [Number(indexed.rows[0]?.count || 0) > 0 || paragraphs.length === 0 ? "Ready" : "Needs Attention", documentId, access.firm_id]
+        );
+
+        const draftId = `draft_${randomUUID()}`;
+        await client.query(
+          `INSERT INTO drafts
+            (id, thread_id, case_id, title, content, created_at, updated_at, origin, revision_type)
+           VALUES($1, NULL, $2, $3, $4, $5, $5, 'Client Response Upload', 'Client Response')`,
+          [draftId, access.case_id, `Client Response — ${file.filename}`, file.text, now]
+        );
+        uploadedPairs.push({ documentId, draftId });
+      }
+
+      const rows = await client.query(
+        `INSERT INTO client_responses
+          (id, request_id, response_type, content, document_id, draft_id, is_read, created_at)
+         VALUES($1, $2, $3, $4, $5, $6, FALSE, $7) RETURNING *`,
+        [
+          id,
+          requestId,
+          responseType,
+          content,
+          uploadedPairs[0]?.documentId || null,
+          uploadedPairs[0]?.draftId || uniqueDraftIds[0] || null,
+          now,
+        ]
       );
-    }
-    for (const draftId of uniqueDraftIds) {
-      await this.query(
-        `INSERT INTO client_response_attachments(response_id, document_id, draft_id, created_at)
-         VALUES($1, NULL, $2, $3)`,
-        [id, draftId, now]
+      for (const pair of uploadedPairs) {
+        await client.query(
+          `INSERT INTO client_response_attachments(id, response_id, document_id, draft_id, created_at)
+           VALUES($1, $2, $3, $4, $5)`,
+          [`attachment_${randomUUID()}`, id, pair.documentId, pair.draftId, now]
+        );
+      }
+      for (const draft of permittedDrafts) {
+        await client.query(
+          `INSERT INTO client_response_attachments(id, response_id, document_id, draft_id, created_at)
+           VALUES($1, $2, NULL, $3, $4)`,
+          [`attachment_${randomUUID()}`, id, draft.id, now]
+        );
+      }
+      await client.query(
+        "UPDATE collaboration_requests SET status = 'Responded', updated_at = $1 WHERE id = $2 AND case_id = $3",
+        [now, requestId, access.case_id]
       );
+      await client.query("COMMIT");
+      return { ...rows.rows[0], attachments: await this.getResponseAttachments(id) };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
     }
-    await this.query(
-      "UPDATE collaboration_requests SET status = 'Responded', updated_at = $1 WHERE id = $2 AND case_id = $3",
-      [now, requestId, access.case_id]
-    );
-    return { ...rows[0], attachments: await this.getResponseAttachments(id) };
   }
 
   public async getPortalAssistantSources(

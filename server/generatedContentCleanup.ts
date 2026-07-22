@@ -28,3 +28,16 @@ export function cleanGeneratedBoilerplate(content: string): string {
   while (paragraphs.length && isGenericBoilerplateParagraph(paragraphs[paragraphs.length - 1])) paragraphs.pop();
   return paragraphs.join("\n\n").trim();
 }
+
+export function cleanClientAssistantContent(content: string): string {
+  return cleanGeneratedBoilerplate(content)
+    .replace(/\[+\s*sources?\s*:\s*[^\]\n]{1,240}\]+/gi, "")
+    .replace(
+      /(?:^|\n{2,})(?:#{1,6}\s*)?(?:Sources|References)\s*:?\s*\n(?:[-*]\s*)?[^\n]+(?:\n(?:[-*]\s*)?[^\n]+){0,12}\s*$/i,
+      ""
+    )
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/[ \t]+([.,;:])/g, "$1")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
