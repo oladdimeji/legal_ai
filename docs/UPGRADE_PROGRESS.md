@@ -445,3 +445,45 @@ Known limitations:
 - OCR remains unsupported for scanned PDFs.
 - Portal chat is intentionally one simple persistent chat per active collaborator.
 - Client revisions remain Markdown-backed through the focused formatted editor rather than a full word processor.
+
+## Focused Fix Phase - Matters Upload and Document Generation UX
+
+Status: Complete.
+
+Implemented:
+
+- Added a shared cumulative file-selection hook and removable selected-file rows using browser file identity (`name`, `size`, `lastModified`), append/dedupe behavior, native input reset, and a five-file inline limit message.
+- Applied cumulative multi-file selection to Matter creation, direct Matter Source uploads, Firm Library uploads, Client Portal request attachments, and Assistant temporary attachments.
+- Updated Assistant temporary file extraction so overlapping batches update only the pending entries from the completed batch.
+- Updated Matter Sources to link multiple Firm Library documents in one submission through checkbox selection while preserving the note path and singular server compatibility.
+- Changed `POST /api/cases/:id/sources` and `POST /api/documents` to use `MAX_FILE_COUNT`, extract full batches, persist every extracted file, and keep custom titles to one-file submissions.
+- Added a reusable Markdown-backed rich document editor and used it for Matter Intelligence edit mode, Matter Work Product edit mode, and Client Portal Edit a Copy.
+- Added targeted Matter Intelligence source-label cleaning for exact `[Source: ...]` labels on generation, read, save, and DOCX export without bulk database mutation.
+- Removed the Matter Intelligence generic review banner/empty-state warning and removed generated legal-email disclaimer instructions and related generic disclaimer prompts.
+
+Schema changes:
+
+- None. No migration was added and no data reset, table rename, or destructive database change was performed.
+
+Dependencies added:
+
+- None. The rich editor uses existing React/browser editing APIs and keeps Markdown as the persisted/API representation.
+
+API changes:
+
+- One-file upload responses remain document-shaped and now include a `documents` array for updated clients.
+- Multi-file upload responses return `{ documents: [...] }`.
+- Matter Source Firm Library linking now accepts `libraryDocumentIds` while retaining singular `libraryDocumentId`.
+
+Verification:
+
+- `npm ci`: passed.
+- `npm run lint`: passed before tests.
+- `npm test`: passed, 57/57 tests.
+- Final `npm run lint` and `npm run build` will be run after this documentation update.
+
+Known limitations:
+
+- OCR remains unsupported for scanned PDFs.
+- The rich editor is intentionally focused on paragraphs, headings, emphasis, underline, lists, links, undo/redo, and sanitized Markdown round trips rather than being a full word processor.
+- Manual browser verification remains to be performed in a live session with representative files and generated content.

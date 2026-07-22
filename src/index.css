@@ -1,1 +1,49 @@
 @import "tailwindcss";
+
+.rich-document-editor h1 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin: 0.8rem 0 0.5rem;
+}
+
+.rich-document-editor h2 {
+  font-size: 1.2rem;
+  font-weight: 700;
+  margin: 0.75rem 0 0.45rem;
+}
+
+.rich-document-editor h3 {
+  font-size: 1rem;
+  font-weight: 700;
+  margin: 0.7rem 0 0.4rem;
+}
+
+.rich-document-editor p {
+  margin: 0.55rem 0;
+}
+
+.rich-document-editor ul,
+.rich-document-editor ol {
+  margin: 0.55rem 0 0.55rem 1.25rem;
+  padding-left: 1rem;
+}
+
+.rich-document-editor ul {
+  list-style: disc;
+}
+
+.rich-document-editor ol {
+  list-style: decimal;
+}
+
+.rich-document-editor blockquote {
+  border-left: 2px solid #d4d4d8;
+  color: #52525b;
+  margin: 0.7rem 0;
+  padding-left: 0.9rem;
+}
+
+.rich-document-editor a {
+  color: #18181b;
+  text-decoration: underline;
+}

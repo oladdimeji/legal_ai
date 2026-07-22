@@ -1,15 +1,8 @@
-import React, { useState, useEffect } from "react";
-import { 
-  FileText, Save, Download, RefreshCw, FileWarning, Eye, Edit, Check, 
-  Scissors, Clipboard, Undo2, Redo2, Bold, Italic, Underline,
-  Strikethrough, List, ListOrdered, AlignLeft, AlignCenter, AlignRight, 
-  Link as LinkIcon, X, Copy
-} from "lucide-react";
+import React, { useEffect, useState } from "react";
+import { Check, Copy, Download, Edit, Eye, FileText, FileWarning, RefreshCw, Save } from "lucide-react";
 import { Draft } from "../types";
-import MDEditor from "@uiw/react-md-editor";
 import FormattedMarkdown from "./FormattedMarkdown";
-import "@uiw/react-md-editor/markdown-editor.css";
-import "@uiw/react-markdown-preview/markdown.css";
+import RichDocumentEditor from "./RichDocumentEditor";
 
 interface DraftEditorViewProps {
   initialDraftId: string | null;
@@ -17,11 +10,7 @@ interface DraftEditorViewProps {
   caseId: string | null;
 }
 
-export default function DraftEditorView({ 
-  initialDraftId, 
-  onClearInitialDraftId,
-  caseId 
-}: DraftEditorViewProps) {
+export default function DraftEditorView({ initialDraftId, onClearInitialDraftId, caseId }: DraftEditorViewProps) {
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [activeDraft, setActiveDraft] = useState<Draft | null>(null);
   const [title, setTitle] = useState("");
@@ -31,49 +20,33 @@ export default function DraftEditorView({
   const [editMode, setEditMode] = useState(true);
   const [sharingBusy, setSharingBusy] = useState<"sharing" | "stopping" | null>(null);
 
-  const [alignment, setAlignment] = useState<"left" | "center" | "right">("left");
-  const [undoStack, setUndoStack] = useState<string[]>([]);
-  const [redoStack, setRedoStack] = useState<string[]>([]);
-
   useEffect(() => {
     setActiveDraft(null);
     setTitle("");
     setContent("");
-    fetchDrafts();
+    void fetchDrafts();
   }, [caseId]);
 
   useEffect(() => {
     if (initialDraftId) {
-      loadSpecificDraft(initialDraftId);
-      onClearInitialDraftId(); // consume
+      void loadSpecificDraft(initialDraftId);
+      onClearInitialDraftId();
     } else if (drafts.length > 0 && !activeDraft) {
       selectDraft(drafts[0]);
     }
   }, [initialDraftId, drafts]);
 
   const fetchDrafts = async () => {
-    try {
-      if (!caseId) return setDrafts([]);
-      const url = `/api/cases/${caseId}/work-product`;
-      const res = await fetch(url);
-      const data = await res.json();
-      setDrafts(data);
-    } catch (err) {
-      console.error("Error fetching drafts:", err);
-    }
+    if (!caseId) return setDrafts([]);
+    const response = await fetch(`/api/cases/${caseId}/work-product`);
+    if (response.ok) setDrafts(await response.json());
   };
 
   const loadSpecificDraft = async (id: string) => {
-    try {
-      if (!caseId) return;
-      const res = await fetch(`/api/drafts/${id}?caseId=${caseId}`);
-      const data = await res.json();
-      if (data.id) {
-        selectDraft(data);
-      }
-    } catch (err) {
-      console.error("Error loading specific draft:", err);
-    }
+    if (!caseId) return;
+    const response = await fetch(`/api/drafts/${id}?caseId=${caseId}`);
+    const data = await response.json();
+    if (data.id) selectDraft(data);
   };
 
   const selectDraft = (draft: Draft) => {
@@ -81,48 +54,28 @@ export default function DraftEditorView({
     setTitle(draft.title);
     setContent(draft.content);
     setSaveStatus("idle");
-    setUndoStack([draft.content]);
-    setRedoStack([]);
-  };
-
-  const updateContentWithHistory = (newVal: string) => {
-    setUndoStack((prev) => [...prev, content]);
-    setRedoStack([]);
-    setContent(newVal);
   };
 
   const handleSave = async () => {
-    if (!activeDraft) return;
-
+    if (!activeDraft || !caseId) return;
     setSaving(true);
     setSaveStatus("saving");
     try {
-      if (!caseId) return;
-      const res = await fetch(`/api/drafts/${activeDraft.id}?caseId=${caseId}`, {
+      const response = await fetch(`/api/drafts/${activeDraft.id}?caseId=${caseId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content })
+        body: JSON.stringify({ content }),
       });
-      const data = await res.json();
+      const data = await response.json();
       if (data.id) {
         setSaveStatus("saved");
-        setDrafts((prev) => 
-          prev.map((d) => (d.id === data.id ? data : d))
-        );
-        setTimeout(() => setSaveStatus("idle"), 2000);
+        setActiveDraft(data);
+        setDrafts((current) => current.map((draft) => draft.id === data.id ? data : draft));
+        window.setTimeout(() => setSaveStatus("idle"), 2000);
       }
-    } catch (err) {
-      console.error("Error saving draft:", err);
-      setSaveStatus("idle");
     } finally {
       setSaving(false);
     }
-  };
-
-  const handleExportDocx = () => {
-    if (!activeDraft) return;
-    if (!caseId) return;
-    window.open(`/api/drafts/${activeDraft.id}/export?caseId=${caseId}`, "_blank");
   };
 
   const handleCreateWorkProduct = async () => {
@@ -130,12 +83,14 @@ export default function DraftEditorView({
     const newTitle = prompt("Work Product title");
     if (!newTitle?.trim()) return;
     const response = await fetch(`/api/cases/${caseId}/work-product`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ title: newTitle.trim(), content: "" }),
     });
     const data = await response.json();
     if (!response.ok) return alert(data.error || "Work Product could not be created");
-    setDrafts((current) => [data, ...current]); selectDraft(data);
+    setDrafts((current) => [data, ...current]);
+    selectDraft(data);
   };
 
   const handleDuplicate = async () => {
@@ -143,7 +98,8 @@ export default function DraftEditorView({
     const response = await fetch(`/api/drafts/${activeDraft.id}/duplicate?caseId=${caseId}`, { method: "POST" });
     const data = await response.json();
     if (!response.ok) return alert(data.error || "Work Product could not be duplicated");
-    setDrafts((current) => [data, ...current]); selectDraft(data);
+    setDrafts((current) => [data, ...current]);
+    selectDraft(data);
   };
 
   const handleSharing = async () => {
@@ -152,7 +108,8 @@ export default function DraftEditorView({
     setSharingBusy(nextShared ? "sharing" : "stopping");
     try {
       const response = await fetch(`/api/drafts/${activeDraft.id}/sharing?caseId=${caseId}`, {
-        method: "PUT", headers: { "Content-Type": "application/json" },
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ shared: nextShared }),
       });
       const data = await response.json();
@@ -166,411 +123,52 @@ export default function DraftEditorView({
     }
   };
 
-  // Requirement 8 Text Manipulations
-  const insertTextMarkup = (prefix: string, suffix: string = prefix) => {
-    const textarea = document.querySelector("textarea") as HTMLTextAreaElement;
-    if (!textarea) return;
-
-    const start = textarea.selectionStart;
-    const end = textarea.selectionEnd;
-    const text = textarea.value;
-    const selected = text.substring(start, end);
-
-    const replacement = prefix + selected + suffix;
-    updateContentWithHistory(text.substring(0, start) + replacement + text.substring(end));
-
-    setTimeout(() => {
-      textarea.focus();
-      textarea.setSelectionRange(start + prefix.length, start + prefix.length + selected.length);
-    }, 10);
-  };
-
-  const handleCut = () => {
-    const textarea = document.querySelector("textarea") as HTMLTextAreaElement;
-    if (!textarea) return;
-    const start = textarea.selectionStart;
-    const end = textarea.selectionEnd;
-    const text = textarea.value;
-    const selected = text.substring(start, end);
-    if (!selected) return;
-
-    navigator.clipboard.writeText(selected);
-    updateContentWithHistory(text.substring(0, start) + text.substring(end));
-    setTimeout(() => {
-      textarea.focus();
-      textarea.setSelectionRange(start, start);
-    }, 10);
-  };
-
-  const handleCopy = () => {
-    const textarea = document.querySelector("textarea") as HTMLTextAreaElement;
-    if (!textarea) return;
-    const selected = textarea.value.substring(textarea.selectionStart, textarea.selectionEnd);
-    if (!selected) return;
-    navigator.clipboard.writeText(selected);
-  };
-
-  const handlePaste = async () => {
-    const textarea = document.querySelector("textarea") as HTMLTextAreaElement;
-    if (!textarea) return;
-    try {
-      const clipText = await navigator.clipboard.readText();
-      insertTextMarkup(clipText, "");
-    } catch (err) {
-      alert("Please grant clipboard permission or use standard Ctrl+V");
-    }
-  };
-
-  const handleUndo = () => {
-    if (undoStack.length === 0) return;
-    const previous = undoStack[undoStack.length - 1];
-    setUndoStack((prev) => prev.slice(0, -1));
-    setRedoStack((prev) => [...prev, content]);
-    setContent(previous);
-  };
-
-  const handleRedo = () => {
-    if (redoStack.length === 0) return;
-    const nextText = redoStack[redoStack.length - 1];
-    setRedoStack((prev) => prev.slice(0, -1));
-    setUndoStack((prev) => [...prev, content]);
-    setContent(nextText);
-  };
-
   return (
-    <div className="flex-1 flex h-full overflow-hidden bg-white text-zinc-900" id="draft-editor-view">
-      
-      {/* Work Product selection */}
-      <div className="w-64 border-r border-zinc-100 bg-zinc-50 flex flex-col h-full shrink-0">
-        <div className="p-5 border-b border-zinc-200 flex items-center justify-between gap-2">
+    <div className="flex h-full flex-1 overflow-hidden bg-white text-zinc-900" id="draft-editor-view">
+      <div className="flex h-full w-64 shrink-0 flex-col border-r border-zinc-100 bg-zinc-50">
+        <div className="flex items-center justify-between gap-2 border-b border-zinc-200 p-5">
           <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-zinc-500">Work Product</span>
           <button onClick={() => void handleCreateWorkProduct()} className="rounded bg-zinc-900 px-2 py-1 text-[9px] font-mono font-bold uppercase text-white">New</button>
         </div>
-
-        <div className="flex-1 overflow-y-auto p-4 space-y-2" id="drafts-sidebar-list">
+        <div className="flex-1 space-y-2 overflow-y-auto p-4" id="drafts-sidebar-list">
           {drafts.length === 0 ? (
-            <div className="text-center p-6 text-zinc-400 text-xs">
-              <FileWarning className="h-6 w-6 mx-auto mb-2 text-zinc-300" />
-              No Work Product yet. Create one here or generate one from a Matter conversation.
-            </div>
-          ) : (
-            drafts.map((d) => (
-              <button
-                key={d.id}
-                id={`draft-select-btn-${d.id}`}
-                onClick={() => selectDraft(d)}
-                className={`w-full text-left p-3.5 rounded-lg border transition-all text-xs flex items-start gap-2.5 ${
-                  activeDraft?.id === d.id
-                    ? "bg-white border-zinc-900 text-zinc-950 font-semibold shadow-sm"
-                    : "border-transparent text-zinc-600 hover:text-zinc-900 hover:bg-zinc-100"
-                }`}
-              >
-                <FileText className="h-4 w-4 shrink-0 mt-0.5 text-zinc-400" />
-                <div className="min-w-0 flex-1">
-                  <p className="truncate uppercase font-bold tracking-tight">{d.title.replace("Legal ", "")}</p>
-                  <p className="text-[9px] text-zinc-400 font-mono mt-0.5">
-                    {new Date(d.updated_at || d.created_at).toLocaleDateString()} · {d.shared_with_client ? "Shared" : "Private"}
-                  </p>
-                </div>
-              </button>
-            ))
-          )}
+            <div className="p-6 text-center text-xs text-zinc-400"><FileWarning className="mx-auto mb-2 h-6 w-6 text-zinc-300" />No Work Product yet. Create one here or generate one from a Matter conversation.</div>
+          ) : drafts.map((draft) => (
+            <button key={draft.id} id={`draft-select-btn-${draft.id}`} onClick={() => selectDraft(draft)} className={`flex w-full items-start gap-2.5 rounded-lg border p-3.5 text-left text-xs transition-all ${activeDraft?.id === draft.id ? "border-zinc-900 bg-white font-semibold text-zinc-950 shadow-sm" : "border-transparent text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900"}`}>
+              <FileText className="mt-0.5 h-4 w-4 shrink-0 text-zinc-400" />
+              <div className="min-w-0 flex-1"><p className="truncate font-bold uppercase tracking-tight">{draft.title.replace("Legal ", "")}</p><p className="mt-0.5 text-[9px] font-mono text-zinc-400">{new Date(draft.updated_at || draft.created_at).toLocaleDateString()} · {draft.shared_with_client ? "Shared" : "Private"}</p></div>
+            </button>
+          ))}
         </div>
       </div>
 
-      {/* Draft Workspace/Editor */}
-      <div className="flex-1 flex flex-col h-full overflow-hidden" id="editor-canvas-column">
+      <div className="flex h-full flex-1 flex-col overflow-hidden" id="editor-canvas-column">
         {activeDraft ? (
-          <div className="flex-1 flex flex-col h-full overflow-hidden">
-            {/* Header Block with Title & Mode Controls */}
-            <div className="px-8 py-4 bg-white border-b border-zinc-100 flex items-center justify-between z-10 shrink-0">
-              <div className="min-w-0 flex-1">
-                <h2 className="font-sans font-bold text-sm uppercase text-zinc-900 tracking-tight truncate">
-                  {title}
-                </h2>
-                <p className="text-[10px] font-mono text-zinc-400 uppercase mt-0.5">
-                  Updated {new Date(activeDraft.updated_at || activeDraft.created_at).toLocaleString()} · {activeDraft.origin || "Work Product"} · {activeDraft.shared_with_client ? "Shared with client" : "Private"}
-                </p>
-              </div>
-
-              <div className="flex items-center gap-3 shrink-0">
+          <>
+            <div className="z-10 flex shrink-0 items-center justify-between border-b border-zinc-100 bg-white px-8 py-4">
+              <div className="min-w-0 flex-1"><h2 className="truncate text-sm font-bold uppercase tracking-tight text-zinc-900">{title}</h2><p className="mt-0.5 text-[10px] font-mono uppercase text-zinc-400">Updated {new Date(activeDraft.updated_at || activeDraft.created_at).toLocaleString()} · {activeDraft.origin || "Work Product"} · {activeDraft.shared_with_client ? "Shared with client" : "Private"}</p></div>
+              <div className="flex shrink-0 items-center gap-3">
                 <button onClick={() => void handleDuplicate()} className="inline-flex items-center gap-1 rounded border border-zinc-300 px-3 py-1.5 text-[10px] font-mono font-bold uppercase"><Copy className="h-3.5 w-3.5" />Duplicate</button>
                 <button onClick={() => void handleSharing()} disabled={Boolean(sharingBusy)} className="rounded border border-zinc-300 px-3 py-1.5 text-[10px] font-mono font-bold uppercase hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50">{sharingBusy === "sharing" ? "Sharing..." : sharingBusy === "stopping" ? "Stopping..." : activeDraft.shared_with_client ? "Stop sharing" : "Share with client"}</button>
-                <div className="flex bg-zinc-100 p-0.5 rounded border border-zinc-200 text-[10px] font-mono font-semibold uppercase">
-                  <button
-                    onClick={() => setEditMode(true)}
-                    id="mode-edit-btn"
-                    className={`px-3 py-1 rounded flex items-center gap-1 cursor-pointer ${editMode ? "bg-white text-zinc-900 font-bold shadow-sm" : "text-zinc-500"}`}
-                  >
-                    <Edit className="h-3 w-3" />
-                    Editor
-                  </button>
-                  <button
-                    onClick={() => setEditMode(false)}
-                    id="mode-preview-btn"
-                    className={`px-3 py-1 rounded flex items-center gap-1 cursor-pointer ${!editMode ? "bg-white text-zinc-900 font-bold shadow-sm" : "text-zinc-500"}`}
-                  >
-                    <Eye className="h-3 w-3" />
-                    Preview
-                  </button>
+                <div className="flex rounded border border-zinc-200 bg-zinc-100 p-0.5 text-[10px] font-mono font-semibold uppercase">
+                  <button onClick={() => setEditMode(true)} id="mode-edit-btn" className={`flex items-center gap-1 rounded px-3 py-1 ${editMode ? "bg-white font-bold text-zinc-900 shadow-sm" : "text-zinc-500"}`}><Edit className="h-3 w-3" />Editor</button>
+                  <button onClick={() => setEditMode(false)} id="mode-preview-btn" className={`flex items-center gap-1 rounded px-3 py-1 ${!editMode ? "bg-white font-bold text-zinc-900 shadow-sm" : "text-zinc-500"}`}><Eye className="h-3 w-3" />Preview</button>
                 </div>
-
-                <button
-                  onClick={handleSave}
-                  disabled={saving}
-                  id="editor-save-btn"
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-mono uppercase font-bold border border-zinc-300 hover:border-zinc-900 hover:bg-zinc-50 rounded transition-all bg-white cursor-pointer"
-                >
-                  {saveStatus === "saving" ? (
-                    <RefreshCw className="h-3.5 w-3.5 animate-spin text-zinc-600" />
-                  ) : saveStatus === "saved" ? (
-                    <Check className="h-3.5 w-3.5 text-green-700" />
-                  ) : (
-                    <Save className="h-3.5 w-3.5" />
-                  )}
+                <button onClick={() => void handleSave()} disabled={saving} id="editor-save-btn" className="inline-flex items-center gap-1.5 rounded border border-zinc-300 bg-white px-3 py-1.5 text-[10px] font-mono font-bold uppercase hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50">
+                  {saveStatus === "saving" ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : saveStatus === "saved" ? <Check className="h-3.5 w-3.5 text-green-700" /> : <Save className="h-3.5 w-3.5" />}
                   {saveStatus === "saving" ? "Saving..." : saveStatus === "saved" ? "Saved" : "Save"}
                 </button>
-
-                <button
-                  onClick={handleExportDocx}
-                  id="editor-export-btn"
-                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-[10px] font-mono uppercase font-bold text-white bg-zinc-950 hover:bg-zinc-900 rounded transition-all shadow-sm cursor-pointer"
-                >
-                  <Download className="h-3.5 w-3.5" />
-                  Export .docx
-                </button>
+                <button onClick={() => caseId && window.open(`/api/drafts/${activeDraft.id}/export?caseId=${caseId}`, "_blank")} id="editor-export-btn" className="inline-flex items-center gap-1.5 rounded bg-zinc-950 px-3.5 py-1.5 text-[10px] font-mono font-bold uppercase text-white hover:bg-zinc-900"><Download className="h-3.5 w-3.5" />Export .docx</button>
               </div>
             </div>
-
-            {/* Requirement 8: Rich Text Style Persistent Toolbar Layout */}
-            <div className="bg-zinc-50 border-b border-zinc-200 p-2 flex items-center gap-1 flex-wrap z-10 shrink-0 select-none shadow-inner" id="rich-editor-toolbar">
-              {/* Paragraph / Style Selector Dropdown */}
-              <select 
-                id="style-selector"
-                onChange={(e) => {
-                  const val = e.target.value;
-                  if (val === "h1") insertTextMarkup("\n# ", "\n");
-                  if (val === "h2") insertTextMarkup("\n## ", "\n");
-                  if (val === "h3") insertTextMarkup("\n### ", "\n");
-                  if (val === "quote") insertTextMarkup("\n> ", "\n");
-                  e.target.value = "normal";
-                }}
-                className="bg-white border border-zinc-250 rounded px-2 py-1 text-[11px] font-medium text-zinc-700 hover:border-zinc-400 focus:outline-none cursor-pointer h-7"
-                title="Paragraph Style Selector"
-              >
-                <option value="normal">Normal Paragraph</option>
-                <option value="h1">Heading 1</option>
-                <option value="h2">Heading 2</option>
-                <option value="h3">Heading 3</option>
-                <option value="quote">Blockquote (&gt;)</option>
-              </select>
-
-              <div className="w-[1px] h-5 bg-zinc-300 mx-1 shrink-0" />
-
-              {/* Bold, Italic, Underline, Strikethrough buttons */}
-              <button
-                type="button"
-                onClick={() => insertTextMarkup("**", "**")}
-                id="tb-btn-bold"
-                className="p-1.5 text-zinc-600 hover:text-zinc-950 hover:bg-zinc-200/60 rounded transition-colors"
-                title="Bold (Markdown **)"
-              >
-                <Bold className="h-3.5 w-3.5" />
-              </button>
-              <button
-                type="button"
-                onClick={() => insertTextMarkup("*", "*")}
-                id="tb-btn-italic"
-                className="p-1.5 text-zinc-600 hover:text-zinc-950 hover:bg-zinc-200/60 rounded transition-colors"
-                title="Italic (Markdown *)"
-              >
-                <Italic className="h-3.5 w-3.5" />
-              </button>
-              <button
-                type="button"
-                onClick={() => insertTextMarkup("<u>", "</u>")}
-                id="tb-btn-underline"
-                className="p-1.5 text-zinc-600 hover:text-zinc-950 hover:bg-zinc-200/60 rounded transition-colors"
-                title="Underline (HTML <u>)"
-              >
-                <Underline className="h-3.5 w-3.5" />
-              </button>
-              <button
-                type="button"
-                onClick={() => insertTextMarkup("~~", "~~")}
-                id="tb-btn-strikethrough"
-                className="p-1.5 text-zinc-600 hover:text-zinc-950 hover:bg-zinc-200/60 rounded transition-colors"
-                title="Strikethrough (Markdown ~~)"
-              >
-                <Strikethrough className="h-3.5 w-3.5" />
-              </button>
-
-              <div className="w-[1px] h-5 bg-zinc-300 mx-1 shrink-0" />
-
-              {/* Lists */}
-              <button
-                type="button"
-                onClick={() => insertTextMarkup("\n- ", "")}
-                id="tb-btn-bullets"
-                className="p-1.5 text-zinc-600 hover:text-zinc-950 hover:bg-zinc-200/60 rounded transition-colors"
-                title="Bullet List (- )"
-              >
-                <List className="h-3.5 w-3.5" />
-              </button>
-              <button
-                type="button"
-                onClick={() => insertTextMarkup("\n1. ", "")}
-                id="tb-btn-numbers"
-                className="p-1.5 text-zinc-600 hover:text-zinc-950 hover:bg-zinc-200/60 rounded transition-colors"
-                title="Numbered List (1. )"
-              >
-                <ListOrdered className="h-3.5 w-3.5" />
-              </button>
-
-              <div className="w-[1px] h-5 bg-zinc-300 mx-1 shrink-0" />
-
-              {/* Alignment */}
-              <button
-                type="button"
-                onClick={() => setAlignment("left")}
-                id="tb-btn-align-left"
-                className={`p-1.5 rounded transition-colors ${alignment === "left" ? "bg-zinc-250 text-zinc-950 font-bold" : "text-zinc-600 hover:text-zinc-950 hover:bg-zinc-200/60"}`}
-                title="Align Left"
-              >
-                <AlignLeft className="h-3.5 w-3.5" />
-              </button>
-              <button
-                type="button"
-                onClick={() => setAlignment("center")}
-                id="tb-btn-align-center"
-                className={`p-1.5 rounded transition-colors ${alignment === "center" ? "bg-zinc-250 text-zinc-950 font-bold" : "text-zinc-600 hover:text-zinc-950 hover:bg-zinc-200/60"}`}
-                title="Align Center"
-              >
-                <AlignCenter className="h-3.5 w-3.5" />
-              </button>
-              <button
-                type="button"
-                onClick={() => setAlignment("right")}
-                id="tb-btn-align-right"
-                className={`p-1.5 rounded transition-colors ${alignment === "right" ? "bg-zinc-250 text-zinc-950 font-bold" : "text-zinc-600 hover:text-zinc-950 hover:bg-zinc-200/60"}`}
-                title="Align Right"
-              >
-                <AlignRight className="h-3.5 w-3.5" />
-              </button>
-
-              <div className="w-[1px] h-5 bg-zinc-300 mx-1 shrink-0" />
-
-              {/* Insert Link */}
-              <button
-                type="button"
-                onClick={() => insertTextMarkup("[", "](https://example.com)")}
-                id="tb-btn-link"
-                className="p-1.5 text-zinc-600 hover:text-zinc-950 hover:bg-zinc-200/60 rounded transition-colors"
-                title="Insert Link Markdown"
-              >
-                <LinkIcon className="h-3.5 w-3.5" />
-              </button>
-
-              <div className="w-[1px] h-5 bg-zinc-300 mx-1 shrink-0" />
-
-              {/* Cut, Copy, Paste */}
-              <button
-                type="button"
-                onClick={handleCut}
-                id="tb-btn-cut"
-                className="p-1.5 text-zinc-600 hover:text-zinc-950 hover:bg-zinc-200/60 rounded transition-colors"
-                title="Cut Selected Text"
-              >
-                <Scissors className="h-3.5 w-3.5" />
-              </button>
-              <button
-                type="button"
-                onClick={handleCopy}
-                id="tb-btn-copy"
-                className="p-1.5 text-zinc-600 hover:text-zinc-950 hover:bg-zinc-200/60 rounded transition-colors"
-                title="Copy Selected Text"
-              >
-                <Copy className="h-3.5 w-3.5" />
-              </button>
-              <button
-                type="button"
-                onClick={handlePaste}
-                id="tb-btn-paste"
-                className="p-1.5 text-zinc-600 hover:text-zinc-950 hover:bg-zinc-200/60 rounded transition-colors"
-                title="Paste from Clipboard"
-              >
-                <Clipboard className="h-3.5 w-3.5" />
-              </button>
-
-              <div className="w-[1px] h-5 bg-zinc-300 mx-1 shrink-0" />
-
-              {/* Undo, Redo */}
-              <button
-                type="button"
-                onClick={handleUndo}
-                id="tb-btn-undo"
-                className="p-1.5 text-zinc-600 hover:text-zinc-950 hover:bg-zinc-200/60 rounded transition-colors"
-                title="Undo (Ctrl+Z)"
-              >
-                <Undo2 className="h-3.5 w-3.5" />
-              </button>
-              <button
-                type="button"
-                onClick={handleRedo}
-                id="tb-btn-redo"
-                className="p-1.5 text-zinc-600 hover:text-zinc-950 hover:bg-zinc-200/60 rounded transition-colors"
-                title="Redo (Ctrl+Y)"
-              >
-                <Redo2 className="h-3.5 w-3.5" />
-              </button>
-
-              <div className="flex-1" />
-
-              {/* Close Button */}
-              <button
-                type="button"
-                onClick={() => setActiveDraft(null)}
-                id="tb-btn-close-editor"
-                className="p-1.5 text-zinc-500 hover:text-red-600 hover:bg-red-50 rounded transition-all shrink-0 ml-auto"
-                title="Close Draft Workspace"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-
-            {/* Document Body container with optional alignment styling */}
-            <div className="flex-1 bg-zinc-100 overflow-y-auto p-12 flex justify-center">
-              <div 
-                id="paper-layout"
-                className={`w-full max-w-3xl bg-white border border-zinc-200 shadow-lg rounded-md p-12 font-sans text-sm leading-relaxed text-zinc-800 focus-within:ring-1 focus-within:ring-zinc-300 transition-all min-h-[1056px] relative select-text text-${alignment}`}
-              >
-                {editMode ? (
-                  <div data-color-mode="light" className="work-product-formatted-editor">
-                    <MDEditor
-                      value={content}
-                      onChange={(value) => updateContentWithHistory(value || "")}
-                      preview="edit"
-                      height={900}
-                      hideToolbar={false}
-                      textareaProps={{ placeholder: "Attorney work product..." }}
-                    />
-                  </div>
-                ) : (
-                  <div className="font-sans text-zinc-800 leading-relaxed text-sm">
-                    <FormattedMarkdown content={content} />
-                  </div>
-                )}
+            <div className="flex flex-1 justify-center overflow-y-auto bg-zinc-100 p-12">
+              <div id="paper-layout" className="min-h-[1056px] w-full max-w-3xl rounded-md border border-zinc-200 bg-white p-12 text-sm leading-relaxed text-zinc-800 shadow-lg">
+                {editMode ? <RichDocumentEditor value={content} onChange={setContent} minHeight={900} /> : <FormattedMarkdown content={content} />}
               </div>
             </div>
-          </div>
+          </>
         ) : (
-          <div className="flex-1 flex flex-col items-center justify-center text-center p-12">
-            <FileText className="h-12 w-12 text-zinc-300 mb-3" />
-            <h3 className="text-sm font-semibold uppercase tracking-tight text-zinc-900">Matter Work Product</h3>
-            <p className="text-xs text-zinc-500 mt-2 max-w-sm leading-relaxed">
-              Select an attorney memo or client advice draft from the left side index to inspect, modify, and export as Word files.
-            </p>
-          </div>
+          <div className="flex flex-1 flex-col items-center justify-center p-12 text-center"><FileText className="mb-3 h-12 w-12 text-zinc-300" /><h3 className="text-sm font-semibold uppercase tracking-tight text-zinc-900">Matter Work Product</h3><p className="mt-2 max-w-sm text-xs leading-relaxed text-zinc-500">Select an attorney memo or client advice draft from the left side index to inspect, modify, and export as Word files.</p></div>
         )}
       </div>
     </div>

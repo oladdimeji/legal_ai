@@ -12,6 +12,7 @@ import { Document, Citation, Message, Draft, ResearchStep } from "./src/types.js
 import { Packer } from "docx";
 import { extractUploads, MAX_FILE_COUNT, MAX_FILE_SIZE_BYTES } from "./server/fileExtraction.js";
 import { markdownToDocxDocument } from "./server/docxMarkdown.js";
+import { cleanMatterIntelligenceContent } from "./server/matterIntelligenceContent.js";
 import {
   SESSION_COOKIE_NAME,
   SESSION_TTL_MS,
@@ -48,6 +49,17 @@ function ownership(req: Request): OwnershipContext {
 
 function requestedCaseId(value: unknown): string | null {
   return typeof value === "string" && value !== "null" && value ? value : null;
+}
+
+function parseStringArray(value: unknown): string[] {
+  const parsed = typeof value === "string" ? JSON.parse(value || "[]") : value;
+  return Array.isArray(parsed)
+    ? Array.from(new Set(parsed.filter((id: unknown): id is string => typeof id === "string" && id.trim().length > 0).map((id) => id.trim())))
+    : [];
+}
+
+function documentBatchResponse(documents: Document[]) {
+  return documents.length === 1 ? { ...documents[0], documents } : { documents };
 }
 
 function ownedErrorStatus(error: unknown): number {
@@ -517,30 +529,42 @@ Raw prompt: "${prompt}"`;
     return res.json(await db.getCaseSources(req.params.id, ownership(req)));
   });
 
-  app.post("/api/cases/:id/sources", upload.array("files", 1), async (req, res) => {
+  app.post("/api/cases/:id/sources", upload.array("files", MAX_FILE_COUNT), async (req, res) => {
     try {
       const requestOwnership = ownership(req);
       const matter = await db.getCaseById(req.params.id, requestOwnership);
       if (!matter) return res.status(404).json({ error: "Matter not found" });
-      if (typeof req.body.libraryDocumentId === "string") {
-        const linked = await db.linkLibraryDocument(
-          matter.id, req.body.libraryDocumentId, "Manual", requestOwnership
-        );
-        if (!linked) return res.status(404).json({ error: "Firm Library document not found" });
+      const libraryDocumentIds = [
+        ...parseStringArray(req.body.libraryDocumentIds),
+        ...(typeof req.body.libraryDocumentId === "string" && req.body.libraryDocumentId.trim()
+          ? [req.body.libraryDocumentId.trim()]
+          : []),
+      ];
+      const uniqueLibraryDocumentIds = Array.from(new Set(libraryDocumentIds));
+      if (uniqueLibraryDocumentIds.length > 0) {
+        if (!(await db.validateFirmLibraryDocuments(uniqueLibraryDocumentIds, requestOwnership))) {
+          return res.status(404).json({ error: "Firm Library document not found" });
+        }
+        for (const documentId of uniqueLibraryDocumentIds) {
+          await db.linkLibraryDocument(matter.id, documentId, "Manual", requestOwnership);
+        }
         await db.touchCase(matter.id, requestOwnership);
-        return res.status(201).json({ linked: true });
+        return res.status(201).json({ linked: true, documentIds: uniqueLibraryDocumentIds });
       }
       const files = (req.files || []) as Express.Multer.File[];
       if (files.length > 0) {
-        const [file] = await extractUploads(files);
-        const title = typeof req.body.title === "string" && req.body.title.trim()
-          ? req.body.title.trim()
-          : file.filename;
-        const document = await db.uploadDocument(
-          title, file.text, requestOwnership, null, null, matter.id, "Matter Upload", "Lawyer"
-        );
+        const extracted = await extractUploads(files);
+        const documents = [];
+        for (const file of extracted) {
+          const title = extracted.length === 1 && typeof req.body.title === "string" && req.body.title.trim()
+            ? req.body.title.trim()
+            : file.filename;
+          documents.push(await db.uploadDocument(
+            title, file.text, requestOwnership, null, null, matter.id, "Matter Upload", "Lawyer"
+          ));
+        }
         await db.touchCase(matter.id, requestOwnership);
-        return res.status(201).json(document);
+        return res.status(201).json(documentBatchResponse(documents));
       }
       const text = typeof req.body.text === "string" ? req.body.text.trim() : "";
       const title = typeof req.body.title === "string" ? req.body.title.trim() : "";
@@ -569,7 +593,8 @@ Raw prompt: "${prompt}"`;
   app.get("/api/cases/:caseId/intelligence", async (req, res) => {
     const matter = await db.getCaseById(req.params.caseId, ownership(req));
     if (!matter) return res.status(404).json({ error: "Matter not found" });
-    return res.json(await db.getMatterIntelligence(matter.id, ownership(req)));
+    const record = await db.getMatterIntelligence(matter.id, ownership(req));
+    return res.json(record ? { ...record, content: cleanMatterIntelligenceContent(record.content) } : null);
   });
 
   app.post("/api/cases/:caseId/intelligence/generate", async (req, res) => {
@@ -583,7 +608,10 @@ Raw prompt: "${prompt}"`;
         `SOURCE ${index + 1}: ${source.title}\nTYPE: ${source.source_type || "Matter Source"}\n${source.extracted_text.slice(0, 12000)}`
       ).join("\n\n---\n\n").slice(0, 60000);
       const prompt = `Generate compact Matter Intelligence for the owned Matter below using ONLY the supplied active Matter Sources.
-Do not infer facts from other matters or external knowledge. Link material statements to a source using [Source: exact title] where possible.
+Do not infer facts from other matters or external knowledge. You may use only active Matter Sources.
+Do not include [Source: ...]. Do not include source labels, inline citation tags, footnotes, endnotes, or a bibliography. Do not expose internal source identifiers.
+Integrate grounded analysis naturally into the document. State factual uncertainty naturally when the sources do not establish something.
+Do not add AI disclaimers, "This is not legal advice" boilerplate, "Consult a lawyer" boilerplate, "AI may make mistakes" boilerplate, lawyer-review warnings, or generic limitation-of-liability paragraphs unless the user explicitly requests that content or it is substantive content being analyzed from a source document.
 Use exactly these Markdown section headings:
 ## Matter Summary
 ## Key Facts and Chronology
@@ -601,7 +629,7 @@ ${sourceText}`;
       const generated = await callModel("matter-intelligence", [{ role: "user", content: prompt }], { temperature: 0.2 });
       return res.status(201).json(
         await db.saveGeneratedMatterIntelligence(
-          bundle.matter.id, generated.text.trim(), bundle.snapshot, requestOwnership
+          bundle.matter.id, cleanMatterIntelligenceContent(generated.text), bundle.snapshot, requestOwnership
         )
       );
     } catch (err: any) {
@@ -613,7 +641,7 @@ ${sourceText}`;
     try {
       const content = typeof req.body.content === "string" ? req.body.content : "";
       if (!content.trim()) return res.status(400).json({ error: "Matter Intelligence content is required" });
-      return res.json(await db.updateMatterIntelligence(req.params.caseId, content, ownership(req)));
+      return res.json(await db.updateMatterIntelligence(req.params.caseId, cleanMatterIntelligenceContent(content), ownership(req)));
     } catch (err: any) {
       return res.status(ownedErrorStatus(err)).json({ error: err.message });
     }
@@ -624,7 +652,7 @@ ${sourceText}`;
       const record = await db.getMatterIntelligence(req.params.caseId, ownership(req));
       const matter = await db.getCaseById(req.params.caseId, ownership(req));
       if (!record || !matter) return res.status(404).json({ error: "Matter Intelligence not found" });
-      const buffer = await Packer.toBuffer(markdownToDocxDocument(`${matter.name} Matter Intelligence`, record.content));
+      const buffer = await Packer.toBuffer(markdownToDocxDocument(`${matter.name} Matter Intelligence`, cleanMatterIntelligenceContent(record.content)));
       const safeTitle = `${matter.name}_matter_intelligence`.replace(/[^a-z0-9]/gi, "_").toLowerCase();
       res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
       res.setHeader("Content-Disposition", `attachment; filename="${safeTitle}.docx"`);
@@ -704,21 +732,24 @@ ${sourceText}`;
   });
 
   // Upload/create Document
-  app.post("/api/documents", upload.array("files", 1), async (req, res) => {
+  app.post("/api/documents", upload.array("files", MAX_FILE_COUNT), async (req, res) => {
     try {
       const { title, text, sourceUrl, driveId, caseId } = req.body;
       const files = (req.files || []) as Express.Multer.File[];
       if (files.length > 0) {
-        const [file] = await extractUploads(files);
-        const newDoc = await db.uploadDocument(
-          typeof title === "string" && title.trim() ? title.trim() : file.filename,
-          file.text,
-          ownership(req),
-          sourceUrl || null,
-          driveId || null,
-          caseId || null
-        );
-        return res.status(201).json(newDoc);
+        const extracted = await extractUploads(files);
+        const documents = [];
+        for (const file of extracted) {
+          documents.push(await db.uploadDocument(
+            extracted.length === 1 && typeof title === "string" && title.trim() ? title.trim() : file.filename,
+            file.text,
+            ownership(req),
+            sourceUrl || null,
+            driveId || null,
+            caseId || null
+          ));
+        }
+        return res.status(201).json(documentBatchResponse(documents));
       }
       if (!title || !text) {
         return res.status(400).json({ error: "Title and text content are required" });
@@ -1397,12 +1428,13 @@ ${instructions || "Ensure high-level professionalism and clear structure."}
 INSTRUCTIONS:
 1. Adhere to proper legal formatting for a ${format}:
    - Legal Memo: Include To, From, Date, Subject, Question Presented, Brief Answer, Statement of Facts, Discussion, and Conclusion sections.
-   - Professional Legal Email: Include clear greeting, analytical overview, breakdown of issues, next steps, and professional disclaimer.
+   - Professional Legal Email: Include clear greeting, analytical overview, breakdown of issues, and next steps.
    - Legal Summary: Analytical breakdown of the primary matter, facts, governing laws, and key recommendations.
 2. Carry over all relevant citation references (like [cit_1] or external case names) inline or as footnotes.
 3. Use the server-provided current date exactly when a date is needed. Do not invent another date.
 4. Do not emit bracketed placeholders such as [Client Name], [Your Name], or [Firm Name] when the metadata supplies those values. If optional metadata is missing, omit that field or use a neutral professional phrasing.
-5. Output the draft using elegant, rich markdown with readable headers. Do not wrap in generic JSON, just output the clean draft text.`;
+5. Do not add AI disclaimers, "This is not legal advice" boilerplate, "Consult a lawyer" boilerplate, "AI may make mistakes" boilerplate, lawyer-review warnings, or generic limitation-of-liability paragraphs unless explicitly requested by the user or quoting/analyzing source content.
+6. Output the draft using elegant, rich markdown with readable headers. Do not wrap in generic JSON, just output the clean draft text.`;
 
       const draftResult = await callModel("draft-generation", [{ role: "user", content: draftPrompt }], {
         temperature: 0.3

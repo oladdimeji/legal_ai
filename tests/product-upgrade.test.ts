@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { cleanMatterIntelligenceContent } from "../server/matterIntelligenceContent.js";
 
 test("Phase 3 navigation separates Matters and Firm Library", async () => {
   const sidebar = await readFile("src/components/Sidebar.tsx", "utf8");
@@ -308,17 +309,128 @@ test("Phase 12 Firm Library and Matter Source uploads use real file pickers", as
   assert.doesNotMatch(library, /Paste extracted document text/);
   assert.match(sources, /Choose PDF, DOCX, or TXT/);
   assert.match(sources, /Write Source note/);
-  assert.match(server, /app\.post\("\/api\/documents", upload\.array\("files", 1\)/);
-  assert.match(server, /app\.post\("\/api\/cases\/:id\/sources", upload\.array\("files", 1\)/);
+  assert.match(server, /app\.post\("\/api\/documents", upload\.array\("files", MAX_FILE_COUNT\)/);
+  assert.match(server, /app\.post\("\/api\/cases\/:id\/sources", upload\.array\("files", MAX_FILE_COUNT\)/);
 });
 
 test("Phase 12 Work Product uses formatted preview/editor and sharing progress", async () => {
   const editor = await readFile("src/components/DraftEditorView.tsx", "utf8");
-  assert.match(editor, /@uiw\/react-md-editor/);
+  assert.match(editor, /RichDocumentEditor/);
+  assert.doesNotMatch(editor, /@uiw\/react-md-editor|MDEditor/);
   assert.match(editor, /<FormattedMarkdown content=\{content\}/);
   assert.match(editor, /Sharing\.\.\./);
   assert.match(editor, /Stopping\.\.\./);
   assert.match(editor, /disabled:cursor-not-allowed/);
+});
+
+test("Focused UX fix uses cumulative multi-file pickers and removable selections", async () => {
+  const [hook, selectedList, matters, sources, library, portal] = await Promise.all([
+    readFile("src/hooks/useCumulativeFileSelection.ts", "utf8"),
+    readFile("src/components/SelectedFileList.tsx", "utf8"),
+    readFile("src/components/MattersView.tsx", "utf8"),
+    readFile("src/components/MatterSources.tsx", "utf8"),
+    readFile("src/components/FirmLibraryView.tsx", "utf8"),
+    readFile("src/components/ClientPortalView.tsx", "utf8"),
+  ]);
+  assert.match(hook, /MAX_SELECTED_FILES = 5/);
+  assert.match(hook, /name\}:\$\{file\.size\}:\$\{file\.lastModified\}/);
+  assert.match(hook, /\.\.\.current, \.\.\.uniqueIncoming/);
+  assert.match(hook, /Select at most/);
+  assert.match(selectedList, /aria-label=\{`Remove \$\{file\.name\}`\}/);
+  for (const view of [matters, sources, library, portal]) {
+    assert.match(view, /multiple/);
+    assert.match(view, /addFiles|appendUniqueFiles/);
+    assert.match(view, /SelectedFileList/);
+    assert.match(view, /event\.currentTarget\.value = ""/);
+  }
+});
+
+test("Focused UX fix persists every extracted upload and preserves one-file compatibility", async () => {
+  const server = await readFile("server.ts", "utf8");
+  const matterRoute = server.slice(server.indexOf('app.post("/api/cases/:id/sources"'), server.indexOf('app.delete("/api/cases/:caseId/sources'));
+  const documentsRoute = server.slice(server.indexOf('app.post("/api/documents"'), server.indexOf('app.delete("/api/documents/:id"'));
+  for (const route of [matterRoute, documentsRoute]) {
+    assert.match(route, /upload\.array\("files", MAX_FILE_COUNT\)/);
+    assert.match(route, /const extracted = await extractUploads\(files\)/);
+    assert.match(route, /for \(const file of extracted\)/);
+    assert.match(route, /extracted\.length === 1[\s\S]*title/);
+    assert.match(route, /documentBatchResponse\(documents\)/);
+    assert.doesNotMatch(route, /\[file\] = await extractUploads/);
+  }
+  assert.match(server, /documents\.length === 1 \? \{ \.\.\.documents\[0\], documents \} : \{ documents \}/);
+});
+
+test("Focused UX fix validates and links multiple Firm Library documents", async () => {
+  const server = await readFile("server.ts", "utf8");
+  const route = server.slice(server.indexOf('app.post("/api/cases/:id/sources"'), server.indexOf('const files = (req.files || [])', server.indexOf('app.post("/api/cases/:id/sources"')));
+  assert.match(route, /parseStringArray\(req\.body\.libraryDocumentIds\)/);
+  assert.match(route, /req\.body\.libraryDocumentId/);
+  assert.match(route, /validateFirmLibraryDocuments\(uniqueLibraryDocumentIds/);
+  assert.match(route, /for \(const documentId of uniqueLibraryDocumentIds\)/);
+  assert.match(route, /linkLibraryDocument\(matter\.id, documentId, "Manual"/);
+  assert.match(route, /documentIds: uniqueLibraryDocumentIds/);
+});
+
+test("Focused UX fix keeps Assistant overlapping extraction batches isolated", async () => {
+  const assistant = await readFile("src/components/AssistantView.tsx", "utf8");
+  assert.match(assistant, /batchId: string/);
+  assert.match(assistant, /browserFileIdentity/);
+  assert.match(assistant, /MAX_SELECTED_FILES/);
+  assert.match(assistant, /file\.batchId !== batchId/);
+  assert.match(assistant, /file\.batchId === batchId/);
+  assert.doesNotMatch(assistant, /current\.filter\(\(file\) => file\.status === "ready"\)/);
+});
+
+test("Focused UX fix removes Matter Intelligence source labels without deleting unrelated brackets", async () => {
+  const [server, view] = await Promise.all([
+    readFile("server.ts", "utf8"),
+    readFile("src/components/MatterIntelligence.tsx", "utf8"),
+  ]);
+  assert.match(server, /Do not include \[Source: \.\.\.\]/);
+  assert.match(server, /Do not include source labels, inline citation tags, footnotes, endnotes, or a bibliography/);
+  assert.match(server, /cleanMatterIntelligenceContent\(generated\.text\)/);
+  assert.match(server, /cleanMatterIntelligenceContent\(record\.content\)/);
+  assert.doesNotMatch(view, /Lawyer review required|AI-generated content requires lawyer review/);
+  assert.equal(
+    cleanMatterIntelligenceContent("Keep [Section 2.1] and [2024] but remove [Source: Closing Memo]."),
+    "Keep [Section 2.1] and [2024] but remove."
+  );
+});
+
+test("Focused UX fix rich editor hides raw Markdown editing surfaces while preserving Markdown persistence", async () => {
+  const [rich, converter, intelligence, editor, portal, server] = await Promise.all([
+    readFile("src/components/RichDocumentEditor.tsx", "utf8"),
+    readFile("src/lib/richMarkdown.ts", "utf8"),
+    readFile("src/components/MatterIntelligence.tsx", "utf8"),
+    readFile("src/components/DraftEditorView.tsx", "utf8"),
+    readFile("src/components/ClientPortalView.tsx", "utf8"),
+    readFile("server.ts", "utf8"),
+  ]);
+  assert.match(rich, /contentEditable/);
+  assert.match(rich, /document\.execCommand\("bold"|command\("bold"\)/);
+  assert.match(converter, /markdownToEditorHtml/);
+  assert.match(converter, /editorHtmlToMarkdown/);
+  assert.match(converter, /h1|strong|em|ul|ol|blockquote|href/);
+  for (const view of [intelligence, editor, portal]) {
+    assert.match(view, /RichDocumentEditor/);
+    assert.doesNotMatch(view, /MDEditor|@uiw\/react-md-editor|preview="edit"/);
+  }
+  assert.match(server, /markdownToDocxDocument\(draft\.title, draft\.content\)/);
+  assert.match(server, /markdownToDocxDocument\(`\$\{matter\.name\} Matter Intelligence`, cleanMatterIntelligenceContent\(record\.content\)\)/);
+});
+
+test("Focused UX fix removes generic generated-document disclaimer instructions", async () => {
+  const [server, intelligence, assistant, portal] = await Promise.all([
+    readFile("server.ts", "utf8"),
+    readFile("src/components/MatterIntelligence.tsx", "utf8"),
+    readFile("src/components/AssistantView.tsx", "utf8"),
+    readFile("src/components/ClientPortalView.tsx", "utf8"),
+  ]);
+  assert.doesNotMatch(server, /professional disclaimer/);
+  assert.match(server, /Do not add AI disclaimers/);
+  assert.doesNotMatch(intelligence, /Lawyer review required|requires lawyer review/);
+  assert.doesNotMatch(assistant, /standard liability disclaimer/);
+  assert.doesNotMatch(portal, /replacement for your lawyer's advice/);
 });
 
 test("Phase 12 generated draft prompt uses actual Matter account and date metadata", async () => {

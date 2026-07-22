@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Database, Eye, FileText, FolderOpen, Search, Trash2, Upload, X } from "lucide-react";
 import { Document } from "../types";
+import SelectedFileList from "./SelectedFileList";
+import { useCumulativeFileSelection } from "../hooks/useCumulativeFileSelection";
 
 export default function FirmLibraryView() {
   const [documents, setDocuments] = useState<Document[]>([]);
@@ -10,8 +12,9 @@ export default function FirmLibraryView() {
   const [section, setSection] = useState<string | null>(null);
   const [preview, setPreview] = useState<Document | null>(null);
   const [title, setTitle] = useState("");
-  const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState("");
+  const fileSelection = useCumulativeFileSelection();
 
   const load = async () => {
     const response = await fetch("/api/documents?caseId=null");
@@ -43,19 +46,20 @@ export default function FirmLibraryView() {
 
   const upload = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!file) return;
+    if (fileSelection.files.length === 0) return;
     setUploading(true);
+    setUploadError("");
     try {
       const form = new FormData();
-      form.append("title", title.trim() || file.name);
-      form.append("files", file);
+      if (fileSelection.files.length === 1 && title.trim()) form.append("title", title.trim());
+      fileSelection.files.forEach((file) => form.append("files", file));
       const response = await fetch("/api/documents", { method: "POST", body: form });
       if (!response.ok) throw new Error((await response.json()).error || "Upload failed");
       setTitle("");
-      setFile(null);
+      fileSelection.clearFiles();
       await load();
     } catch (error) {
-      alert(error instanceof Error ? error.message : "Upload failed");
+      setUploadError(error instanceof Error ? error.message : "Upload failed");
     } finally {
       setUploading(false);
     }
@@ -109,11 +113,15 @@ export default function FirmLibraryView() {
           <form onSubmit={upload} className="h-fit space-y-3 rounded border border-zinc-200 bg-zinc-50 p-4">
             <div className="flex items-center gap-2"><Upload className="h-4 w-4" /><h3 className="text-[10px] font-mono font-bold uppercase">Add Firm Library Document</h3></div>
             <label className="block rounded border border-dashed border-zinc-300 bg-white px-3 py-5 text-center text-xs text-zinc-500 hover:bg-zinc-50 cursor-pointer">
-              {file ? file.name : "Choose PDF, DOCX, or TXT"}
-              <input type="file" className="sr-only" accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" onChange={(event) => { const next = event.target.files?.[0] || null; setFile(next); if (next && !title.trim()) setTitle(next.name); }} />
+              <span className="block">Choose PDF, DOCX, or TXT</span>
+              <span className="mt-1 block text-[10px] font-mono uppercase">{fileSelection.files.length ? fileSelection.selectedLabel : "No files selected"}</span>
+              <input type="file" multiple className="sr-only" accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" onChange={(event) => { fileSelection.addFiles(event.target.files); event.currentTarget.value = ""; }} />
             </label>
-            <input value={title} onChange={(event) => setTitle(event.target.value)} className="w-full rounded border border-zinc-300 bg-white px-3 py-2 text-xs" placeholder="Title defaults to filename" />
-            <button disabled={uploading || !file} className="w-full rounded bg-zinc-950 px-3 py-2 text-[10px] font-mono font-bold uppercase text-white disabled:cursor-not-allowed disabled:opacity-40">{uploading ? "Processing..." : "Upload and index"}</button>
+            {fileSelection.fileError && <p className="text-xs text-red-700">{fileSelection.fileError}</p>}
+            <SelectedFileList files={fileSelection.files} onRemove={fileSelection.removeFile} />
+            <input value={title} onChange={(event) => setTitle(event.target.value)} className="w-full rounded border border-zinc-300 bg-white px-3 py-2 text-xs" placeholder="Optional title for one-file upload only" />
+            {uploadError && <p className="text-xs text-red-700">{uploadError}</p>}
+            <button disabled={uploading || fileSelection.files.length === 0} className="w-full rounded bg-zinc-950 px-3 py-2 text-[10px] font-mono font-bold uppercase text-white disabled:cursor-not-allowed disabled:opacity-40">{uploading ? "Processing..." : "Upload and index"}</button>
           </form>
         </div>
       </div>

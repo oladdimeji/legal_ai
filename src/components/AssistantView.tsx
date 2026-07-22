@@ -11,6 +11,17 @@ import {
 } from "lucide-react";
 import { Case, Thread, Message, Citation, ResearchStep } from "../types";
 import FormattedMarkdown from "./FormattedMarkdown";
+import { browserFileIdentity, MAX_SELECTED_FILES } from "../hooks/useCumulativeFileSelection";
+
+type TemporaryFile = {
+  id: string;
+  batchId: string;
+  identity: string;
+  filename: string;
+  text: string;
+  status: "ready" | "extracting" | "error";
+  error?: string;
+};
 
 interface AssistantViewProps {
   cases: Case[];
@@ -139,9 +150,10 @@ export default function AssistantView({
   const [enableCourtListener, setEnableCourtListener] = useState(false);
   const [enableGovInfo, setEnableGovInfo] = useState(false);
   const [filesAndSourcesOpen, setFilesAndSourcesOpen] = useState(false);
-  const [temporaryFiles, setTemporaryFiles] = useState<Array<{ filename: string; text: string; status: "ready" | "extracting" | "error"; error?: string }>>([]);
-  const [fileExtracting, setFileExtracting] = useState(false);
+  const [temporaryFiles, setTemporaryFiles] = useState<TemporaryFile[]>([]);
+  const [temporaryFileError, setTemporaryFileError] = useState("");
   const [improving, setImproving] = useState(false);
+  const fileExtracting = temporaryFiles.some((file) => file.status === "extracting");
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -406,35 +418,49 @@ export default function AssistantView({
 
   const handleTemporaryFiles = async (files: FileList | null) => {
     if (!files?.length) return;
-    const pending = Array.from(files).map((file) => ({
+    const selected = Array.from(files);
+    const existing = new Set(temporaryFiles.map((file) => file.identity));
+    const seen = new Set(existing);
+    const unique = selected.filter((file) => {
+      const identity = browserFileIdentity(file);
+      if (seen.has(identity)) return false;
+      seen.add(identity);
+      return true;
+    });
+    if (temporaryFiles.length + unique.length > MAX_SELECTED_FILES) {
+      setTemporaryFileError(`Select at most ${MAX_SELECTED_FILES} files. ${temporaryFiles.length} already selected; ${unique.length} more would exceed the limit.`);
+      return;
+    }
+    if (unique.length === 0) {
+      setTemporaryFileError("");
+      return;
+    }
+    const batchId = `batch_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const pending: TemporaryFile[] = unique.map((file) => ({
+      id: `${batchId}_${browserFileIdentity(file)}`,
+      batchId,
+      identity: browserFileIdentity(file),
       filename: file.name,
       text: "",
       status: "extracting" as const,
     }));
+    setTemporaryFileError("");
     setTemporaryFiles((current) => [...current, ...pending]);
-    setFileExtracting(true);
     const form = new FormData();
-    Array.from(files).forEach((file) => form.append("files", file));
+    unique.forEach((file) => form.append("files", file));
     try {
       const response = await fetch("/api/extract-files", { method: "POST", body: form });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "File extraction failed");
-      setTemporaryFiles((current) => [
-        ...current.filter((file) => file.status === "ready"),
-        ...data.files.map((file: { filename: string; text: string }) => ({
-          filename: file.filename,
-          text: file.text,
-          status: "ready" as const,
-        })),
-      ]);
+      setTemporaryFiles((current) => current.map((file) => {
+        if (file.batchId !== batchId) return file;
+        const index = pending.findIndex((item) => item.identity === file.identity);
+        const extracted = data.files?.[index] as { filename: string; text: string } | undefined;
+        return extracted ? { ...file, filename: extracted.filename, text: extracted.text, status: "ready" as const, error: undefined } : file;
+      }));
     } catch (error) {
       const message = error instanceof Error ? error.message : "File extraction failed";
-      setTemporaryFiles((current) => [
-        ...current.filter((file) => file.status === "ready"),
-        ...pending.map((file) => ({ ...file, status: "error" as const, error: message })),
-      ]);
-    } finally {
-      setFileExtracting(false);
+      setTemporaryFiles((current) => current.map((file) => file.batchId === batchId ? { ...file, status: "error" as const, error: message } : file));
     }
   };
 
@@ -613,11 +639,11 @@ export default function AssistantView({
                   <button type="button" onClick={() => setEnableGovInfo(false)} className="hover:text-zinc-900 font-bold ml-1 text-[10px] focus:outline-none cursor-pointer">✕</button>
                 </span>
               )}
-              {temporaryFiles.map((file, index) => (
-                <span key={`${file.filename}-${index}`} className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 bg-zinc-50 rounded-full text-xs font-mono border animate-fade-in ${file.status === "error" ? "text-red-700 border-red-200" : "text-zinc-600 border-zinc-200"}`}>
+              {temporaryFiles.map((file) => (
+                <span key={file.id} className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 bg-zinc-50 rounded-full text-xs font-mono border animate-fade-in ${file.status === "error" ? "text-red-700 border-red-200" : "text-zinc-600 border-zinc-200"}`}>
                   <FileText className={`h-3 w-3 shrink-0 ${file.status === "extracting" ? "animate-pulse" : ""}`} />
                   <span className="max-w-44 truncate">{file.status === "extracting" ? `Extracting ${file.filename}` : file.status === "error" ? file.error || file.filename : file.filename}</span>
-                  <button type="button" onClick={() => setTemporaryFiles((current) => current.filter((_, i) => i !== index))} className="hover:text-zinc-900 font-bold ml-1 text-[10px] focus:outline-none cursor-pointer">X</button>
+                  <button type="button" onClick={() => { setTemporaryFiles((current) => current.filter((item) => item.id !== file.id)); setTemporaryFileError(""); }} className="hover:text-zinc-900 font-bold ml-1 text-[10px] focus:outline-none cursor-pointer" aria-label={`Remove ${file.filename}`} title={`Remove ${file.filename}`}>X</button>
                 </span>
               ))}
             </div>
@@ -766,6 +792,7 @@ export default function AssistantView({
                         />
                       </label>
                       {fileExtracting && <p className="mt-2 text-[10px] font-mono uppercase text-zinc-400">Extracting files...</p>}
+                      {temporaryFileError && <p className="mt-2 text-xs text-red-700">{temporaryFileError}</p>}
                     </div>
                   </div>,
                   document.body
@@ -1359,7 +1386,7 @@ export default function AssistantView({
                 <textarea
                   value={draftInstructions}
                   onChange={(e) => setDraftInstructions(e.target.value)}
-                  placeholder="e.g., Focus primarily on CA SB 699, include a standard liability disclaimer, frame argument as defense counsel..."
+                  placeholder="e.g., Focus primarily on CA SB 699, frame argument as defense counsel, keep the conclusion concise..."
                   className="w-full h-24 p-3 border border-zinc-200 rounded text-sm focus:outline-none focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 text-zinc-900 resize-none font-sans"
                 />
               </div>

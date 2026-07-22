@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { AlertTriangle, Download, Edit, RefreshCw, Save, Sparkles } from "lucide-react";
 import { MatterIntelligenceRecord } from "../types";
 import FormattedMarkdown from "./FormattedMarkdown";
+import RichDocumentEditor from "./RichDocumentEditor";
 
 export default function MatterIntelligence({ matterId }: { matterId: string }) {
   const [record, setRecord] = useState<MatterIntelligenceRecord | null>(null);
@@ -66,7 +67,7 @@ export default function MatterIntelligence({ matterId }: { matterId: string }) {
         <Sparkles className="mx-auto mb-4 h-8 w-8 text-zinc-300" />
         <h3 className="text-sm font-semibold uppercase">Matter Intelligence</h3>
         <p className="mx-auto mt-2 max-w-md text-xs leading-relaxed text-zinc-500">
-          Generate a source-backed working analysis only when you are ready. AI-generated content requires lawyer review.
+          Generate a source-backed working analysis from the active Matter Sources when you are ready.
         </p>
         <button onClick={() => void generate()} disabled={busy} className="mt-6 rounded bg-zinc-950 px-5 py-2.5 text-[10px] font-mono font-bold uppercase text-white disabled:cursor-not-allowed disabled:opacity-50">
           {busy ? "Generating..." : "Generate Matter Intelligence"}
@@ -77,9 +78,6 @@ export default function MatterIntelligence({ matterId }: { matterId: string }) {
 
   return (
     <div className="mx-auto max-w-4xl space-y-4">
-      <div className="rounded border border-zinc-300 bg-zinc-50 p-3 text-xs">
-        <strong>Lawyer review required.</strong> Matter Intelligence is AI-generated from active Matter Sources and may contain errors or omissions.
-      </div>
       {record.sources_changed && (
         <div className="flex items-center gap-2 rounded border border-zinc-300 p-3 text-xs">
           <AlertTriangle className="h-4 w-4" />
@@ -112,7 +110,7 @@ export default function MatterIntelligence({ matterId }: { matterId: string }) {
         </div>
       </header>
       {editing ? (
-        <textarea value={content} onChange={(event) => setContent(event.target.value)} className="min-h-[650px] w-full rounded border p-6 font-mono text-sm leading-relaxed" />
+        <RichDocumentEditor value={content} onChange={setContent} minHeight={650} />
       ) : (
         <article className="min-h-[500px] rounded border border-zinc-200 bg-white p-8">
           <FormattedMarkdown content={content} />
