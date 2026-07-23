@@ -28,7 +28,7 @@ import {
 } from "./server/auth.js";
 
 const isProduction = process.env.NODE_ENV === "production";
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const SIMILARITY_THRESHOLD = 0.65;
