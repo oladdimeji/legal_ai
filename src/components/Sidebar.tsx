@@ -1,5 +1,5 @@
 import React from "react";
-import { Scale, MessageSquare, Briefcase, Building2, History, LogOut, Settings } from "lucide-react";
+import { MessageSquare, Briefcase, Building2, History, LogOut, Settings } from "lucide-react";
 
 interface SidebarProps {
   activeTab: string;
@@ -46,14 +46,16 @@ export default function Sidebar({
         onClick={() => setIsCollapsed(!isCollapsed)}
         id="sidebar-brand-toggle"
         className={`w-full p-6 border-b border-zinc-200 flex items-center hover:bg-zinc-50 transition-all text-left outline-none cursor-pointer ${
-          collapsedActual ? "justify-center" : "gap-3"
+          collapsedActual ? "justify-center" : ""
         }`}
         title={collapsedActual ? "Expand Sidebar" : "Collapse Sidebar"}
+        aria-label={collapsedActual ? "Expand Sidebar" : "Collapse Sidebar"}
       >
-        <Scale className="h-6 w-6 text-zinc-900 shrink-0" />
-        {!collapsedActual && (
+        {collapsedActual ? (
+          <span className="font-sans text-sm font-semibold text-zinc-900" aria-hidden="true">E</span>
+        ) : (
           <div className="min-w-0 flex-1">
-            <h1 className="font-sans font-semibold text-sm tracking-tight text-zinc-900 uppercase truncate">Legal AI</h1>
+            <h1 className="font-sans font-semibold text-sm tracking-tight text-zinc-900 uppercase truncate">Exepts</h1>
             <p className="text-[10px] font-mono text-zinc-500 truncate">{firmName || "Sterling & Croft LLP"}</p>
           </div>
         )}

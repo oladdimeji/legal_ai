@@ -387,7 +387,7 @@ export default function AssistantView({
         id: `temp_err_${Date.now()}`,
         thread_id: currentThreadId,
         role: "assistant",
-        content: `❌ Error: ${err.message || "Failed to contact Legal AI model service."} Please verify your GEMINI_API_KEY in Secrets.`,
+        content: `❌ Error: ${err.message || "Failed to contact Exepts model service."} Please verify your GEMINI_API_KEY in Secrets.`,
         citations: [],
         steps: null,
         created_at: new Date().toISOString()

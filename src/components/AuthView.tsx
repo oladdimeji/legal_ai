@@ -1,5 +1,4 @@
 import React, { useState } from "react";
-import { Scale } from "lucide-react";
 import { Firm, User } from "../types";
 
 interface AuthViewProps {
@@ -43,10 +42,9 @@ export default function AuthView({ onAuthenticated }: AuthViewProps) {
   return (
     <div className="min-h-screen w-full bg-white text-zinc-900 flex items-center justify-center p-6">
       <div className="w-full max-w-md border border-zinc-200 rounded-lg bg-white shadow-sm overflow-hidden">
-        <div className="px-8 py-7 border-b border-zinc-200 bg-zinc-50 flex items-center gap-3">
-          <Scale className="h-6 w-6 text-zinc-900" />
+        <div className="px-8 py-7 border-b border-zinc-200 bg-zinc-50">
           <div>
-            <h1 className="text-sm font-semibold uppercase tracking-tight">Legal AI</h1>
+            <h1 className="text-sm font-semibold uppercase tracking-tight">Exepts</h1>
             <p className="text-[10px] font-mono uppercase text-zinc-500 mt-0.5">Private legal workspace</p>
           </div>
         </div>

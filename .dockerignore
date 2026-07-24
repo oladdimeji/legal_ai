@@ -1,0 +1,14 @@
+node_modules
+dist
+build
+coverage
+.git
+.github
+.vscode
+.env
+.env.*
+*.log
+docs
+tests
+test-backend-rewrite.ts
+assets

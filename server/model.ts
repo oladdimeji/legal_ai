@@ -27,7 +27,7 @@ export function getAiClient(): GoogleGenAI {
       apiKey,
       httpOptions: {
         headers: {
-          "User-Agent": "aistudio-build",
+          "User-Agent": "exepts",
         },
       },
     });

@@ -596,3 +596,46 @@ Known limitations:
 
 - Original uploaded file bytes are still not retained by the application; uploaded responses are viewable through extracted Client Submission text and the corresponding Client Response Work Product.
 - Manual browser verification remains to be performed in a live session.
+
+## Final Deployment Readiness and Exepts Branding Pass
+
+Status: Complete.
+
+Implemented:
+
+- Replaced active Legal AI product branding with text-only Exepts branding in authentication, the expanded sidebar, the collapsed sidebar `E` lettermark, browser metadata, package metadata, and the Assistant model-service fallback error.
+- Removed only the scales icons used in product brand areas while retaining all navigation, toolbar, status, file, and action icons.
+- Renamed the npm package to `exepts`, made npm and `package-lock.json` canonical, removed the stale `bun.lock`, pinned Node 22 with `.nvmrc` and `engines.node`, and documented npm 10 through `packageManager`.
+- Added a cross-platform production launcher so `npm start` always sets `NODE_ENV=production` before loading the built server; `npm run dev` remains unchanged.
+- Added a deterministic multi-stage Node 22 slim Docker build, a non-root runtime, Compose configuration with `.env`, port mapping, restart behavior, and a Node-based `/api/health` health check.
+- Added a GitHub Actions workflow for clean install, lint, tests, production build, and Docker image validation without secrets, database access, application startup, or deployment.
+- Replaced AI Studio boilerplate in `.env.example` and `README.md` with the actual environment, deployment, migration, health-check, reverse-proxy, HTTPS, backup, update, and troubleshooting requirements.
+- Removed unused `APP_URL` documentation after confirming the application has no `APP_URL` reference.
+- Added focused regression tests for text-only branding, production runtime metadata, preserved internal persistence identifiers, and Docker deployment requirements.
+
+Schema changes:
+
+- None. No migration was created or changed, and no database schema or stored data operation was performed.
+
+Dependencies added or changed:
+
+- None. Dependency declarations and resolved dependency versions were not changed.
+
+API changes:
+
+- None. API request/response contracts, authentication, isolation, retrieval, prompts, model selection, and product functionality were intentionally unchanged.
+
+Verification:
+
+- `npm ci`: passed; 417 packages installed, 0 vulnerabilities reported.
+- `npm run lint`: passed.
+- `npm test`: passed, 82/82 tests.
+- `npm run build`: passed. Vite emitted the existing large-chunk warning.
+- `npm run verify`: passed, including lint, 82/82 tests, and the production build.
+- `docker build -t exepts:local .`: passed on the final cached retry after transient npm registry idle timeouts; the image uses Node 22, runs as UID 1000, contains the production bundle and required externalized packages, and excludes `.env` and tests.
+- `docker compose config --quiet`: passed.
+
+Known limitations:
+
+- A live container `/api/health` request was not run because no disposable database was used for this deployment pass; application startup automatically connects to the database and runs pending migrations.
+- The existing Vite large-chunk warning remains. Bundle optimization was explicitly outside this pass.

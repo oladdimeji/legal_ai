@@ -1,4 +1,4 @@
-# Legal AI Compact Upgrade Rules
+# Exepts Compact Upgrade Rules
 
 1. Preserve the existing React, Express, PostgreSQL and Gemini architecture.
 2. Preserve the current white, black and grayscale interface.
