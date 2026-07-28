@@ -1,5 +1,5 @@
 services:
-  app:
+  web:
     build:
       context: .
     image: exepts:local
@@ -15,8 +15,36 @@ services:
         - CMD
         - node
         - -e
-        - "fetch('http://127.0.0.1:' + (process.env.PORT || '3000') + '/api/health').then((response) => { if (!response.ok) process.exit(1); }).catch(() => process.exit(1));"
+        - "fetch('http://127.0.0.1:' + (process.env.PORT || '3000') + '/api/health/ready').then((response) => { if (!response.ok) process.exit(1); }).catch(() => process.exit(1));"
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 30s
+
+  worker:
+    build:
+      context: .
+    image: exepts:local
+    command: ["node", "dist/worker.cjs"]
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      CLAMAV_HOST: clamav
+      CLAMAV_PORT: "3310"
+    restart: unless-stopped
+    depends_on:
+      clamav:
+        condition: service_healthy
+
+  clamav:
+    image: clamav/clamav:1.4.2
+    restart: unless-stopped
+    expose:
+      - "3310"
+    healthcheck:
+      test: ["CMD-SHELL", "printf 'zPING\\0' | nc 127.0.0.1 3310 | grep -q PONG"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 90s

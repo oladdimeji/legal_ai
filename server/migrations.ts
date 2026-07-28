@@ -523,6 +523,62 @@ const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 14,
+    name: "durable_async_ingestion",
+    async run(client) {
+      await client.query(`
+        ALTER TABLE document_versions
+          ADD COLUMN IF NOT EXISTS processing_state TEXT NOT NULL DEFAULT 'uploaded',
+          ADD COLUMN IF NOT EXISTS scan_result TEXT,
+          ADD COLUMN IF NOT EXISTS ingestion_job_id TEXT,
+          ADD COLUMN IF NOT EXISTS processing_attempts INTEGER NOT NULL DEFAULT 0,
+          ADD COLUMN IF NOT EXISTS processing_error_code TEXT,
+          ADD COLUMN IF NOT EXISTS processing_started_at TIMESTAMPTZ,
+          ADD COLUMN IF NOT EXISTS processing_heartbeat_at TIMESTAMPTZ,
+          ADD COLUMN IF NOT EXISTS processing_completed_at TIMESTAMPTZ,
+          ADD COLUMN IF NOT EXISTS cancellation_requested_at TIMESTAMPTZ
+      `);
+      await client.query(`
+        UPDATE document_versions
+        SET processing_state = CASE
+          WHEN upload_state = 'Uploaded' THEN 'uploaded'
+          ELSE 'cancelled'
+        END
+        WHERE processing_state NOT IN
+          ('uploaded', 'scanning', 'extracting', 'needs_ocr', 'indexing', 'ready', 'failed', 'cancelled')
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS ingestion_events (
+          id BIGSERIAL PRIMARY KEY,
+          version_id TEXT NOT NULL REFERENCES document_versions(id) ON DELETE CASCADE,
+          firm_id TEXT NOT NULL REFERENCES firm(id) ON DELETE CASCADE,
+          state TEXT NOT NULL,
+          attempt INTEGER NOT NULL DEFAULT 0,
+          error_code TEXT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `);
+      await client.query(`
+        ALTER TABLE document_chunks
+          ADD COLUMN IF NOT EXISTS chunk_index INTEGER,
+          ADD COLUMN IF NOT EXISTS content_hash TEXT
+      `);
+      await client.query(`
+        CREATE UNIQUE INDEX IF NOT EXISTS document_chunks_document_index_unique
+        ON document_chunks(document_id, chunk_index)
+        WHERE chunk_index IS NOT NULL
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS document_versions_processing_recovery_idx
+        ON document_versions(processing_state, processing_heartbeat_at)
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS ingestion_events_firm_version_idx
+        ON ingestion_events(firm_id, version_id, created_at DESC)
+      `);
+    },
+  },
 ];
 
 export async function runMigrations(pool: Pool): Promise<void> {

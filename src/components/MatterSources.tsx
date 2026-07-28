@@ -28,7 +28,11 @@ export default function MatterSources({ matterId }: { matterId: string }) {
     if (libraryResponse.ok) setLibrary(await libraryResponse.json());
   };
 
-  useEffect(() => { void load(); }, [matterId]);
+  useEffect(() => {
+    void load();
+    const interval = window.setInterval(() => void load(), 5_000);
+    return () => window.clearInterval(interval);
+  }, [matterId]);
 
   const visible = useMemo(
     () => sources.filter((source) => `${source.title} ${source.source_type} ${source.origin}`.toLowerCase().includes(query.toLowerCase())),
@@ -80,6 +84,7 @@ export default function MatterSources({ matterId }: { matterId: string }) {
       resetAddForm();
       await load();
     } catch (err) {
+      await load();
       setError(err instanceof Error ? err.message : "Source could not be added");
     } finally {
       setProcessing(false);
@@ -118,7 +123,7 @@ export default function MatterSources({ matterId }: { matterId: string }) {
             </button>
             <span className="text-[9px] font-mono uppercase">{source.case_id === null ? "Linked Firm Library" : source.source_type || "Matter Upload"}{source.link_origin === "AI Suggested" && <em className="block not-italic text-zinc-400">AI Suggested</em>}</span>
             <span className="text-[10px] text-zinc-500">{source.origin || "Lawyer"}</span>
-            <span className="text-[9px] font-mono uppercase">{source.processing_state || "Ready"}</span>
+            <span className="text-[9px] font-mono uppercase">{(source.processing_state || "ready").replaceAll("_", " ")}</span>
             <span className="flex gap-3"><button onClick={() => setPreview(source)}><Eye className="h-4 w-4" /></button><button onClick={() => void remove(source)}><Trash2 className="h-4 w-4 text-zinc-400" /></button></span>
           </div>
         ))}

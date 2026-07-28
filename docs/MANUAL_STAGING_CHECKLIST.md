@@ -44,3 +44,19 @@ Do not enable `FEATURE_CLIENT_ACCOUNTS` until the client-account migration phase
 - Review logs and errors for absence of document content, checksums, authorization tokens, credentials, cookies, and database URLs.
 
 Keep `FEATURE_PRIVATE_STORAGE=false` until every staging item above passes. The worker and extraction/indexing transition from `Uploaded` are intentionally deferred.
+
+## Async ingestion worker and malware scanning
+
+- Keep `FEATURE_ASYNC_INGESTION=false` until the private-storage checklist and every item below pass.
+- Set `JOBS_PROVIDER=pg-boss`, `MALWARE_SCANNER_PROVIDER=clamav`, `CLAMAV_HOST=clamav`, and `CLAMAV_PORT=3310`.
+- Run `docker compose up -d`; confirm `web`, `worker`, and `clamav` are healthy and port 3310 is not published to the host.
+- Upload clean PDF, DOCX, and TXT fixtures. Confirm durable transitions through uploaded, scanning, extracting, indexing, and ready after navigation and restart.
+- Upload the EICAR test fixture in an isolated staging workspace. Confirm extraction never starts, the state becomes failed, and no extracted text, chunk, or embedding is stored.
+- Upload an image-only PDF. Confirm its original remains downloadable and its terminal state is `needs_ocr`; confirm no OCR control or credential is requested.
+- Upload a mixed batch with one corrupt and two valid files. Confirm the valid files reach ready independently and the corrupt file has bounded retries plus failed visibility.
+- Stop the worker during scanning/indexing, wait past the stale threshold, restart it, and confirm recovery does not duplicate chunk indexes or embeddings.
+- Cancel queued and active fixtures; confirm durable cancelled visibility and no later transition to ready.
+- Attempt status and cancellation requests from another firm and another Matter; confirm no version, filename, state, job ID, or error detail is disclosed.
+- Review web, worker, pg-boss, and ClamAV logs for absence of file bytes, extracted text, prompts, credentials, tokens, checksums, cookies, database URLs, and client data.
+
+Keep `FEATURE_ASYNC_INGESTION=false` until this checklist passes.

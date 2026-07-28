@@ -39,6 +39,8 @@ import {
   sessionCookie,
   verifyPassword,
 } from "./server/auth.js";
+import { PgBossJobsProvider } from "./server/jobs.js";
+import { INGESTION_QUEUE } from "./server/ingestion.js";
 
 const config = loadServerConfig();
 const isProduction = config.environment === "production";
@@ -49,6 +51,7 @@ const privateStorage = config.features.privateStorage
       config.providers.objectStorage.bucket!,
     )
   : null;
+const jobs = config.features.asyncIngestion ? new PgBossJobsProvider(config.databaseUrl!) : null;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const SIMILARITY_THRESHOLD = 0.65;
@@ -263,6 +266,7 @@ async function startServer() {
     await db.seedDemoDataIfEnabled();
     await db.migrateLegacyOwner();
     await db.migrateLegacyDrafts();
+    if (jobs) await jobs.start();
   } catch (err) {
     console.error("Database initialization or explicit demo seeding failed:", err);
     throw err;
@@ -275,11 +279,15 @@ async function startServer() {
     res.json({ status: "ok" });
   });
 
-  app.get("/api/health/ready", (_req, res) => {
+  app.get("/api/health/ready", async (_req, res) => {
     if (!db.isReady()) {
       return res.status(503).json({ status: "not_ready", checks: { database: "unavailable" } });
     }
-    return res.json({ status: "ready", checks: { database: "ready" } });
+    const jobStatus = jobs ? (await jobs.health()).status : "disabled";
+    if (jobs && jobStatus !== "ready") {
+      return res.status(503).json({ status: "not_ready", checks: { database: "ready", jobs: jobStatus } });
+    }
+    return res.json({ status: "ready", checks: { database: "ready", jobs: jobStatus } });
   });
 
   app.post("/api/auth/signup", async (req, res) => {
@@ -600,17 +608,44 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
       const version = await db.getAuthorizedUploadVersion(req.params.versionId, context);
       if (!version) return res.status(404).json({ error: "Upload not found." });
       if (version.upload_state === "Uploaded") {
-        return res.json({ document: await db.confirmPrivateUpload(version.id, context) });
+        const document = await db.confirmPrivateUpload(version.id, context);
+        let jobId: string | null = version.ingestion_job_id || null;
+        if (jobs && !jobId && !["ready", "needs_ocr", "cancelled"].includes(version.processing_state)) {
+          jobId = await jobs.enqueueIngestion({ versionId: version.id, firmId: context.firmId });
+          await db.attachIngestionJob(version.id, jobId, context);
+        }
+        return res.json({ document, versionId: version.id, jobId });
       }
       const object = await privateStorage.stat(version.object_key);
       assertUploadConfirmation(version, object);
       const document = await db.confirmPrivateUpload(version.id, context);
-      return res.status(201).json({ document, versionId: version.id });
+      let jobId: string | null = null;
+      if (jobs) {
+        jobId = await jobs.enqueueIngestion({ versionId: version.id, firmId: context.firmId });
+        await db.attachIngestionJob(version.id, jobId, context);
+      }
+      return res.status(201).json({ document, versionId: version.id, jobId });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Upload confirmation failed.";
       const status = /expired/i.test(message) ? 410 : /not found/i.test(message) ? 404 : 409;
       return res.status(status).json({ error: message });
     }
+  });
+
+  app.get("/api/ingestion/jobs", async (req, res) => {
+    if (!jobs) return res.status(404).json({ error: "Async ingestion is not enabled." });
+    res.setHeader("Cache-Control", "no-store");
+    return res.json(await db.getIngestionVisibility(ownership(req)));
+  });
+
+  app.post("/api/ingestion/:versionId/cancel", async (req, res) => {
+    if (!jobs) return res.status(404).json({ error: "Async ingestion is not enabled." });
+    const version = await db.requestIngestionCancellation(req.params.versionId, ownership(req));
+    if (!version) return res.status(404).json({ error: "Active ingestion not found." });
+    if (version.ingestion_job_id) {
+      await jobs.boss.cancel(INGESTION_QUEUE, version.ingestion_job_id);
+    }
+    return res.json({ versionId: version.id, state: "cancelled" });
   });
 
   app.get("/api/document-versions/:versionId/original-download", async (req, res) => {

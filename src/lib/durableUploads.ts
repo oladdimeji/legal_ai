@@ -68,15 +68,18 @@ export async function uploadPrivateFiles(files: File[], caseId: string | null): 
   if (!Array.isArray(data.files) || data.files.length !== files.length) {
     throw new Error("Upload authorization response was incomplete");
   }
-  for (let index = 0; index < files.length; index += 1) {
-    await uploadOne(files[index], data.files[index]);
-    const confirmation = await fetch(`/api/uploads/${data.files[index].versionId}/confirm`, {
-      method: "POST",
-    });
+  const outcomes = await Promise.allSettled(files.map(async (file, index) => {
+    await uploadOne(file, data.files[index]);
+    const confirmation = await fetch(`/api/uploads/${data.files[index].versionId}/confirm`, { method: "POST" });
     if (!confirmation.ok) {
       const error = await confirmation.json();
       throw new Error(error.error || "Upload confirmation failed");
     }
+  }));
+  const failed = outcomes.filter((outcome) => outcome.status === "rejected");
+  if (failed.length > 0) {
+    const succeeded = outcomes.length - failed.length;
+    throw new Error(`${succeeded} of ${outcomes.length} files were accepted; ${failed.length} failed. Retry only the failed files.`);
   }
   return true;
 }

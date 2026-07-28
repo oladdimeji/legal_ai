@@ -150,6 +150,12 @@ export class SupabaseStorageProvider implements ObjectStorageProvider {
     return data.signedUrl;
   }
 
+  async download(key: string): Promise<Uint8Array> {
+    const { data, error } = await this.client.storage.from(this.bucket).download(key);
+    if (error || !data) throw new Error("Private original could not be read.");
+    return new Uint8Array(await data.arrayBuffer());
+  }
+
   get resumableUrl(): string {
     return resumableEndpoint(this.url);
   }

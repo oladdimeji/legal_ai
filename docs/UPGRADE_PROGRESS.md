@@ -1,5 +1,50 @@
 # Compact Upgrade Progress
 
+## V1 Completion Phase — Durable Async Ingestion, Worker, and ClamAV
+
+Status: Complete in code; staging gate remains closed.
+
+Implemented:
+
+- Added pg-boss jobs created only after private object confirmation, with per-version singleton keys, bounded exponential retry, retention, and failed-job visibility.
+- Added a separate worker with restart recovery, durable heartbeats/events, cancellation checks, scan-before-extraction, PDF/DOCX/TXT extraction, deterministic chunking, and idempotent embedding upserts.
+- Added private ClamAV TCP `INSTREAM` scanning and Compose health checks.
+- Added durable `uploaded`, `scanning`, `extracting`, `needs_ocr`, `indexing`, `ready`, `failed`, and `cancelled` states.
+- Preserved originals for scanned/image-only PDFs and records `needs_ocr` without adding OCR behavior or controls.
+- Added independent batch upload settlement so one failed file does not prevent other confirmed files from being queued.
+- Added polling progress to Matter Sources and Firm Library; Matter creation hands off confirmed uploads to the same durable rows.
+
+Schema changes:
+
+- Migration 014 additively extends `document_versions` with processing state, scan result, job ID, attempts, safe error code, timing/heartbeat, and cancellation fields.
+- Migration 014 adds append-only `ingestion_events`, chunk indexes/content hashes, a partial unique document/chunk-index constraint, and recovery/visibility indexes.
+- Existing documents, versions, chunks, and retrieval predicates are preserved. No table/data reset or destructive rename is performed.
+
+Dependencies added:
+
+- `pg-boss` for PostgreSQL-backed durable jobs, retries, recovery, cancellation, and retained job state.
+
+Feature gate:
+
+- `FEATURE_ASYNC_INGESTION=false` remains the exact gate until the async-ingestion staging checklist passes.
+
+Verification:
+
+- Pre-change `npm ci`: passed; npm reported the two existing high-severity React Router advisories.
+- Pre-change `npm run verify`: passed, 98/98 tests, with the existing Vite large-chunk warning.
+- Final `npm run lint`: passed.
+- Final `npm test`: passed, 103/103 tests.
+- Final `npm run build`: passed for the Vite app, web server, and separate worker; the existing Vite large-chunk warning remains.
+- Final `npm run verify`: passed.
+- `docker compose config --quiet`: passed.
+- Docker image build could not run because Docker Desktop's Linux engine pipe was unavailable at `npipe:////./pipe/dockerDesktopLinuxEngine`.
+
+Known limitations:
+
+- OCR, Google Document AI, CourtListener, and Gmail sending remain deferred and unavailable.
+- Legacy multipart and temporary Assistant attachment extraction remain the compatibility path while the async-ingestion flag is false.
+- Live Supabase, ClamAV signature, worker-restart, and PostgreSQL migration validation require staging infrastructure.
+
 ## V1 Completion Phase — Private Supabase Storage and Durable Originals
 
 Status: Complete in code; staging gate remains closed.

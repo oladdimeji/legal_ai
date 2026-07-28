@@ -149,7 +149,13 @@ export default function ClientPortalView({ token }: { token: string }) {
   if (denied) return <div className="flex min-h-screen items-center justify-center bg-white p-8 text-center"><div><h1 className="text-lg font-semibold uppercase">Client Portal unavailable</h1><p className="mt-2 text-sm text-zinc-500">This invitation is invalid or has been revoked. Contact your lawyer for a new link.</p></div></div>;
   if (!data) return <div className="flex min-h-screen items-center justify-center text-xs font-mono uppercase text-zinc-500">Loading Client Portal...</div>;
 
-  const allSelectable = [...permittedDrafts.map((draft) => ({ id: draft.id, title: draft.title })), ...data.portalDocuments.map((document) => ({ id: document.id, title: document.title }))];
+  const allSelectable = [
+    ...permittedDrafts.map((draft) => ({ id: draft.id, title: draft.title })),
+    ...data.portalDocuments.map((document) => ({
+      id: document.id,
+      title: `${document.title} · ${(document.processing_state || "ready").replaceAll("_", " ")}`,
+    })),
+  ];
 
   return (
     <div className="min-h-screen bg-white text-zinc-900">

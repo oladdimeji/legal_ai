@@ -22,7 +22,11 @@ export default function FirmLibraryView() {
     if (response.ok) setDocuments(await response.json());
   };
 
-  useEffect(() => { void load(); }, []);
+  useEffect(() => {
+    void load();
+    const interval = window.setInterval(() => void load(), 5_000);
+    return () => window.clearInterval(interval);
+  }, []);
 
   const sections = useMemo(() => Array.from(new Set(documents.map((document) => document.section))).sort(), [documents]);
   const visible = documents.filter((document) => {
@@ -66,6 +70,7 @@ export default function FirmLibraryView() {
       fileSelection.clearFiles();
       await load();
     } catch (error) {
+      await load();
       setUploadError(error instanceof Error ? error.message : "Upload failed");
     } finally {
       setUploading(false);
@@ -110,7 +115,7 @@ export default function FirmLibraryView() {
             {visible.length === 0 ? <div className="rounded border border-dashed border-zinc-300 p-10 text-center text-xs text-zinc-500">No Firm Library documents match this view.</div> : visible.map((document) => (
               <div key={document.id} className="flex items-start gap-3 rounded border border-zinc-200 p-4 hover:border-zinc-400">
                 <FileText className="mt-0.5 h-4 w-4 text-zinc-400" />
-                <button onClick={() => setPreview(document)} className="min-w-0 flex-1 text-left cursor-pointer"><p className="truncate text-xs font-semibold">{document.title}</p><p className="mt-1 text-[10px] font-mono uppercase text-zinc-400">{document.section} · {new Date(document.uploaded_at).toLocaleDateString()}</p></button>
+                <button onClick={() => setPreview(document)} className="min-w-0 flex-1 text-left cursor-pointer"><p className="truncate text-xs font-semibold">{document.title}</p><p className="mt-1 text-[10px] font-mono uppercase text-zinc-400">{document.section} · {new Date(document.uploaded_at).toLocaleDateString()} · {(document.processing_state || "ready").replaceAll("_", " ")}</p></button>
                 <button onClick={() => setPreview(document)} title="Preview" className="rounded p-1 hover:bg-zinc-100 cursor-pointer"><Eye className="h-4 w-4 text-zinc-500" /></button>
                 <button onClick={() => void remove(document)} title="Remove" className="rounded p-1 hover:bg-zinc-100 cursor-pointer"><Trash2 className="h-4 w-4 text-zinc-400 hover:text-red-700" /></button>
               </div>
@@ -128,7 +133,7 @@ export default function FirmLibraryView() {
             <SelectedFileList files={fileSelection.files} onRemove={fileSelection.removeFile} />
             <input value={title} onChange={(event) => setTitle(event.target.value)} className="w-full rounded border border-zinc-300 bg-white px-3 py-2 text-xs" placeholder="Optional title for one-file upload only" />
             {uploadError && <p className="text-xs text-red-700">{uploadError}</p>}
-            <button disabled={uploading || fileSelection.files.length === 0} className="w-full rounded bg-zinc-950 px-3 py-2 text-[10px] font-mono font-bold uppercase text-white disabled:cursor-not-allowed disabled:opacity-40">{uploading ? "Processing..." : "Upload and index"}</button>
+            <button disabled={uploading || fileSelection.files.length === 0} className="w-full rounded bg-zinc-950 px-3 py-2 text-[10px] font-mono font-bold uppercase text-white disabled:cursor-not-allowed disabled:opacity-40">{uploading ? "Uploading..." : "Upload for processing"}</button>
           </form>
         </div>
       </div>

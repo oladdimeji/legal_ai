@@ -1321,6 +1321,60 @@ class DatabaseService {
     return rows[0];
   }
 
+  public async attachIngestionJob(
+    versionId: string,
+    jobId: string,
+    context: OwnershipContext,
+  ): Promise<boolean> {
+    const rows = await this.query(
+      `UPDATE document_versions
+       SET ingestion_job_id = COALESCE(ingestion_job_id, $2)
+       WHERE id = $1 AND firm_id = $3 AND upload_state = 'Uploaded'
+       RETURNING id`,
+      [versionId, jobId, context.firmId],
+    );
+    return rows.length === 1;
+  }
+
+  public async requestIngestionCancellation(
+    versionId: string,
+    context: OwnershipContext,
+  ): Promise<any | undefined> {
+    const rows = await this.query(
+      `UPDATE document_versions v
+       SET cancellation_requested_at = NOW(),
+           processing_state = CASE WHEN processing_state = 'uploaded' THEN 'cancelled' ELSE processing_state END,
+           processing_completed_at = CASE WHEN processing_state = 'uploaded' THEN NOW() ELSE processing_completed_at END
+       WHERE v.id = $1 AND v.firm_id = $2
+         AND v.processing_state NOT IN ('ready', 'needs_ocr', 'failed', 'cancelled')
+         AND EXISTS (
+           SELECT 1 FROM documents d
+           WHERE d.id = v.document_id AND d.firm_id = $2
+             AND (d.case_id IS NULL OR EXISTS (
+               SELECT 1 FROM cases c WHERE c.id = d.case_id AND c.firm_id = $2
+             ))
+         )
+       RETURNING v.id, v.ingestion_job_id, v.processing_state`,
+      [versionId, context.firmId],
+    );
+    return rows[0];
+  }
+
+  public async getIngestionVisibility(context: OwnershipContext): Promise<any[]> {
+    return this.query(
+      `SELECT v.id AS version_id, v.document_id, v.original_filename, v.processing_state,
+              v.processing_attempts, v.processing_error_code, v.processing_heartbeat_at,
+              v.processing_completed_at, v.case_id
+       FROM document_versions v
+       WHERE v.firm_id = $1 AND v.upload_state = 'Uploaded'
+         AND (v.case_id IS NULL OR EXISTS (
+           SELECT 1 FROM cases c WHERE c.id = v.case_id AND c.firm_id = $1
+         ))
+       ORDER BY v.created_at DESC`,
+      [context.firmId],
+    );
+  }
+
   public async deleteDocument(
     id: string,
     context: OwnershipContext,

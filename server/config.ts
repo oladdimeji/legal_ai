@@ -28,7 +28,7 @@ export interface ServerConfig {
       bucket?: string;
     };
     jobs: { provider?: string };
-    malwareScanning: { provider?: string };
+    malwareScanning: { provider?: string; host?: string; port: number };
     govInfo: { apiKey?: string; baseUrl: string };
     google: {
       clientId?: string;
@@ -114,10 +114,23 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
   }
 
   requireWhen(features.asyncIngestion, env, [
+    "SUPABASE_DB_URL",
     "OBJECT_STORAGE_PROVIDER",
     "JOBS_PROVIDER",
     "MALWARE_SCANNER_PROVIDER",
+    "SUPABASE_URL",
+    "SUPABASE_SECRET_KEY",
+    "STORAGE_BUCKET",
   ]);
+  if (features.asyncIngestion && env.OBJECT_STORAGE_PROVIDER !== "supabase") {
+    throw new Error("FEATURE_ASYNC_INGESTION requires OBJECT_STORAGE_PROVIDER=supabase.");
+  }
+  if (features.asyncIngestion && env.JOBS_PROVIDER !== "pg-boss") {
+    throw new Error("FEATURE_ASYNC_INGESTION requires JOBS_PROVIDER=pg-boss.");
+  }
+  if (features.asyncIngestion && env.MALWARE_SCANNER_PROVIDER !== "clamav") {
+    throw new Error("FEATURE_ASYNC_INGESTION requires MALWARE_SCANNER_PROVIDER=clamav.");
+  }
   requireWhen(features.govInfo, env, ["GOVINFO_API_KEY"]);
   requireWhen(features.googleDrive, env, [
     "GOOGLE_CLIENT_ID",
@@ -151,7 +164,11 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
         bucket: env.STORAGE_BUCKET,
       },
       jobs: { provider: env.JOBS_PROVIDER },
-      malwareScanning: { provider: env.MALWARE_SCANNER_PROVIDER },
+      malwareScanning: {
+        provider: env.MALWARE_SCANNER_PROVIDER,
+        host: env.CLAMAV_HOST,
+        port: Number(env.CLAMAV_PORT || 3310),
+      },
       govInfo: {
         apiKey: env.GOVINFO_API_KEY,
         baseUrl: env.GOVINFO_BASE_URL || "https://api.govinfo.gov",

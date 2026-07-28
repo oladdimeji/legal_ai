@@ -9,6 +9,7 @@ export interface ObjectStorageProvider {
   health(): Promise<ProviderHealth>;
   createSignedUpload(key: string): Promise<{ token: string; expiresAt: string }>;
   stat(key: string): Promise<{ size: number; contentType: string | null; metadata: Record<string, string> } | null>;
+  download(key: string): Promise<Uint8Array>;
   createSignedDownload(key: string, expiresInSeconds: number, downloadName: string): Promise<string>;
 }
 

@@ -92,7 +92,11 @@ Every new feature flag defaults to `false`. Provider-specific configuration is v
 
 Private originals are gated by `FEATURE_PRIVATE_STORAGE=false`. Staging activation requires `OBJECT_STORAGE_PROVIDER=supabase`, `SUPABASE_URL`, the server-only `SUPABASE_SECRET_KEY`, and a private `STORAGE_BUCKET`. The server creates narrow two-hour signed upload tokens; browsers send 6 MB resumable TUS chunks directly to Supabase Storage. The service key is never returned by an API or included in Vite code.
 
-Uploads are limited to 50 MB per file, 25 files and 500 MB per batch, and 10,000 files or 10 GB per workspace. Existing multipart PDF/DOCX/TXT routes remain available while the flag is false. The ingestion worker is intentionally outside this phase, so newly confirmed originals remain in the `Uploaded` processing state pending that worker.
+Uploads are limited to 50 MB per file, 25 files and 500 MB per batch, and 10,000 files or 10 GB per workspace. Existing multipart PDF/DOCX/TXT routes remain available while the private-storage and async-ingestion flags are false.
+
+Async ingestion is independently gated by `FEATURE_ASYNC_INGESTION=false`. When enabled after staging, set `JOBS_PROVIDER=pg-boss`, `MALWARE_SCANNER_PROVIDER=clamav`, `CLAMAV_HOST=clamav`, and `CLAMAV_PORT=3310`, and enable private storage. Compose runs separate `web`, `worker`, and private `clamav` services. Only confirmed objects are queued. The worker scans before extraction, then extracts PDF/DOCX/TXT, chunks, embeds, and durably records progress. Image-only PDFs remain stored and enter `needs_ocr`; OCR is deferred in V1.
+
+Operators can inspect firm-scoped processing visibility at `GET /api/ingestion/jobs` and request cancellation with `POST /api/ingestion/:versionId/cancel`. Failed work is retained by pg-boss for 30 days and exposes only safe error codes through the application API.
 
 See [the manual staging checklist](docs/MANUAL_STAGING_CHECKLIST.md) before changing any flag.
 

@@ -22,7 +22,10 @@ export interface Document {
   uploaded_at: string;
   source_type?: "Starting Instruction" | "Matter Upload" | "Firm Library Document" | "Client Submission" | "External Legal Source" | "External Web Source";
   origin?: string;
-  processing_state?: "Processing" | "Ready" | "Needs Attention";
+  processing_state?:
+    | "Processing" | "Ready" | "Needs Attention"
+    | "uploaded" | "scanning" | "extracting" | "needs_ocr"
+    | "indexing" | "ready" | "failed" | "cancelled";
   link_origin?: "Manual" | "AI Suggested" | "Starting Input" | "Legacy Link" | null;
 }
 
