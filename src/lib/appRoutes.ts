@@ -12,5 +12,7 @@ export const APP_ROUTES = {
   clientLogin: "/client/login",
   clientDashboard: "/client/dashboard",
   clientInvitation: "/client/invitations/:token",
+  clientVerify: "/client/verify/:token",
+  clientResetPassword: "/client/reset-password/:token",
   legacyClientPortal: "/client/:token",
 } as const;

@@ -59,6 +59,12 @@ import {
   invitationCanBeAccepted,
   type FirmRole,
 } from "./server/authorization.js";
+import { clientRepository } from "./server/clientRepository.js";
+import { registerLawyerClientRoutes, registerPublicClientRoutes } from "./server/clientRoutes.js";
+import {
+  BrevoTransactionalEmail,
+  DisabledTransactionalEmail,
+} from "./server/transactionalEmail.js";
 
 const config = loadServerConfig();
 const isProduction = config.environment === "production";
@@ -70,13 +76,25 @@ const privateStorage = config.features.privateStorage
     )
   : null;
 const jobs = config.features.asyncIngestion ? new PgBossJobsProvider(config.databaseUrl!) : null;
-const google = config.features.googleDrive
+const google = (
+  config.features.googleAccount
+  || config.features.googleDriveExport
+  || config.features.googleDriveImport
+)
   ? new GoogleOAuthDriveProvider({
       clientId: config.providers.google.clientId!,
       clientSecret: config.providers.google.clientSecret!,
       redirectUri: config.providers.google.oauthRedirectUri!,
     })
   : null;
+const transactionalEmail = config.features.transactionalEmail
+  ? new BrevoTransactionalEmail({
+      apiKey: config.providers.transactionalEmail.apiKey!,
+      senderEmail: config.providers.transactionalEmail.senderEmail!,
+      senderName: config.providers.transactionalEmail.senderName || "Exepts",
+      apiBaseUrl: config.providers.transactionalEmail.apiBaseUrl,
+    }, clientRepository)
+  : new DisabledTransactionalEmail();
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const SIMILARITY_THRESHOLD = 0.65;
@@ -294,7 +312,8 @@ ${input.startingContent.slice(0, 20000)}`;
 
 async function startServer() {
   const app = express();
-  app.use(express.json());
+  app.disable("x-powered-by");
+  app.use(express.json({ limit: "512kb", strict: true }));
 
   app.get("/api/health/live", (_req, res) => {
     res.json({ status: "ok" });
@@ -393,6 +412,12 @@ async function startServer() {
     return res.json({ success: true });
   });
 
+  registerPublicClientRoutes(app, {
+    config,
+    repository: clientRepository,
+    email: transactionalEmail,
+  });
+
   app.get("/api/team/invitations/:token", async (req, res) => {
     if (!config.features.firmTeams) return res.status(404).json({ error: "Firm teams are not enabled." });
     const invitation = await db.getInvitationForAcceptance(sha256(req.params.token));
@@ -469,7 +494,9 @@ async function startServer() {
     context: OwnershipContext | null,
     res: Response,
   ) => {
-    if (!google) return res.status(404).json({ error: "Google Drive is not enabled." });
+    if (!google || !config.features.googleAccount) {
+      return res.status(404).json({ error: "Google account features are not enabled." });
+    }
     const state = randomBytes(32).toString("base64url");
     const binding = randomBytes(32).toString("base64url");
     const pkce = createPkcePair();
@@ -491,7 +518,9 @@ async function startServer() {
   const refreshGoogleAccessToken = async (
     context: OwnershipContext,
   ): Promise<{ accessToken: string; connection: any }> => {
-    if (!google) throw new Error("Google Drive is not enabled.");
+    if (!google || !config.features.googleAccount) {
+      throw new Error("Google account features are not enabled.");
+    }
     const connection = await db.getGoogleConnection(context);
     if (
       !connection
@@ -571,7 +600,7 @@ async function startServer() {
     caseId: string | null,
     existingImportId: string | null,
   ) => {
-    if (!google || !privateStorage || !jobs) {
+    if (!config.features.googleDriveImport || !google || !privateStorage || !jobs) {
       throw new Error("Google Drive import is not enabled.");
     }
     const { accessToken, connection } = await refreshGoogleAccessToken(context);
@@ -673,6 +702,9 @@ async function startServer() {
   };
 
   app.get("/api/auth/google/start", async (_req, res) => {
+    if (!config.features.googleAccount) {
+      return res.status(404).json({ error: "Google account features are not enabled." });
+    }
     try {
       return await beginGoogleOAuth("signin", null, res);
     } catch {
@@ -686,7 +718,9 @@ async function startServer() {
     let mode: "link" | "signin" = "signin";
     res.setHeader("Set-Cookie", googleOAuthCookie("", isProduction, true));
     res.setHeader("Cache-Control", "no-store");
-    if (!google || !state || !binding) return res.redirect(303, safeGoogleRedirect(mode, "invalid_state"));
+    if (!config.features.googleAccount || !google || !state || !binding) {
+      return res.redirect(303, safeGoogleRedirect(mode, "invalid_state"));
+    }
     try {
       const stored = await db.consumeOAuthAuthorizationState(sha256(state), sha256(binding));
       if (!stored) return res.redirect(303, safeGoogleRedirect(mode, "invalid_state"));
@@ -923,6 +957,13 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
   app.use("/api", requireAuth);
   app.use("/api", createAuthorizationMiddleware(db));
 
+  registerLawyerClientRoutes(app, {
+    config,
+    repository: clientRepository,
+    email: transactionalEmail,
+    ownership,
+  });
+
   app.get("/api/team/members", async (req, res) => {
     if (!config.features.firmTeams) return res.status(404).json({ error: "Firm teams are not enabled." });
     res.setHeader("Cache-Control", "no-store");
@@ -1026,6 +1067,9 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
   });
 
   app.post("/api/google/oauth/start", async (req, res) => {
+    if (!config.features.googleAccount) {
+      return res.status(404).json({ error: "Google account features are not enabled." });
+    }
     try {
       return await beginGoogleOAuth("link", ownership(req), res);
     } catch {
@@ -1034,7 +1078,9 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
   });
 
   app.get("/api/google/connection", async (req, res) => {
-    if (!google) return res.status(404).json({ error: "Google Drive is not enabled." });
+    if (!google || !config.features.googleAccount) {
+      return res.status(404).json({ error: "Google account features are not enabled." });
+    }
     const connection = await db.getGoogleConnection(ownership(req));
     res.setHeader("Cache-Control", "no-store");
     if (!connection) return res.json({ connected: false });
@@ -1049,7 +1095,9 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
   });
 
   app.delete("/api/google/connection", async (req, res) => {
-    if (!google) return res.status(404).json({ error: "Google Drive is not enabled." });
+    if (!google || !config.features.googleAccount) {
+      return res.status(404).json({ error: "Google account features are not enabled." });
+    }
     const context = ownership(req);
     const connection = await db.getGoogleConnection(context);
     if (!connection) return res.status(404).json({ error: "Google account is not connected." });
@@ -1074,8 +1122,29 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
     return res.json({ connected: false, providerRevoked: revoked, passwordLoginPreserved: true });
   });
 
+  app.post("/api/google/connection/refresh", async (req, res) => {
+    if (!google || !config.features.googleAccount) {
+      return res.status(404).json({ error: "Google account features are not enabled." });
+    }
+    try {
+      const { connection } = await refreshGoogleAccessToken(ownership(req));
+      res.setHeader("Cache-Control", "no-store");
+      return res.json({
+        connected: true,
+        email: connection.provider_email,
+        revocationState: "active",
+      });
+    } catch (error) {
+      return res.status(401).json({
+        error: error instanceof Error ? error.message : "Google authorization could not be refreshed.",
+      });
+    }
+  });
+
   app.get("/api/google/drive/picker-session", async (req, res) => {
-    if (!google) return res.status(404).json({ error: "Google Drive is not enabled." });
+    if (!google || !config.features.googleDriveImport) {
+      return res.status(404).json({ error: "Google Drive import is not enabled." });
+    }
     try {
       const { accessToken } = await refreshGoogleAccessToken(ownership(req));
       res.setHeader("Cache-Control", "no-store");
@@ -1092,7 +1161,9 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
   });
 
   app.get("/api/google/drive/imports", async (req, res) => {
-    if (!google) return res.status(404).json({ error: "Google Drive is not enabled." });
+    if (!google || !config.features.googleDriveImport) {
+      return res.status(404).json({ error: "Google Drive import is not enabled." });
+    }
     const caseId = requestedCaseId(req.query.caseId);
     if (caseId && !(await db.getCaseById(caseId, ownership(req)))) {
       return res.status(404).json({ error: "Matter not found." });
@@ -1102,7 +1173,9 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
   });
 
   app.post("/api/google/drive/import", async (req, res) => {
-    if (!google) return res.status(404).json({ error: "Google Drive is not enabled." });
+    if (!google || !config.features.googleDriveImport) {
+      return res.status(404).json({ error: "Google Drive import is not enabled." });
+    }
     const caseId = requestedCaseId(req.body.caseId);
     const fileIds: string[] = Array.isArray(req.body.fileIds)
       ? Array.from(new Set(req.body.fileIds.filter((id: unknown): id is string =>
@@ -1132,7 +1205,9 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
   });
 
   app.post("/api/google/drive/imports/refresh", async (req, res) => {
-    if (!google) return res.status(404).json({ error: "Google Drive is not enabled." });
+    if (!google || !config.features.googleDriveImport) {
+      return res.status(404).json({ error: "Google Drive import is not enabled." });
+    }
     const context = ownership(req);
     const caseId = requestedCaseId(req.body.caseId);
     try {
@@ -1151,7 +1226,9 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
   });
 
   app.post("/api/google/drive/imports/:importId/reimport", async (req, res) => {
-    if (!google) return res.status(404).json({ error: "Google Drive is not enabled." });
+    if (!google || !config.features.googleDriveImport) {
+      return res.status(404).json({ error: "Google Drive import is not enabled." });
+    }
     const context = ownership(req);
     const tracked = await db.getDriveImport(req.params.importId, context);
     if (!tracked) return res.status(404).json({ error: "Drive import not found." });
@@ -1176,7 +1253,9 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
     title: string;
     content: string;
   }) => {
-    if (!google) throw new Error("Google Drive is not enabled.");
+    if (!google || !config.features.googleDriveExport) {
+      throw new Error("Google Drive export is not enabled.");
+    }
     const { accessToken, connection } = await refreshGoogleAccessToken(input.context);
     const buffer = await Packer.toBuffer(markdownToDocxDocument(input.title, input.content));
     const driveName = `${input.title.replace(/[\\/:*?"<>|]+/g, "_").slice(0, 180)}.docx`;
@@ -1203,6 +1282,9 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
   };
 
   app.post("/api/drafts/:id/export/drive", async (req, res) => {
+    if (!config.features.googleDriveExport) {
+      return res.status(404).json({ error: "Google Drive export is not enabled." });
+    }
     const caseId = requestedCaseId(req.body.caseId);
     if (!caseId) return res.status(400).json({ error: "Matter context is required." });
     const draft = await db.getDraftById(req.params.id, caseId, ownership(req));
@@ -1224,6 +1306,9 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
   });
 
   app.post("/api/cases/:caseId/intelligence/export/drive", async (req, res) => {
+    if (!config.features.googleDriveExport) {
+      return res.status(404).json({ error: "Google Drive export is not enabled." });
+    }
     const context = ownership(req);
     const record = await db.getMatterIntelligence(req.params.caseId, context);
     const matter = await db.getCaseById(req.params.caseId, context);
@@ -1759,9 +1844,35 @@ ${sourceText}`;
       const instruction = typeof req.body.instruction === "string" ? req.body.instruction.trim() : "";
       const draftIds: string[] = Array.isArray(req.body.draftIds)
         ? req.body.draftIds.filter((id: unknown): id is string => typeof id === "string") : [];
-      return res.status(201).json(
-        await db.createCollaborationRequest(req.params.caseId, type, instruction, draftIds, ownership(req))
+      const context = ownership(req);
+      const request = await db.createCollaborationRequest(
+        req.params.caseId, type, instruction, draftIds, context
       );
+      if (config.features.clientNotifications) {
+        const recipients = await clientRepository.notifyMatterClients({
+          context,
+          caseId: req.params.caseId,
+          type: "lawyer_request",
+          title: "Your lawyer sent a new request",
+        });
+        if (config.features.transactionalEmail) {
+          await Promise.all(recipients.map((recipient) => transactionalEmail.send({
+            firmId: context.firmId,
+            clientUserId: recipient.id,
+            toEmail: recipient.email,
+            toName: recipient.name,
+            templateKey: "client_notification",
+            values: {
+              recipientName: recipient.name,
+              subject: "New lawyer request in Exepts",
+              heading: "Your lawyer sent a new request",
+              message: "Open the authorized Matter in your client dashboard to respond.",
+              actionUrl: `${config.appBaseUrl}/client/dashboard?matter=${encodeURIComponent(req.params.caseId)}`,
+            },
+          })));
+        }
+      }
+      return res.status(201).json(request);
     } catch (err: any) {
       const status = /invalid|select at least/i.test(err.message) ? 400 : ownedErrorStatus(err);
       return res.status(status).json({ error: err.message });
@@ -2678,7 +2789,32 @@ INSTRUCTIONS:
       if (!caseId || typeof req.body.shared !== "boolean") {
         return res.status(400).json({ error: "Matter context and sharing state are required" });
       }
-      const draft = await db.setDraftSharing(req.params.id, caseId, req.body.shared, ownership(req));
+      const context = ownership(req);
+      const draft = await db.setDraftSharing(req.params.id, caseId, req.body.shared, context);
+      if (req.body.shared && config.features.clientNotifications) {
+        const recipients = await clientRepository.notifyMatterClients({
+          context,
+          caseId,
+          type: "document_shared",
+          title: "Your lawyer shared Work Product",
+        });
+        if (config.features.transactionalEmail) {
+          await Promise.all(recipients.map((recipient) => transactionalEmail.send({
+            firmId: context.firmId,
+            clientUserId: recipient.id,
+            toEmail: recipient.email,
+            toName: recipient.name,
+            templateKey: "client_notification",
+            values: {
+              recipientName: recipient.name,
+              subject: "Work Product shared in Exepts",
+              heading: "Your lawyer shared Work Product",
+              message: "The shared document is available in your authorized Matter.",
+              actionUrl: `${config.appBaseUrl}/client/dashboard?matter=${encodeURIComponent(caseId)}`,
+            },
+          })));
+        }
+      }
       return res.json({ ...draft, content: cleanWorkProductContent(draft.content) });
     } catch (err: any) {
       return res.status(ownedErrorStatus(err)).json({ error: err.message });
@@ -2747,23 +2883,6 @@ INSTRUCTIONS:
     } catch (err: any) {
       return res.status(ownedErrorStatus(err)).json({ error: err.message });
     }
-  });
-
-  // --- VITE MIDDLEWARE SETUP ---
-
-  if (!isProduction) {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa"
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), "dist");
-    registerProductionFrontend(app, distPath);
-  }
-
-  app.listen(config.port, "0.0.0.0", () => {
-    console.log(`Server running on port ${config.port}`);
   });
 
   app.get("/api/drafts/:id/versions", async (req, res) => {
@@ -2837,6 +2956,23 @@ INSTRUCTIONS:
   app.post("/api/drafts/:id/permanent-deletion/cancel", async (req, res) => {
     if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
     return res.json(await db.cancelPermanentDeletion("work_product", req.params.id, ownership(req)));
+  });
+
+  // --- VITE MIDDLEWARE SETUP ---
+
+  if (!isProduction) {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: "spa"
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distPath = path.join(process.cwd(), "dist");
+    registerProductionFrontend(app, distPath);
+  }
+
+  app.listen(config.port, "0.0.0.0", () => {
+    console.log(`Server running on port ${config.port}`);
   });
 }
 

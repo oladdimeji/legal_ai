@@ -145,6 +145,9 @@ export function classifyProtectedRequest(req: Request): AuthorizationRoute | nul
   const matterId = matterFromPath || stringValue(body.caseId) || stringValue(query.caseId);
 
   if (pathname === "/auth/me" && method === "GET") return { action: "workspace.view" };
+  if (pathname === "/notifications" || pathname.startsWith("/notifications/")) {
+    return { action: "workspace.view" };
+  }
   if (pathname.startsWith("/team/")) return { action: "team.manage" };
   if (pathname.startsWith("/google/")) {
     const importId = pathId(pathname, /^\/google\/drive\/imports\/([^/]+)\/reimport$/);
@@ -178,6 +181,9 @@ export function classifyProtectedRequest(req: Request): AuthorizationRoute | nul
     if (method === "POST") return { action: "matter.create" };
   }
   if (matterFromPath) {
+    if (/\/client-accounts(?:\/|$)/.test(pathname)) {
+      return { action: "matter.client_access.manage", matterId };
+    }
     if (pathname.endsWith("/retention")) return { action: "matter.retention.manage", matterId };
     if (/\/permanent-deletion(?:\/cancel)?$/.test(pathname)) return { action: "matter.permanent_delete", matterId };
     if (pathname.endsWith("/export-package")) return { action: "matter.download", matterId };

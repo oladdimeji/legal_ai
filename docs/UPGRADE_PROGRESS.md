@@ -1,5 +1,106 @@
 # Compact Upgrade Progress
 
+## Manager Preview legacy-database migration compatibility
+
+Status: Complete and verified.
+
+Implemented:
+
+- Added migration 000 `legacy_firm_scope_column_repair` before baseline migration 001 so databases that already recorded migrations 001-003 still receive the missing nullable `firm_id` compatibility columns before migration 004 creates ownership indexes.
+- The compatibility migration creates `firm` when missing, adds nullable `firm_id` columns to existing `users`, `cases`, and `documents`, and adds absent firm foreign keys as `NOT VALID` constraints without assigning ownership.
+- Guarded migration 018 immutable-history backfills so unowned legacy Matter and Source rows are preserved and do not fail `firm_id NOT NULL` history inserts before the explicit legacy-owner migration runs.
+- Added an opt-in real PostgreSQL legacy-schema migration test for the case where `cases` and `documents` lack `firm_id` and migrations 001-003 are already recorded.
+- Added `npm run verify:migrations:staging` to report sanitized database target, applied migration versions, relevant schema columns, and firm ownership constraints without exposing credentials.
+
+Schema changes:
+
+- Migration 000 is additive and non-destructive. It does not drop, truncate, rename, recreate existing tables, reset data, or infer ownership.
+
+Verification:
+
+- `npm run verify`: passed.
+- `npm run verify:manager-preview`: passed.
+- Real PostgreSQL legacy-schema migration test with migrations 001-003 pre-recorded: passed, reached migration 019, preserved legacy row ownership as NULL, and reran idempotently.
+- `npm run verify:migrations:staging`: passed and reported applied versions/schema without credentials.
+- Docker web-only startup against a disposable PostgreSQL schema: passed; `/api/health/ready` returned ready with jobs disabled.
+
+## Manager Preview Release — Independent Google capabilities
+
+Status: Complete in code; live Google staging smoke remains required before
+Account or Export is enabled.
+
+Implemented:
+
+- Replaced the all-or-nothing runtime gate with independent
+  `FEATURE_GOOGLE_ACCOUNT`, `FEATURE_GOOGLE_DRIVE_EXPORT`, and
+  `FEATURE_GOOGLE_DRIVE_IMPORT` capabilities, all default false.
+- Account linking, linked-only sign-in, connection status, refresh, disconnect,
+  and provider revocation now run without private storage, pg-boss, worker, or
+  ClamAV. Password login remains available and provider subjects—not matching
+  email addresses—remain the only linked-sign-in identity.
+- Work Product and Matter Intelligence Drive export requires Account and Export
+  only. Picker/import/refresh/re-import requires the explicit Import flag and
+  remains unavailable and hidden in Manager Preview.
+- Preserved `FEATURE_GOOGLE_DRIVE=true` compatibility by mapping it to Account
+  and Export only; it can never activate Import.
+- Kept the approved exact scope set (`openid`, `email`, `profile`,
+  `drive.file`), encrypted refresh tokens, and browser-safe boolean-only public
+  configuration.
+
+Schema changes:
+
+- None. Existing additive OAuth and Drive tables remain compatible.
+
+Feature gates:
+
+- Recommended Manager Preview defaults:
+  `FEATURE_GOOGLE_ACCOUNT=false`, `FEATURE_GOOGLE_DRIVE_EXPORT=false`, and
+  `FEATURE_GOOGLE_DRIVE_IMPORT=false`.
+- Account and Export may be enabled only after the live Google staging smoke.
+  Import remains false for this release.
+
+Verification:
+
+- `npm run lint`: passed.
+- `npm test`: passed, 128/128 active tests; Google Drive and GovInfo live
+  smokes skipped as designed.
+- `npm run build`: passed with the existing Vite chunk-size warning.
+
+## Manager Preview Release — Web-only deployment stabilization
+
+Status: Complete in code; live container staging remains required.
+
+Implemented:
+
+- Made the existing worker and ClamAV services opt-in through the Compose
+  `ingestion` profile without deleting or changing their application code.
+- The default `docker compose up -d` topology now starts only the required web
+  service. Web readiness already reports jobs as `disabled` and does not require
+  pg-boss or ClamAV while `FEATURE_ASYNC_INGESTION=false`.
+- Documented the default web-only and deferred ingestion-profile commands and
+  added a focused manual staging checklist.
+
+Schema changes:
+
+- None.
+
+Verification:
+
+- Baseline `npm ci`: passed; npm reported two existing high-severity advisories.
+- Baseline `npm run verify`: passed, 127/127 active tests; the Google Drive and
+  GovInfo live smokes were skipped as designed.
+- Phase `npm run lint`: passed.
+- Phase `npm test`: passed, 127/127 active tests; two live smokes skipped.
+- Phase `npm run build`: passed with the existing Vite chunk-size warning.
+- `docker compose config --services`: passed and listed only `web`.
+- `docker compose --profile ingestion config --services`: passed and retained
+  `clamav`, `web`, and `worker`.
+
+Feature gate:
+
+- `FEATURE_ASYNC_INGESTION=false` remains required for Manager Preview.
+- The `ingestion` Compose profile is not activated by default.
+
 ## V1 Completion Phase — Complete Resource Lifecycle and Version Paths
 
 Status: Complete in code; staging gate remains closed.
@@ -991,3 +1092,48 @@ Known limitations:
 
 - A live container `/api/health` request was not run because no disposable database was used for this deployment pass; application startup automatically connects to the database and runs pending migrations.
 - The existing Vite large-chunk warning remains. Bundle optimization was explicitly outside this pass.
+
+## Manager Preview client accounts, collaboration, notifications, and release gate
+
+Status: Implementation complete; production activation remains gated by live Google and Brevo staging smokes.
+
+Implemented:
+
+- Added additive migration 019 for client users, explicit Matter-client memberships, hashed/revocable/expiring invitation, email-verification and password-reset tokens, separate hashed client sessions, notifications/preferences, email delivery attempts, client activity, account comments, and client ownership/visibility columns on existing responses and drafts.
+- Added invitation creation/acceptance/revocation, credential creation, verification/resend, later password login, uniform password-reset requests, single-use reset, logout, session listing/revocation, and Matter access suspend/restore/removal.
+- Added `/client/login`, `/client/dashboard`, `/client/invitations/:token`, verification, and reset routes with direct-refresh support while retaining the legacy `/client/:token` portal.
+- Added an explicit-membership dashboard for multiple Matters and contacts. It exposes only active authorized shared Work Product, requests, contact-private responses/comments/revisions/activity, notifications, and safe downloads.
+- Added visible lawyer notifications, unread counts, deep links, read/all-read actions, basic preferences, and assigned-lawyer/firm-admin recipient scoping.
+- Added Brevo-only templates and delivery metadata for invitations, verification, resets, security notices, lawyer requests/document sharing, and relevant client activity. Email bodies and raw tokens are not stored in delivery records or logs.
+- Added strict Origin and CSRF validation for sensitive client-account writes, separate secure client cookies, expiring/revocable sessions, progressive rate limits, centralized bounded validators, a 512 KB JSON ceiling, safe download filenames, and coded/redacted client errors.
+- Kept client durable uploads disabled and added no new ingestion path. Existing legacy synchronous portal behavior remains available under its existing limits.
+- Reordered production frontend registration after all API routes, correcting a nested production-route shadowing defect without changing API contracts.
+- Added a mocked Chromium journey covering lawyer login/Matter/Google/export, invitation, verification, later client login, shared content, response/comment/revision, session revocation, password-reset replay/expiry, contact isolation, access suspension/removal, lawyer notification, invitation replay, and valid/invalid legacy portal access.
+- Added `npm run verify:manager-preview` for lint, behavioral tests, build, production nested-route smoke, browser journey, Compose web-only validation, and explicit live-smoke skip reporting.
+
+Schema changes:
+
+- Migration 019 is additive and non-destructive. No existing table is dropped, truncated, renamed, recreated, or reset.
+- Existing legacy portal tokens and existing firms, users, Matters, documents, Work Product, conversations, collaboration data, and immutable Work Product history remain compatible.
+
+Dependencies:
+
+- Added `@playwright/test` as a development dependency for the required real-browser release journey.
+
+Verification:
+
+- `npm ci`: passed before editing; two existing high-severity npm audit findings were reported.
+- `npm run lint`: passed.
+- `npm test`: passed with 136 active tests and 3 explicitly skipped live-provider tests.
+- `npm run build`: passed with the existing Vite large-chunk warning.
+- `npm run test:browser`: passed, 1 Chromium release journey.
+- `npm run smoke:production-routes`: passed for public, lawyer, client-account, invitation, dashboard, and legacy nested routes.
+- `npm run verify:compose-web`: passed; default topology is `web`, ingestion profile retains `web`, `worker`, and `clamav`.
+
+Activation gates and limitations:
+
+- Live Google Drive staging smoke is not run without dedicated staging credentials and remains a required gate before Account/Export production flags are enabled.
+- Real Brevo staging smoke is not run without dedicated staging credentials/recipient and remains a required gate before `FEATURE_TRANSACTIONAL_EMAIL=true`.
+- No disposable production-style PostgreSQL instance or live staging dataset was supplied, so migration execution and the full manual lawyer workflow checklist still require staging confirmation.
+- `npm audit` reports one upstream high-severity React Router advisory twice (direct `react-router-dom` and transitive `react-router`) for RSC Action handling. Exepts uses browser routing and does not enable React Server Components or React Router server Actions, so the affected path is not reachable in this release. The registry has no patched release newer than the pinned `7.18.1`; downgrading exposes several older high-severity advisories. Reassess and upgrade when a patched compatible release is published.
+- Worker, ClamAV, Drive import, durable client uploads, OCR, CourtListener, Gmail sending, Sentry, and full final-launch hardening were not activated.

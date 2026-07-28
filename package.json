@@ -14,7 +14,12 @@
     "start:worker": "node dist/worker.cjs",
     "lint": "tsc --noEmit",
     "test": "tsx --test tests/**/*.test.ts",
-    "verify": "npm run lint && npm test && npm run build"
+    "test:browser": "playwright test",
+    "smoke:production-routes": "tsx scripts/manager-preview-production-smoke.ts",
+    "verify:compose-web": "node scripts/manager-preview-compose-check.mjs",
+    "verify": "npm run lint && npm test && npm run build",
+    "verify:migrations:staging": "tsx scripts/verify-staging-migrations.ts",
+    "verify:manager-preview": "node scripts/verify-manager-preview.mjs"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
@@ -44,6 +49,7 @@
     "vite": "^6.2.3"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.0",
     "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
     "@types/pg": "^8.20.0",

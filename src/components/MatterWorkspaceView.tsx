@@ -15,7 +15,9 @@ export default function MatterWorkspaceView({
   onMatterChange,
   initialDraftId,
   onClearInitialDraftId,
-  googleDriveEnabled,
+  googleDriveExportEnabled,
+  googleDriveImportEnabled,
+  clientAccountsEnabled,
   resourceLifecycleEnabled,
 }: {
   matterId: string;
@@ -23,7 +25,9 @@ export default function MatterWorkspaceView({
   onMatterChange: (matter: Case) => void;
   initialDraftId: string | null;
   onClearInitialDraftId: () => void;
-  googleDriveEnabled: boolean;
+  googleDriveExportEnabled: boolean;
+  googleDriveImportEnabled: boolean;
+  clientAccountsEnabled: boolean;
   resourceLifecycleEnabled: boolean;
 }) {
   const [matter, setMatter] = useState<Case | null>(null);
@@ -102,19 +106,19 @@ export default function MatterWorkspaceView({
       </nav>
       <main className={`flex-1 overflow-hidden ${tab === "Work Product" ? "p-0" : "overflow-y-auto p-8"}`}>
         {tab === "Overview" && <MatterOverview matter={matter} onChange={update} />}
-        {tab === "Sources" && <MatterSources matterId={matter.id} googleDriveEnabled={googleDriveEnabled} resourceLifecycleEnabled={resourceLifecycleEnabled} />}
-        {tab === "Matter Intelligence" && <MatterIntelligence matterId={matter.id} googleDriveEnabled={googleDriveEnabled} />}
+        {tab === "Sources" && <MatterSources matterId={matter.id} googleDriveImportEnabled={googleDriveImportEnabled} resourceLifecycleEnabled={resourceLifecycleEnabled} />}
+        {tab === "Matter Intelligence" && <MatterIntelligence matterId={matter.id} googleDriveExportEnabled={googleDriveExportEnabled} />}
         {tab === "Work Product" && (
           <DraftEditorView
             caseId={matter.id}
             initialDraftId={initialDraftId || collaborationDraftId}
             onClearInitialDraftId={clearDraftNavigation}
-            googleDriveEnabled={googleDriveEnabled}
+            googleDriveExportEnabled={googleDriveExportEnabled}
             resourceLifecycleEnabled={resourceLifecycleEnabled}
           />
         )}
         {tab === "Collaboration" && (
-          <MatterCollaboration matter={matter} onUnreadChange={setUnread} onOpenWorkProduct={openWorkProduct} />
+          <MatterCollaboration matter={matter} onUnreadChange={setUnread} onOpenWorkProduct={openWorkProduct} clientAccountsEnabled={clientAccountsEnabled} />
         )}
       </main>
     </div>

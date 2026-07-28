@@ -8,6 +8,45 @@ interface Migration {
 
 const migrations: Migration[] = [
   {
+    version: 0,
+    name: "legacy_firm_scope_column_repair",
+    async run(client) {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS firm (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL
+        )
+      `);
+      for (const table of ["users", "cases", "documents"]) {
+        await client.query(`ALTER TABLE IF EXISTS ${table} ADD COLUMN IF NOT EXISTS firm_id TEXT`);
+        await client.query(`
+          DO $$
+          DECLARE
+            relation_oid oid := to_regclass('${table}');
+          BEGIN
+            IF relation_oid IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1
+                FROM pg_constraint con
+                JOIN pg_attribute att
+                  ON att.attrelid = con.conrelid
+                 AND att.attnum = ANY(con.conkey)
+                WHERE con.conrelid = relation_oid
+                  AND con.contype = 'f'
+                  AND con.confrelid = 'firm'::regclass
+                  AND att.attname = 'firm_id'
+              )
+            THEN
+              ALTER TABLE ${table}
+                ADD CONSTRAINT ${table}_firm_id_fkey
+                FOREIGN KEY (firm_id) REFERENCES firm(id) NOT VALID;
+            END IF;
+          END $$;
+        `);
+      }
+    },
+  },
+  {
     version: 1,
     name: "baseline_schema",
     async run(client) {
@@ -1072,6 +1111,7 @@ const migrations: Migration[] = [
           c.created_by_user_id, d.uploaded_at::timestamptz
         FROM documents d
         LEFT JOIN cases c ON c.id = d.case_id
+        WHERE d.firm_id IS NOT NULL
         ON CONFLICT (document_id, version_number) DO NOTHING
       `);
       await client.query(`
@@ -1085,7 +1125,243 @@ const migrations: Migration[] = [
           d.created_at::timestamptz
         FROM drafts d
         JOIN cases c ON c.id = d.case_id
+        WHERE c.firm_id IS NOT NULL
+          AND COALESCE(d.last_edited_by_user_id, c.created_by_user_id) IS NOT NULL
         ON CONFLICT (draft_id, version_number) DO NOTHING
+      `);
+    },
+  },
+  {
+    version: 19,
+    name: "manager_preview_client_accounts_notifications_and_email",
+    async run(client) {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS client_users (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          email TEXT NOT NULL,
+          normalized_email TEXT NOT NULL UNIQUE,
+          password_hash TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'active',
+          email_verified_at TIMESTAMPTZ,
+          suspended_at TIMESTAMPTZ,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          CHECK (status IN ('active', 'suspended'))
+        )
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS matter_client_memberships (
+          id TEXT PRIMARY KEY,
+          firm_id TEXT NOT NULL REFERENCES firm(id) ON DELETE RESTRICT,
+          case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+          client_user_id TEXT NOT NULL REFERENCES client_users(id) ON DELETE RESTRICT,
+          status TEXT NOT NULL DEFAULT 'active',
+          invited_by_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+          activated_at TIMESTAMPTZ,
+          suspended_at TIMESTAMPTZ,
+          removed_at TIMESTAMPTZ,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          UNIQUE (case_id, client_user_id),
+          CHECK (status IN ('active', 'suspended', 'removed'))
+        )
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS client_invitations (
+          id TEXT PRIMARY KEY,
+          firm_id TEXT NOT NULL REFERENCES firm(id) ON DELETE RESTRICT,
+          case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+          email TEXT NOT NULL,
+          normalized_email TEXT NOT NULL,
+          client_name TEXT NOT NULL,
+          token_hash TEXT NOT NULL UNIQUE,
+          status TEXT NOT NULL DEFAULT 'pending',
+          invited_by_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+          accepted_by_client_user_id TEXT REFERENCES client_users(id) ON DELETE SET NULL,
+          expires_at TIMESTAMPTZ NOT NULL,
+          accepted_at TIMESTAMPTZ,
+          revoked_at TIMESTAMPTZ,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          CHECK (status IN ('pending', 'accepted', 'expired', 'revoked'))
+        )
+      `);
+      await client.query(`
+        CREATE UNIQUE INDEX IF NOT EXISTS client_invitations_pending_contact_unique
+        ON client_invitations(case_id, normalized_email)
+        WHERE status = 'pending'
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS client_invitations_scope_expiry_idx
+        ON client_invitations(firm_id, case_id, status, expires_at)
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS client_sessions (
+          id TEXT PRIMARY KEY,
+          token_hash TEXT NOT NULL UNIQUE,
+          client_user_id TEXT NOT NULL REFERENCES client_users(id) ON DELETE CASCADE,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          expires_at TIMESTAMPTZ NOT NULL,
+          last_used_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          revoked_at TIMESTAMPTZ,
+          revoked_reason TEXT,
+          user_agent_hash TEXT,
+          ip_hash TEXT
+        )
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS client_sessions_user_expiry_idx
+        ON client_sessions(client_user_id, expires_at DESC)
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS client_email_verification_tokens (
+          id TEXT PRIMARY KEY,
+          client_user_id TEXT NOT NULL REFERENCES client_users(id) ON DELETE CASCADE,
+          token_hash TEXT NOT NULL UNIQUE,
+          status TEXT NOT NULL DEFAULT 'pending',
+          expires_at TIMESTAMPTZ NOT NULL,
+          used_at TIMESTAMPTZ,
+          revoked_at TIMESTAMPTZ,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          CHECK (status IN ('pending', 'used', 'revoked'))
+        )
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS client_password_reset_tokens (
+          id TEXT PRIMARY KEY,
+          client_user_id TEXT NOT NULL REFERENCES client_users(id) ON DELETE CASCADE,
+          token_hash TEXT NOT NULL UNIQUE,
+          status TEXT NOT NULL DEFAULT 'pending',
+          expires_at TIMESTAMPTZ NOT NULL,
+          used_at TIMESTAMPTZ,
+          revoked_at TIMESTAMPTZ,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          CHECK (status IN ('pending', 'used', 'revoked'))
+        )
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS client_verification_expiry_idx
+        ON client_email_verification_tokens(status, expires_at)
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS client_reset_expiry_idx
+        ON client_password_reset_tokens(status, expires_at)
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS client_notifications (
+          id TEXT PRIMARY KEY,
+          firm_id TEXT NOT NULL REFERENCES firm(id) ON DELETE RESTRICT,
+          case_id TEXT REFERENCES cases(id) ON DELETE CASCADE,
+          recipient_user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+          recipient_client_user_id TEXT REFERENCES client_users(id) ON DELETE CASCADE,
+          actor_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+          actor_client_user_id TEXT REFERENCES client_users(id) ON DELETE SET NULL,
+          notification_type TEXT NOT NULL,
+          title TEXT NOT NULL,
+          deep_link TEXT NOT NULL,
+          read_at TIMESTAMPTZ,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          CHECK (
+            (recipient_user_id IS NOT NULL AND recipient_client_user_id IS NULL)
+            OR (recipient_user_id IS NULL AND recipient_client_user_id IS NOT NULL)
+          )
+        )
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS client_notifications_lawyer_unread_idx
+        ON client_notifications(firm_id, recipient_user_id, read_at, created_at DESC)
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS client_notifications_client_unread_idx
+        ON client_notifications(recipient_client_user_id, read_at, created_at DESC)
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS notification_preferences (
+          id TEXT PRIMARY KEY,
+          recipient_kind TEXT NOT NULL,
+          recipient_id TEXT NOT NULL,
+          in_app_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+          email_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+          security_email_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          UNIQUE (recipient_kind, recipient_id),
+          CHECK (recipient_kind IN ('lawyer', 'client'))
+        )
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS email_delivery_attempts (
+          id TEXT PRIMARY KEY,
+          firm_id TEXT REFERENCES firm(id) ON DELETE SET NULL,
+          client_user_id TEXT REFERENCES client_users(id) ON DELETE SET NULL,
+          template_key TEXT NOT NULL,
+          recipient_email_hash TEXT NOT NULL,
+          provider TEXT NOT NULL,
+          provider_message_id TEXT,
+          status TEXT NOT NULL,
+          attempt_count INTEGER NOT NULL DEFAULT 1,
+          failure_category TEXT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          attempted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          delivered_at TIMESTAMPTZ,
+          failed_at TIMESTAMPTZ,
+          CHECK (status IN ('queued', 'sent', 'failed', 'skipped'))
+        )
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS email_delivery_attempts_scope_idx
+        ON email_delivery_attempts(firm_id, client_user_id, created_at DESC)
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS client_activity_records (
+          id TEXT PRIMARY KEY,
+          firm_id TEXT NOT NULL REFERENCES firm(id) ON DELETE RESTRICT,
+          case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+          client_user_id TEXT NOT NULL REFERENCES client_users(id) ON DELETE RESTRICT,
+          membership_id TEXT NOT NULL REFERENCES matter_client_memberships(id) ON DELETE RESTRICT,
+          activity_type TEXT NOT NULL,
+          resource_type TEXT,
+          resource_id TEXT,
+          visibility TEXT NOT NULL DEFAULT 'private',
+          summary TEXT NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          CHECK (visibility IN ('private', 'shared'))
+        )
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS client_activity_scope_idx
+        ON client_activity_records(firm_id, case_id, client_user_id, created_at DESC)
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS client_account_comments (
+          id TEXT PRIMARY KEY,
+          firm_id TEXT NOT NULL REFERENCES firm(id) ON DELETE RESTRICT,
+          case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+          draft_id TEXT NOT NULL REFERENCES drafts(id) ON DELETE CASCADE,
+          client_user_id TEXT NOT NULL REFERENCES client_users(id) ON DELETE RESTRICT,
+          membership_id TEXT NOT NULL REFERENCES matter_client_memberships(id) ON DELETE RESTRICT,
+          content TEXT NOT NULL,
+          visibility TEXT NOT NULL DEFAULT 'private',
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          CHECK (visibility IN ('private', 'shared'))
+        )
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS client_account_comments_scope_idx
+        ON client_account_comments(firm_id, case_id, draft_id, created_at)
+      `);
+      await client.query(`
+        ALTER TABLE client_responses
+          ADD COLUMN IF NOT EXISTS client_user_id TEXT REFERENCES client_users(id) ON DELETE SET NULL,
+          ADD COLUMN IF NOT EXISTS client_membership_id TEXT REFERENCES matter_client_memberships(id) ON DELETE SET NULL,
+          ADD COLUMN IF NOT EXISTS visibility TEXT NOT NULL DEFAULT 'private'
+      `);
+      await client.query(`
+        ALTER TABLE drafts
+          ADD COLUMN IF NOT EXISTS created_by_client_user_id TEXT REFERENCES client_users(id) ON DELETE SET NULL,
+          ADD COLUMN IF NOT EXISTS client_membership_id TEXT REFERENCES matter_client_memberships(id) ON DELETE SET NULL,
+          ADD COLUMN IF NOT EXISTS client_visibility TEXT NOT NULL DEFAULT 'private'
       `);
     },
   },

@@ -146,11 +146,27 @@ class DatabaseService {
     await migrateLegacyDraftsFromEnvironment(getPool());
   }
 
-  private async query(text: string, params?: any[]): Promise<any[]> {
+  public async query(text: string, params?: any[]): Promise<any[]> {
     await this.ensureSchema();
     const pool = getPool();
     const res = await pool.query(text, params);
     return res.rows;
+  }
+
+  public async transaction<T>(run: (client: pg.PoolClient) => Promise<T>): Promise<T> {
+    await this.ensureSchema();
+    const client = await getPool().connect();
+    try {
+      await client.query("BEGIN");
+      const result = await run(client);
+      await client.query("COMMIT");
+      return result;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   public async seedDemoDataIfEnabled(): Promise<void> {

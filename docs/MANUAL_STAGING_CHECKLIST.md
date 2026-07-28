@@ -1,5 +1,21 @@
 # Manual Staging Checklist
 
+## Manager Preview web-only deployment
+
+- Keep `FEATURE_ASYNC_INGESTION=false`, `FEATURE_CLIENT_DURABLE_UPLOADS=false`,
+  `FEATURE_GOOGLE_DRIVE_IMPORT=false`, `FEATURE_OCR=false`,
+  `FEATURE_COURTLISTENER=false`, and `FEATURE_GMAIL_SEND=false`.
+- Run `docker compose config --services` and confirm the default topology lists
+  only `web`.
+- Run `docker compose up -d`, confirm no worker or ClamAV container is created,
+  and confirm `/api/health/ready` reports database ready and jobs disabled.
+- Refresh representative nested `/app`, `/app/matters/<id>`,
+  `/client/dashboard`, `/client/invitations/<token>`, and legacy
+  `/client/<token>` routes through the production proxy.
+- Treat `docker compose --profile ingestion up -d` as deferred and do not use it
+  for Manager Preview. It remains documented only to preserve the existing
+  opt-in worker/ClamAV topology for a later ingestion release.
+
 ## Resource lifecycle and immutable versions
 
 - Back up staging and deploy migration 018 with `FEATURE_RESOURCE_LIFECYCLE=false`. Confirm it only adds lifecycle columns, indexes, immutable version/audit/link tables, and the delayed deletion-request table; confirm no existing Matter, Source, Firm Library document, Work Product, original, conversation, client access, or collaboration row is removed.
@@ -31,28 +47,38 @@ Keep `FEATURE_RESOURCE_LIFECYCLE=false` until every item above passes.
 
 Keep `FEATURE_FIRM_TEAMS=false` until every firm-team staging item passes. Disabling the flag hides invitation/team controls while centralized membership and Matter-assignment authorization remains active.
 
-## Google account linking, sign-in, and Drive
+## Google account linking, sign-in, and Drive export
 
-- Back up the staging database and deploy migration 016 with `FEATURE_GOOGLE_DRIVE=false`; confirm existing password signup/login, Matters, Firm Library, Assistant, Matter Intelligence, Work Product, collaboration, and the legacy token Client Portal are unchanged.
-- Complete the private-storage and async-ingestion checklists first. Google activation requires `FEATURE_PRIVATE_STORAGE=true`, `FEATURE_ASYNC_INGESTION=true`, the web process, worker, private bucket, and ClamAV to be healthy.
+- Back up the staging database and deploy migration 016 with
+  `FEATURE_GOOGLE_ACCOUNT=false`, `FEATURE_GOOGLE_DRIVE_EXPORT=false`, and
+  `FEATURE_GOOGLE_DRIVE_IMPORT=false`; confirm existing password signup/login,
+  Matters, Firm Library, Assistant, Matter Intelligence, Work Product,
+  collaboration, and the legacy token Client Portal are unchanged.
+- Keep `FEATURE_ASYNC_INGESTION=false`. Account linking/sign-in and Drive export
+  must work in the web-only topology without private storage, pg-boss, worker,
+  or ClamAV.
 - Create separate Google OAuth clients for local, staging, and production. Set `GOOGLE_OAUTH_REDIRECT_URI` to the exact deployed `/api/auth/google/callback` URL and register that exact URI in Google Cloud.
 - Restrict `GOOGLE_PICKER_API_KEY` to the staging web origin and Google Picker API. Set `GOOGLE_CLOUD_PROJECT_NUMBER` to the numeric project number and confirm neither the client secret nor refresh tokens appear in the browser bundle, `/api/config`, logs, or errors.
 - Inspect the Google consent request and confirm its complete scope list is exactly `openid`, `email`, `profile`, and `https://www.googleapis.com/auth/drive.file`. Confirm no Gmail scope or Gmail control exists and `FEATURE_GMAIL_SEND=false`.
 - Provide a dedicated staging refresh token/file and run `GOOGLE_DRIVE_LIVE_SMOKE=true npm test`. Remove the smoke token from the test environment after the run.
-- Enable `FEATURE_GOOGLE_DRIVE=true` in staging. Link a Google account from Settings and confirm the connection email/status appears while password login continues to work.
+- Enable `FEATURE_GOOGLE_ACCOUNT=true` and
+  `FEATURE_GOOGLE_DRIVE_EXPORT=true` in staging. Keep
+  `FEATURE_GOOGLE_DRIVE_IMPORT=false`. Link a Google account from Settings and
+  confirm the connection email/status appears while password login continues
+  to work.
 - Attempt to link a Google subject already connected to another Exepts user and a different subject to an already linked user. Confirm both are rejected without email-based merging or ownership disclosure.
 - Test expired, replayed, missing, altered, cross-browser, and provider-cancelled OAuth state; test an altered callback URI. Confirm each fails safely and creates no connection or session.
 - Log out and sign in with the linked Google account. Then try an unlinked Google account whose email matches an Exepts password account; confirm it is not merged and is instructed to link after password login.
-- In Firm Library and in two different Matters, select supported PDF, DOCX, TXT, and Google Doc fixtures. Confirm each original/export is private, has a firm/Matter/document/version path, and is queued only after storage succeeds.
-- Confirm Google Docs are exported to DOCX before private storage. Confirm unsupported formats, empty files, files over 50 MB, duplicate content, storage failure, revoked access, and worker failure produce safe bounded states without file bytes or extracted text in logs.
-- Inspect `drive_file_imports` and `document_versions`; confirm Drive file ID, canonical link, modified/import times, imported/current parent IDs, revision/checksum where available, stored SHA-256, sync state, and private version identity are retained.
-- Modify, move, trash, and restrict permissions on fixtures, then use Refresh status. Confirm `changed`, `moved`, `moved and changed`, `deleted`, `permission restricted`, or honest `unavailable` states. Re-import a changed fixture and confirm a new document version is processed without replacing another Matter's data.
-- Attempt list, refresh, and re-import with another user, firm, Matter, import ID, file ID, document ID, and connection ID. Confirm no metadata, canonical link, state, filename, object key, or content is disclosed.
+- Confirm Firm Library and Matter Source Drive-import controls are completely
+  absent. Direct Picker, import, refresh, and re-import API calls must return
+  unavailable while `FEATURE_GOOGLE_DRIVE_IMPORT=false`.
 - Export representative Work Product and Matter Intelligence to Drive. Confirm each DOCX opens from the returned canonical Drive link and `drive_exports` records the authenticated firm, user, Matter, source identity, Drive identity, and export time.
 - Disconnect Google. Confirm provider revocation is attempted, the encrypted refresh token is cleared locally, tracked files show connection revoked, imported Exepts copies remain available, and password login still works. If provider revocation cannot be confirmed, verify the UI instructs the user to review Google Account access.
 - Review database rows, logs, API errors, observability, and browser storage for absence of plaintext refresh tokens, authorization codes, PKCE verifiers, access tokens at rest, document bytes, extracted text, prompts, cookies, database URLs, and client secrets.
 
-Keep `FEATURE_GOOGLE_DRIVE=false` until every Google staging item passes. Keep `FEATURE_GMAIL_SEND=false`; Gmail sending and Gmail scopes are deferred.
+Keep the Account and Export flags false until their live smoke and checklist
+pass. Keep `FEATURE_GOOGLE_DRIVE_IMPORT=false` for Manager Preview. Keep
+`FEATURE_GMAIL_SEND=false`; Gmail sending and Gmail scopes are deferred.
 
 ## Central configuration and health foundation
 
@@ -126,3 +152,29 @@ Keep `FEATURE_PRIVATE_STORAGE=false` until every staging item above passes. The 
 - Review web, worker, pg-boss, and ClamAV logs for absence of file bytes, extracted text, prompts, credentials, tokens, checksums, cookies, database URLs, and client data.
 
 Keep `FEATURE_ASYNC_INGESTION=false` until this checklist passes.
+## Manager Preview release
+
+- Record the release SHA, take a verified staging backup, and confirm preservation branch `archive/batch1-before-manager-preview` remains at the pre-release SHA.
+- Run `npm ci`, `npm run verify`, and `npm run verify:manager-preview`. Treat the Google and Brevo live checks as skipped—not passed—unless their explicit staging flags and dedicated test accounts are supplied.
+- Review migration 019 before startup. Confirm it contains only `CREATE ... IF NOT EXISTS`, indexes, and `ADD COLUMN IF NOT EXISTS`; verify it does not drop, truncate, rename, recreate, or reseed existing data.
+- Start `docker compose up -d` with `FEATURE_ASYNC_INGESTION=false`. Confirm `docker compose config --services` lists only `web`, readiness succeeds, and no worker or ClamAV container/restart loop exists.
+- Keep Drive import, durable client uploads, OCR, CourtListener, Gmail sending, and Sentry/observability integrations false. Confirm their controls are absent.
+- Re-run lawyer signup/password login, session restoration/logout, Matter list/create/open, Matter Sources, Firm Library, Assistant General and Matter contexts, Matter Intelligence, Work Product edit/export, collaboration, and nested refreshes.
+- Confirm General Assistant context cannot retrieve Matter records. Substitute cross-firm and unassigned Matter, document, draft, response, conversation, and notification IDs and confirm no metadata or content is disclosed.
+- Enable Account and Export in staging without private storage, pg-boss, worker, or ClamAV. Link, refresh, disconnect, revoke, linked-only sign in, and export representative Work Product/Matter Intelligence. Confirm password login remains available.
+- Inspect Google consent: only `openid`, `email`, `profile`, and `drive.file`. Test provider-subject conflicts and matching-email/unlinked-account conflicts without account merging.
+- Create invitations for two contacts in Matter A and one contact in Matter B. Confirm the email/link is presented through exactly one intended channel, raw tokens are absent from database rows/logs, and duplicate pending invitations are rejected.
+- Accept, verify, create credentials, log out, and log in again from `/client/login` without the invitation URL. Replay accepted, expired, and revoked invitation URLs and confirm denial.
+- Request verification resend and password reset. Confirm unknown-account responses are indistinguishable, reset/verification links expire, replay fails, and a password reset revokes existing client sessions.
+- Confirm the dashboard shows every active explicitly assigned Matter and no other Matter. Suspend, restore, and remove access and confirm immediate suspended/removed states without deleting prior Work Product.
+- Use two contacts on one Matter. Confirm each contact can view shared lawyer content but cannot see the other contact's private response, comment, revision, activity, notification, or session.
+- Exercise shared documents/downloads, lawyer requests, client text responses, comments, and private revisions. Confirm no new client-account file upload or Google Drive import control appears.
+- Confirm the lawyer notification bell updates for invitation acceptance, responses, comments, and revisions; test deep links, mark read, mark all read, and preferences.
+- List client sessions, revoke another session, and confirm it immediately receives 401 without exposing raw or stored token hashes.
+- Send mocked Brevo invitation, verification, reset, security, and notification templates. Confirm safe substitutions and delivery metadata. Then run `BREVO_LIVE_SMOKE=true` with a dedicated `BREVO_SMOKE_RECIPIENT`; keep production email disabled until it succeeds.
+- Inspect browser cookies for separate lawyer/client sessions, `HttpOnly`, `Secure` in HTTPS staging, and appropriate SameSite. Attempt missing/foreign Origin and CSRF values and confirm 403.
+- Exercise progressive rate limits for client login, invitation acceptance, verification, and password reset. Confirm bounded request bodies, safe filenames on retained legacy uploads, and redacted errors.
+- Open a valid legacy `/client/:token` portal and exercise its existing shared content, responses, comments, revisions, and bounded synchronous uploads. Confirm an invalid token fails and client-account changes did not reinterpret legacy tokens.
+- Review application and provider logs for absence of document bodies, prompts, passwords, invitation/verification/reset tokens, cookies, OAuth tokens, database URLs, email bodies, or client data.
+
+Do not proceed to durable ingestion or final hardening from this checklist.
