@@ -3,6 +3,7 @@ import { Eye, FileText, Plus, Search, Trash2, Upload, X } from "lucide-react";
 import { Document } from "../types";
 import SelectedFileList from "./SelectedFileList";
 import { useCumulativeFileSelection } from "../hooks/useCumulativeFileSelection";
+import { PRIVATE_UPLOAD_MAX_FILES, uploadPrivateFiles } from "../lib/durableUploads";
 
 export default function MatterSources({ matterId }: { matterId: string }) {
   const [sources, setSources] = useState<Document[]>([]);
@@ -16,7 +17,7 @@ export default function MatterSources({ matterId }: { matterId: string }) {
   const [selectedLibraryIds, setSelectedLibraryIds] = useState<string[]>([]);
   const [processing, setProcessing] = useState(false);
   const [error, setError] = useState("");
-  const fileSelection = useCumulativeFileSelection();
+  const fileSelection = useCumulativeFileSelection(PRIVATE_UPLOAD_MAX_FILES);
 
   const load = async () => {
     const [sourceResponse, libraryResponse] = await Promise.all([
@@ -50,6 +51,12 @@ export default function MatterSources({ matterId }: { matterId: string }) {
       let response: Response;
       if (type === "upload") {
         if (fileSelection.files.length === 0) return;
+        if (await uploadPrivateFiles(fileSelection.files, matterId)) {
+          resetAddForm();
+          setShowAdd(false);
+          await load();
+          return;
+        }
         const form = new FormData();
         if (fileSelection.files.length === 1 && title.trim()) form.append("title", title.trim());
         fileSelection.files.forEach((file) => form.append("files", file));

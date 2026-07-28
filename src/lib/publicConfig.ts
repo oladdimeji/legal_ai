@@ -6,6 +6,7 @@ export interface PublicBrowserConfig {
     googleDrive: boolean;
     clientAccounts: boolean;
     firmTeams: boolean;
+    privateStorage: boolean;
   };
 }
 
@@ -17,6 +18,6 @@ export const disabledPublicBrowserConfig: PublicBrowserConfig = {
     googleDrive: false,
     clientAccounts: false,
     firmTeams: false,
+    privateStorage: false,
   },
 };
-

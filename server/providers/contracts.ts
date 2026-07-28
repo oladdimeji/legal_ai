@@ -7,8 +7,9 @@ export interface ProviderHealth {
 
 export interface ObjectStorageProvider {
   health(): Promise<ProviderHealth>;
-  put(key: string, content: Uint8Array): Promise<void>;
-  get(key: string): Promise<Uint8Array>;
+  createSignedUpload(key: string): Promise<{ token: string; expiresAt: string }>;
+  stat(key: string): Promise<{ size: number; contentType: string | null; metadata: Record<string, string> } | null>;
+  createSignedDownload(key: string, expiresInSeconds: number, downloadName: string): Promise<string>;
 }
 
 export interface JobsProvider {
@@ -41,4 +42,3 @@ export interface ObservabilityProvider {
   health(): Promise<ProviderHealth>;
   capture(error: unknown, context?: Record<string, string | number | boolean>): void;
 }
-

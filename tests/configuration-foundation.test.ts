@@ -18,6 +18,7 @@ test("all completion-phase feature flags default false independently", () => {
     ocr: false,
     clientAccounts: false,
     firmTeams: false,
+    privateStorage: false,
   });
 });
 
@@ -101,6 +102,7 @@ test("public browser configuration has an explicit allow-list and cannot expose 
     "googleDrive",
     "clientAccounts",
     "firmTeams",
+    "privateStorage",
   ]);
   assert.doesNotMatch(JSON.stringify(publicConfig), new RegExp(secret));
 });
@@ -129,4 +131,3 @@ test("configuration errors do not echo credentials and deferred controls are con
   assert.match(server, /app\.get\("\/api\/health\/live"/);
   assert.match(server, /app\.get\("\/api\/health\/ready"/);
 });
-

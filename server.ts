@@ -1,6 +1,7 @@
 import express from "express";
 import type { NextFunction, Request, Response } from "express";
 import path from "path";
+import { randomUUID } from "node:crypto";
 import multer from "multer";
 import { createServer as createViteServer } from "vite";
 import { registerProductionFrontend } from "./server/frontend.js";
@@ -15,6 +16,17 @@ import { markdownToDocxDocument } from "./server/docxMarkdown.js";
 import { cleanMatterIntelligenceContent } from "./server/matterIntelligenceContent.js";
 import { cleanClientAssistantContent, cleanGeneratedBoilerplate } from "./server/generatedContentCleanup.js";
 import { loadServerConfig, toPublicBrowserConfig } from "./server/config.js";
+import {
+  DOWNLOAD_TTL_SECONDS,
+  STORAGE_LIMITS,
+  SupabaseStorageProvider,
+  UPLOAD_AUTHORIZATION_TTL_MS,
+  assertUploadConfirmation,
+  buildObjectKey,
+  safeStorageFilename,
+  validateUploadFiles,
+  type UploadFileRequest,
+} from "./server/storage.js";
 import { canonicalizeAssistantCitations, rewriteGoogleGroundingCitations, stripInternalCitationsForWorkProduct } from "./src/lib/assistantCitations.js";
 import {
   SESSION_COOKIE_NAME,
@@ -30,6 +42,13 @@ import {
 
 const config = loadServerConfig();
 const isProduction = config.environment === "production";
+const privateStorage = config.features.privateStorage
+  ? new SupabaseStorageProvider(
+      config.providers.objectStorage.supabaseUrl!,
+      config.providers.objectStorage.supabaseSecretKey!,
+      config.providers.objectStorage.bucket!,
+    )
+  : null;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const SIMILARITY_THRESHOLD = 0.65;
@@ -505,6 +524,111 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
 
   // All remaining API routes require a server-validated session.
   app.use("/api", requireAuth);
+
+  app.get("/api/uploads/capabilities", (_req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    return res.json({
+      enabled: Boolean(privateStorage),
+      limits: privateStorage ? STORAGE_LIMITS : null,
+    });
+  });
+
+  app.post("/api/uploads/authorize", async (req, res) => {
+    if (!privateStorage) return res.status(404).json({ error: "Private uploads are not enabled." });
+    try {
+      const context = ownership(req);
+      const caseId = requestedCaseId(req.body.caseId);
+      const uploadSource = caseId ? "Lawyer Matter Upload" : "Lawyer Firm Library Upload";
+      const files = Array.isArray(req.body.files) ? req.body.files as UploadFileRequest[] : [];
+      validateUploadFiles(files);
+      const expiresAt = new Date(Date.now() + UPLOAD_AUTHORIZATION_TTL_MS).toISOString();
+      const reserved = files.map((file) => {
+        const documentId = `doc_${randomUUID()}`;
+        const versionId = `version_${randomUUID()}`;
+        const safeFilename = safeStorageFilename(file.filename);
+        return {
+          documentId,
+          versionId,
+          originalFilename: file.filename,
+          safeFilename,
+          objectKey: buildObjectKey(context.firmId, caseId, documentId, versionId, safeFilename),
+          contentType: file.contentType || "application/octet-stream",
+          byteSize: file.size,
+          checksumSha256: file.checksumSha256.toLowerCase(),
+        };
+      });
+      const { batchId } = await db.authorizePrivateUploadBatch(
+        context,
+        caseId,
+        uploadSource,
+        config.providers.objectStorage.bucket!,
+        expiresAt,
+        reserved,
+        STORAGE_LIMITS,
+      );
+      const authorized = [];
+      for (const file of reserved) {
+        const signed = await privateStorage.createSignedUpload(file.objectKey);
+        authorized.push({
+          versionId: file.versionId,
+          objectKey: file.objectKey,
+          token: signed.token,
+          expiresAt: signed.expiresAt,
+          endpoint: privateStorage.resumableUrl,
+          metadata: {
+            bucketName: config.providers.objectStorage.bucket!,
+            objectName: file.objectKey,
+            contentType: file.contentType,
+            checksumSha256: file.checksumSha256,
+          },
+        });
+      }
+      res.setHeader("Cache-Control", "no-store");
+      return res.status(201).json({ batchId, files: authorized });
+    } catch (error: any) {
+      const message = error instanceof Error ? error.message : "Upload authorization failed.";
+      const status = error?.code === "23505" || /same checksum/i.test(message) ? 409
+        : /not found/i.test(message) ? 404 : 400;
+      return res.status(status).json({ error: message });
+    }
+  });
+
+  app.post("/api/uploads/:versionId/confirm", async (req, res) => {
+    if (!privateStorage) return res.status(404).json({ error: "Private uploads are not enabled." });
+    try {
+      const context = ownership(req);
+      const version = await db.getAuthorizedUploadVersion(req.params.versionId, context);
+      if (!version) return res.status(404).json({ error: "Upload not found." });
+      if (version.upload_state === "Uploaded") {
+        return res.json({ document: await db.confirmPrivateUpload(version.id, context) });
+      }
+      const object = await privateStorage.stat(version.object_key);
+      assertUploadConfirmation(version, object);
+      const document = await db.confirmPrivateUpload(version.id, context);
+      return res.status(201).json({ document, versionId: version.id });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Upload confirmation failed.";
+      const status = /expired/i.test(message) ? 410 : /not found/i.test(message) ? 404 : 409;
+      return res.status(status).json({ error: message });
+    }
+  });
+
+  app.get("/api/document-versions/:versionId/original-download", async (req, res) => {
+    if (!privateStorage) return res.status(404).json({ error: "Private originals are not enabled." });
+    const original = await db.getOriginalDownload(req.params.versionId, ownership(req));
+    if (!original) return res.status(404).json({ error: "Original file not found." });
+    try {
+      const url = await privateStorage.createSignedDownload(
+        original.object_key,
+        DOWNLOAD_TTL_SECONDS,
+        original.original_filename,
+      );
+      res.setHeader("Cache-Control", "no-store");
+      return res.json({ url, expiresAt: new Date(Date.now() + DOWNLOAD_TTL_SECONDS * 1000).toISOString() });
+    } catch {
+      return res.status(503).json({ error: "Original download is temporarily unavailable." });
+    }
+  });
 
   // Enhance/Improve Raw Prompt into Legal-Grade Query
   app.post("/api/improve-prompt", async (req, res) => {

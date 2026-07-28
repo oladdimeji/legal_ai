@@ -3,6 +3,7 @@ import { Database, Eye, FileText, FolderOpen, Search, Trash2, Upload, X } from "
 import { Document } from "../types";
 import SelectedFileList from "./SelectedFileList";
 import { useCumulativeFileSelection } from "../hooks/useCumulativeFileSelection";
+import { PRIVATE_UPLOAD_MAX_FILES, uploadPrivateFiles } from "../lib/durableUploads";
 
 export default function FirmLibraryView() {
   const [documents, setDocuments] = useState<Document[]>([]);
@@ -14,7 +15,7 @@ export default function FirmLibraryView() {
   const [title, setTitle] = useState("");
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
-  const fileSelection = useCumulativeFileSelection();
+  const fileSelection = useCumulativeFileSelection(PRIVATE_UPLOAD_MAX_FILES);
 
   const load = async () => {
     const response = await fetch("/api/documents?caseId=null");
@@ -50,6 +51,12 @@ export default function FirmLibraryView() {
     setUploading(true);
     setUploadError("");
     try {
+      if (await uploadPrivateFiles(fileSelection.files, null)) {
+        setTitle("");
+        fileSelection.clearFiles();
+        await load();
+        return;
+      }
       const form = new FormData();
       if (fileSelection.files.length === 1 && title.trim()) form.append("title", title.trim());
       fileSelection.files.forEach((file) => form.append("files", file));

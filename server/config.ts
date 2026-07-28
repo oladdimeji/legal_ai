@@ -10,6 +10,7 @@ export interface FeatureFlags {
   ocr: boolean;
   clientAccounts: boolean;
   firmTeams: boolean;
+  privateStorage: boolean;
 }
 
 export interface ServerConfig {
@@ -20,7 +21,12 @@ export interface ServerConfig {
   encryptionKeyBase64?: string;
   features: FeatureFlags;
   providers: {
-    objectStorage: { provider?: string };
+    objectStorage: {
+      provider?: string;
+      supabaseUrl?: string;
+      supabaseSecretKey?: string;
+      bucket?: string;
+    };
     jobs: { provider?: string };
     malwareScanning: { provider?: string };
     govInfo: { apiKey?: string; baseUrl: string };
@@ -40,7 +46,7 @@ export interface ServerConfig {
 export interface PublicBrowserConfig {
   features: Pick<
     FeatureFlags,
-    "publicLanding" | "govInfo" | "courtListener" | "googleDrive" | "clientAccounts" | "firmTeams"
+    "publicLanding" | "govInfo" | "courtListener" | "googleDrive" | "clientAccounts" | "firmTeams" | "privateStorage"
   >;
 }
 
@@ -95,7 +101,17 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
     ocr: parseBoolean(env, "FEATURE_OCR"),
     clientAccounts: parseBoolean(env, "FEATURE_CLIENT_ACCOUNTS"),
     firmTeams: parseBoolean(env, "FEATURE_FIRM_TEAMS"),
+    privateStorage: parseBoolean(env, "FEATURE_PRIVATE_STORAGE"),
   };
+
+  requireWhen(features.privateStorage, env, [
+    "SUPABASE_URL",
+    "SUPABASE_SECRET_KEY",
+    "STORAGE_BUCKET",
+  ]);
+  if (features.privateStorage && env.OBJECT_STORAGE_PROVIDER !== "supabase") {
+    throw new Error("FEATURE_PRIVATE_STORAGE requires OBJECT_STORAGE_PROVIDER=supabase.");
+  }
 
   requireWhen(features.asyncIngestion, env, [
     "OBJECT_STORAGE_PROVIDER",
@@ -128,7 +144,12 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
     encryptionKeyBase64: env.APP_ENCRYPTION_KEY_BASE64,
     features,
     providers: {
-      objectStorage: { provider: env.OBJECT_STORAGE_PROVIDER },
+      objectStorage: {
+        provider: env.OBJECT_STORAGE_PROVIDER,
+        supabaseUrl: env.SUPABASE_URL,
+        supabaseSecretKey: env.SUPABASE_SECRET_KEY,
+        bucket: env.STORAGE_BUCKET,
+      },
       jobs: { provider: env.JOBS_PROVIDER },
       malwareScanning: { provider: env.MALWARE_SCANNER_PROVIDER },
       govInfo: {
@@ -150,9 +171,9 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
 }
 
 export function toPublicBrowserConfig(config: ServerConfig): PublicBrowserConfig {
-  const { publicLanding, govInfo, courtListener, googleDrive, clientAccounts, firmTeams } =
+  const { publicLanding, govInfo, courtListener, googleDrive, clientAccounts, firmTeams, privateStorage } =
     config.features;
   return {
-    features: { publicLanding, govInfo, courtListener, googleDrive, clientAccounts, firmTeams },
+    features: { publicLanding, govInfo, courtListener, googleDrive, clientAccounts, firmTeams, privateStorage },
   };
 }

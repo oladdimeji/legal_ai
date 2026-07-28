@@ -1,5 +1,50 @@
 # Compact Upgrade Progress
 
+## V1 Completion Phase — Private Supabase Storage and Durable Originals
+
+Status: Complete in code; staging gate remains closed.
+
+Implemented:
+
+- Added server-only Supabase Storage access with signed two-hour upload tokens and one-minute original download URLs.
+- Added browser-side TUS uploads in required 6 MB resumable chunks for Matter creation, Matter Sources, and Firm Library.
+- Added firm/Matter/document/version-scoped safe object keys and durable authorization/confirmation state.
+- Added file, batch, workspace byte, and workspace file limits with firm-row serialization and duplicate checksum rejection.
+- Required private object existence and matching size/checksum metadata before confirmation creates a compatible document record.
+- Preserved existing multipart routes as the default-false compatibility path.
+- Did not add a worker, OCR, CourtListener, Gmail, or Google Drive behavior.
+
+Schema changes:
+
+- Migration 013 adds `upload_batches` and `document_versions` with ownership, object metadata, checksum, upload source/uploader, authorization expiry, and durable state.
+- Existing `documents` rows remain valid and need no backfill. Confirmed private uploads add a compatible `documents` row in `Uploaded` state.
+
+Dependencies added:
+
+- `@supabase/supabase-js` for server-side signed Storage operations.
+- `tus-js-client` for direct browser-to-Supabase resumable uploads.
+
+Verification:
+
+- Pre-change `npm ci`: passed; npm reported the two existing high-severity React Router advisories.
+- Pre-change `npm run verify`: passed, 92/92 tests, with the existing Vite large-chunk warning.
+- Final `npm run lint`: passed.
+- Final `npm test`: passed, 98/98 tests.
+- Final `npm run build`: passed with the existing Vite large-chunk warning.
+- Final `npm run verify`: passed.
+- `docker compose config --quiet`: passed.
+- Docker image build could not run because the local Docker Desktop Linux engine pipe was unavailable at `//./pipe/dockerDesktopLinuxEngine`.
+
+Feature gate:
+
+- `FEATURE_PRIVATE_STORAGE=false` remains the exact gate until the private-bucket staging checklist passes.
+
+Known limitations:
+
+- The worker is intentionally deferred; confirmed originals remain `Uploaded` and are not extracted or indexed by this phase.
+- Legacy Client Portal uploads remain on the preserved multipart compatibility route.
+- No live Supabase bucket or staging database was available, so migration application, TUS interruption/resume, and signed download expiry remain manual staging gates.
+
 ## V1 Completion Phase — Public/Application/Client Routing and Accessible UI Shell
 
 Status: Complete.

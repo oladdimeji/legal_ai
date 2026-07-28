@@ -465,6 +465,64 @@ const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 13,
+    name: "private_original_uploads",
+    async run(client) {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS upload_batches (
+          id TEXT PRIMARY KEY,
+          firm_id TEXT NOT NULL REFERENCES firm(id) ON DELETE CASCADE,
+          case_id TEXT REFERENCES cases(id) ON DELETE CASCADE,
+          created_by_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+          upload_source TEXT NOT NULL,
+          state TEXT NOT NULL DEFAULT 'Authorized',
+          file_count INTEGER NOT NULL,
+          total_bytes BIGINT NOT NULL,
+          authorization_expires_at TIMESTAMPTZ NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          completed_at TIMESTAMPTZ
+        )
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS document_versions (
+          id TEXT PRIMARY KEY,
+          document_id TEXT REFERENCES documents(id) ON DELETE CASCADE,
+          reserved_document_id TEXT NOT NULL UNIQUE,
+          firm_id TEXT NOT NULL REFERENCES firm(id) ON DELETE CASCADE,
+          case_id TEXT REFERENCES cases(id) ON DELETE CASCADE,
+          upload_batch_id TEXT NOT NULL REFERENCES upload_batches(id) ON DELETE RESTRICT,
+          version_number INTEGER NOT NULL DEFAULT 1,
+          original_filename TEXT NOT NULL,
+          safe_filename TEXT NOT NULL,
+          object_key TEXT NOT NULL UNIQUE,
+          storage_bucket TEXT NOT NULL,
+          content_type TEXT NOT NULL,
+          byte_size BIGINT NOT NULL,
+          checksum_sha256 TEXT NOT NULL,
+          upload_source TEXT NOT NULL,
+          uploaded_by_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+          upload_state TEXT NOT NULL DEFAULT 'Authorized',
+          authorization_expires_at TIMESTAMPTZ NOT NULL,
+          confirmed_at TIMESTAMPTZ,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          UNIQUE (firm_id, checksum_sha256)
+        )
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS upload_batches_firm_created_idx
+        ON upload_batches(firm_id, created_at DESC)
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS document_versions_firm_state_idx
+        ON document_versions(firm_id, upload_state, created_at DESC)
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS document_versions_document_idx
+        ON document_versions(document_id, version_number DESC)
+      `);
+    },
+  },
 ];
 
 export async function runMigrations(pool: Pool): Promise<void> {

@@ -3,6 +3,7 @@ import { Briefcase, Check, ChevronDown, Grid2X2, List, Plus, Search, Upload, X }
 import { Case, Document } from "../types";
 import SelectedFileList from "./SelectedFileList";
 import { useCumulativeFileSelection } from "../hooks/useCumulativeFileSelection";
+import { PRIVATE_UPLOAD_MAX_FILES, privateUploadsEnabled, uploadPrivateFiles } from "../lib/durableUploads";
 
 interface Props { matters: Case[]; onRefresh: () => Promise<void> | void; onOpenMatter: (id: string) => void; }
 type Sort = "activity" | "created" | "name";
@@ -19,7 +20,7 @@ export default function MattersView({ matters, onRefresh, onOpenMatter }: Props)
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState("");
-  const fileSelection = useCumulativeFileSelection();
+  const fileSelection = useCumulativeFileSelection(PRIVATE_UPLOAD_MAX_FILES);
 
   const shown = useMemo(() => matters.filter((matter) => `${matter.name} ${matter.client_name || ""}`.toLowerCase().includes(query.toLowerCase())).sort((a, b) => {
     if (sort === "name") return a.name.localeCompare(b.name);
@@ -52,11 +53,16 @@ export default function MattersView({ matters, onRefresh, onOpenMatter }: Props)
       form.append("name", name.trim());
       form.append("description", description.trim());
       form.append("libraryDocumentIds", JSON.stringify(selectedLibrary));
-      fileSelection.files.forEach((file) => form.append("files", file));
+      const usePrivateStorage = fileSelection.files.length > 0 && await privateUploadsEnabled();
+      if (!usePrivateStorage) fileSelection.files.forEach((file) => form.append("files", file));
       if (fileSelection.files.length || selectedLibrary.length) setStatus("Uploading sources...");
       const response = await fetch("/api/cases", { method: "POST", body: form });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Matter could not be created");
+      if (usePrivateStorage) {
+        setStatus("Uploading sources...");
+        await uploadPrivateFiles(fileSelection.files, data.id);
+      }
       await onRefresh();
       setShowCreate(false);
       reset();

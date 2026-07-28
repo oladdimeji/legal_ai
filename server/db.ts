@@ -1134,6 +1134,193 @@ class DatabaseService {
     );
   }
 
+  public async authorizePrivateUploadBatch(
+    context: OwnershipContext,
+    caseId: string | null,
+    uploadSource: string,
+    bucket: string,
+    expiresAt: string,
+    files: Array<{
+      documentId: string;
+      versionId: string;
+      originalFilename: string;
+      safeFilename: string;
+      objectKey: string;
+      contentType: string;
+      byteSize: number;
+      checksumSha256: string;
+    }>,
+    limits: { maxWorkspaceBytes: number; maxWorkspaceFiles: number },
+  ): Promise<{ batchId: string }> {
+    await this.ensureSchema();
+    const client = await getPool().connect();
+    const batchId = `upload_batch_${randomUUID()}`;
+    const totalBytes = files.reduce((sum, file) => sum + file.byteSize, 0);
+    try {
+      await client.query("BEGIN");
+      const firm = await client.query(
+        "SELECT id FROM firm WHERE id = $1 FOR UPDATE",
+        [context.firmId],
+      );
+      if (firm.rowCount !== 1) throw new Error("Workspace not found");
+      if (caseId) {
+        const matter = await client.query(
+          "SELECT id FROM cases WHERE id = $1 AND firm_id = $2",
+          [caseId, context.firmId],
+        );
+        if (matter.rowCount !== 1) throw new Error("Matter not found");
+      }
+      const usage = await client.query(
+        `SELECT COUNT(*)::int AS file_count, COALESCE(SUM(byte_size), 0)::bigint AS total_bytes
+         FROM document_versions
+         WHERE firm_id = $1 AND upload_state IN ('Authorized', 'Uploaded')`,
+        [context.firmId],
+      );
+      const workspaceFiles = Number(usage.rows[0]?.file_count || 0);
+      const workspaceBytes = Number(usage.rows[0]?.total_bytes || 0);
+      if (workspaceFiles + files.length > limits.maxWorkspaceFiles) {
+        throw new Error("Workspace file limit exceeded.");
+      }
+      if (workspaceBytes + totalBytes > limits.maxWorkspaceBytes) {
+        throw new Error("Workspace storage limit exceeded.");
+      }
+      const duplicate = await client.query(
+        `SELECT checksum_sha256 FROM document_versions
+         WHERE firm_id = $1 AND checksum_sha256 = ANY($2::text[])
+         LIMIT 1`,
+        [context.firmId, files.map((file) => file.checksumSha256)],
+      );
+      if (duplicate.rowCount) throw new Error("A file with the same checksum already exists in this workspace.");
+
+      await client.query(
+        `INSERT INTO upload_batches
+          (id, firm_id, case_id, created_by_user_id, upload_source, state, file_count,
+           total_bytes, authorization_expires_at)
+         VALUES ($1, $2, $3, $4, $5, 'Authorized', $6, $7, $8)`,
+        [batchId, context.firmId, caseId, context.userId, uploadSource, files.length, totalBytes, expiresAt],
+      );
+      for (const file of files) {
+        await client.query(
+          `INSERT INTO document_versions
+            (id, document_id, reserved_document_id, firm_id, case_id, upload_batch_id, version_number,
+             original_filename, safe_filename, object_key, storage_bucket, content_type,
+             byte_size, checksum_sha256, upload_source, uploaded_by_user_id,
+             upload_state, authorization_expires_at)
+           VALUES ($1, NULL, $2, $3, $4, $5, 1, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'Authorized', $15)`,
+          [
+            file.versionId, file.documentId, context.firmId, caseId, batchId, file.originalFilename,
+            file.safeFilename, file.objectKey, bucket, file.contentType, file.byteSize,
+            file.checksumSha256, uploadSource, context.userId, expiresAt,
+          ],
+        );
+      }
+      await client.query("COMMIT");
+      return { batchId };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async getAuthorizedUploadVersion(versionId: string, context: OwnershipContext): Promise<any | undefined> {
+    const rows = await this.query(
+      `SELECT v.*, b.state AS batch_state
+       FROM document_versions v
+       JOIN upload_batches b ON b.id = v.upload_batch_id
+       WHERE v.id = $1 AND v.firm_id = $2 AND v.uploaded_by_user_id = $3`,
+      [versionId, context.firmId, context.userId],
+    );
+    return rows[0];
+  }
+
+  public async confirmPrivateUpload(versionId: string, context: OwnershipContext): Promise<Document> {
+    await this.ensureSchema();
+    const client = await getPool().connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query(
+        `SELECT v.* FROM document_versions v
+         WHERE v.id = $1 AND v.firm_id = $2 AND v.uploaded_by_user_id = $3
+         FOR UPDATE`,
+        [versionId, context.firmId, context.userId],
+      );
+      const version = result.rows[0];
+      if (!version) throw new Error("Upload not found");
+      if (version.upload_state === "Uploaded" && version.document_id) {
+        const existing = await client.query(
+          "SELECT * FROM documents WHERE id = $1 AND firm_id = $2",
+          [version.document_id, context.firmId],
+        );
+        await client.query("COMMIT");
+        return existing.rows[0];
+      }
+      if (version.upload_state !== "Authorized") throw new Error("Upload is not confirmable");
+
+      const documentId = version.reserved_document_id;
+      const now = new Date().toISOString();
+      const sourceType = version.case_id ? "Matter Upload" : "Firm Library Document";
+      const inserted = await client.query(
+        `INSERT INTO documents
+          (id, firm_id, case_id, title, source_url, drive_id, extracted_text, section,
+           uploaded_at, source_type, origin, processing_state)
+         SELECT $1, $2, v.case_id, v.original_filename, NULL, NULL, '', 'Uncategorized',
+           $3, $4, v.upload_source, 'Uploaded'
+         FROM document_versions v
+         WHERE v.id = $5 AND v.firm_id = $2
+           AND (v.case_id IS NULL OR EXISTS (
+             SELECT 1 FROM cases c WHERE c.id = v.case_id AND c.firm_id = $2
+           ))
+         RETURNING *`,
+        [documentId, context.firmId, now, sourceType, versionId],
+      );
+      if (inserted.rowCount !== 1) throw new Error("Upload scope is no longer available");
+      await client.query(
+        `UPDATE document_versions
+         SET document_id = $1, upload_state = 'Uploaded', confirmed_at = $2
+         WHERE id = $3 AND firm_id = $4`,
+        [documentId, now, versionId, context.firmId],
+      );
+      await client.query(
+        `UPDATE upload_batches b SET
+           state = CASE WHEN NOT EXISTS (
+             SELECT 1 FROM document_versions v
+             WHERE v.upload_batch_id = b.id AND v.upload_state <> 'Uploaded'
+           ) THEN 'Uploaded' ELSE b.state END,
+           completed_at = CASE WHEN NOT EXISTS (
+             SELECT 1 FROM document_versions v
+             WHERE v.upload_batch_id = b.id AND v.upload_state <> 'Uploaded'
+           ) THEN $2 ELSE b.completed_at END
+         WHERE b.id = $1 AND b.firm_id = $3`,
+        [version.upload_batch_id, now, context.firmId],
+      );
+      await client.query("COMMIT");
+      return inserted.rows[0];
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async getOriginalDownload(versionId: string, context: OwnershipContext): Promise<any | undefined> {
+    const rows = await this.query(
+      `SELECT v.id, v.object_key, v.original_filename, v.content_type, v.byte_size
+       FROM document_versions v
+       JOIN documents d ON d.id = v.document_id AND d.firm_id = v.firm_id
+       WHERE v.id = $1 AND v.firm_id = $2 AND v.upload_state = 'Uploaded'
+         AND (
+           d.case_id IS NULL OR EXISTS (
+             SELECT 1 FROM cases c WHERE c.id = d.case_id AND c.firm_id = $2
+           )
+         )`,
+      [versionId, context.firmId],
+    );
+    return rows[0];
+  }
+
   public async deleteDocument(
     id: string,
     context: OwnershipContext,

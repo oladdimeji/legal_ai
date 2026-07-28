@@ -90,6 +90,10 @@ The canonical variables are documented in `.env.example`. `GEMINI_API_KEY` and `
 
 Every new feature flag defaults to `false`. Provider-specific configuration is validated only when its corresponding feature is enabled. `FEATURE_CLIENT_ACCOUNTS=false` keeps reserved client-account routes inactive while legacy token links continue working. `FEATURE_GOVINFO`, `FEATURE_COURTLISTENER`, `FEATURE_GMAIL_SEND`, and `FEATURE_OCR` must remain false in this phase. Google Drive uses its own `FEATURE_GOOGLE_DRIVE` flag and, when implemented and enabled in its named phase, requires server-side OAuth settings plus `APP_ENCRYPTION_KEY_BASE64`; no Gmail scope is requested.
 
+Private originals are gated by `FEATURE_PRIVATE_STORAGE=false`. Staging activation requires `OBJECT_STORAGE_PROVIDER=supabase`, `SUPABASE_URL`, the server-only `SUPABASE_SECRET_KEY`, and a private `STORAGE_BUCKET`. The server creates narrow two-hour signed upload tokens; browsers send 6 MB resumable TUS chunks directly to Supabase Storage. The service key is never returned by an API or included in Vite code.
+
+Uploads are limited to 50 MB per file, 25 files and 500 MB per batch, and 10,000 files or 10 GB per workspace. Existing multipart PDF/DOCX/TXT routes remain available while the flag is false. The ingestion worker is intentionally outside this phase, so newly confirmed originals remain in the `Uploaded` processing state pending that worker.
+
 See [the manual staging checklist](docs/MANUAL_STAGING_CHECKLIST.md) before changing any flag.
 
 ## Troubleshooting
