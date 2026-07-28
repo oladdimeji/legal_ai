@@ -8,9 +8,10 @@ interface DraftEditorViewProps {
   initialDraftId: string | null;
   onClearInitialDraftId: () => void;
   caseId: string | null;
+  googleDriveEnabled?: boolean;
 }
 
-export default function DraftEditorView({ initialDraftId, onClearInitialDraftId, caseId }: DraftEditorViewProps) {
+export default function DraftEditorView({ initialDraftId, onClearInitialDraftId, caseId, googleDriveEnabled = false }: DraftEditorViewProps) {
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [activeDraft, setActiveDraft] = useState<Draft | null>(null);
   const [title, setTitle] = useState("");
@@ -125,6 +126,25 @@ export default function DraftEditorView({ initialDraftId, onClearInitialDraftId,
     }
   };
 
+  const exportToDrive = async () => {
+    if (!caseId || !activeDraft) return;
+    setSaving(true);
+    try {
+      const response = await fetch(`/api/drafts/${activeDraft.id}/export/drive`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ caseId }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Drive export failed.");
+      if (data.url) window.open(data.url, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Drive export failed.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div className="flex h-full flex-1 overflow-hidden bg-white text-zinc-900" id="draft-editor-view">
       <div className="flex h-full w-64 shrink-0 flex-col border-r border-zinc-100 bg-zinc-50">
@@ -183,6 +203,7 @@ export default function DraftEditorView({ initialDraftId, onClearInitialDraftId,
                   {saveStatus === "saving" ? "Saving..." : saveStatus === "saved" ? "Saved" : "Save"}
                 </button>
                 <button onClick={() => caseId && window.open(`/api/drafts/${activeDraft.id}/export?caseId=${caseId}`, "_blank")} id="editor-export-btn" className="inline-flex items-center gap-1.5 rounded bg-zinc-950 px-3.5 py-1.5 text-[10px] font-mono font-bold uppercase text-white hover:bg-zinc-900"><Download className="h-3.5 w-3.5" />Export .docx</button>
+                {googleDriveEnabled && <button onClick={() => void exportToDrive()} disabled={saving} className="inline-flex items-center gap-1.5 rounded border border-zinc-300 px-3.5 py-1.5 text-[10px] font-mono font-bold uppercase hover:bg-zinc-50 disabled:opacity-50"><Download className="h-3.5 w-3.5" />Export to Drive</button>}
               </div>
             </div>
 

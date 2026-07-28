@@ -15,12 +15,14 @@ export default function MatterWorkspaceView({
   onMatterChange,
   initialDraftId,
   onClearInitialDraftId,
+  googleDriveEnabled,
 }: {
   matterId: string;
   onBack: () => void;
   onMatterChange: (matter: Case) => void;
   initialDraftId: string | null;
   onClearInitialDraftId: () => void;
+  googleDriveEnabled: boolean;
 }) {
   const [matter, setMatter] = useState<Case | null>(null);
   const [tab, setTab] = useState<(typeof tabs)[number]>("Overview");
@@ -85,13 +87,14 @@ export default function MatterWorkspaceView({
       </nav>
       <main className={`flex-1 overflow-hidden ${tab === "Work Product" ? "p-0" : "overflow-y-auto p-8"}`}>
         {tab === "Overview" && <MatterOverview matter={matter} onChange={update} />}
-        {tab === "Sources" && <MatterSources matterId={matter.id} />}
-        {tab === "Matter Intelligence" && <MatterIntelligence matterId={matter.id} />}
+        {tab === "Sources" && <MatterSources matterId={matter.id} googleDriveEnabled={googleDriveEnabled} />}
+        {tab === "Matter Intelligence" && <MatterIntelligence matterId={matter.id} googleDriveEnabled={googleDriveEnabled} />}
         {tab === "Work Product" && (
           <DraftEditorView
             caseId={matter.id}
             initialDraftId={initialDraftId || collaborationDraftId}
             onClearInitialDraftId={clearDraftNavigation}
+            googleDriveEnabled={googleDriveEnabled}
           />
         )}
         {tab === "Collaboration" && (

@@ -131,6 +131,20 @@ export class SupabaseStorageProvider implements ObjectStorageProvider {
     };
   }
 
+  async upload(
+    key: string,
+    content: Uint8Array,
+    contentType: string,
+    metadata: Record<string, string> = {},
+  ): Promise<void> {
+    const { error } = await this.client.storage.from(this.bucket).upload(key, content, {
+      contentType,
+      upsert: false,
+      metadata,
+    });
+    if (error) throw new Error("Private original could not be stored.");
+  }
+
   async stat(key: string): Promise<{ size: number; contentType: string | null; metadata: Record<string, string> } | null> {
     const { data, error } = await this.client.storage.from(this.bucket).info(key);
     if (error || !data) return null;

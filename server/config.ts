@@ -140,6 +140,15 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
     "GOOGLE_CLOUD_PROJECT_NUMBER",
     "APP_ENCRYPTION_KEY_BASE64",
   ]);
+  if (features.googleDrive && !features.privateStorage) {
+    throw new Error("FEATURE_GOOGLE_DRIVE requires FEATURE_PRIVATE_STORAGE=true.");
+  }
+  if (features.googleDrive && !features.asyncIngestion) {
+    throw new Error("FEATURE_GOOGLE_DRIVE requires FEATURE_ASYNC_INGESTION=true.");
+  }
+  if (features.googleDrive && !/^\d+$/.test(env.GOOGLE_CLOUD_PROJECT_NUMBER || "")) {
+    throw new Error("GOOGLE_CLOUD_PROJECT_NUMBER must be the numeric Google Cloud project number.");
+  }
   validateEncryptionKey(env.APP_ENCRYPTION_KEY_BASE64);
 
   for (const flag of deferredFlags) {

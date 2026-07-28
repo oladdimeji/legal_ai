@@ -1,5 +1,53 @@
 # Compact Upgrade Progress
 
+## V1 Completion Phase — Google Account Linking/Sign-In and Drive
+
+Status: Complete in code; staging gate remains closed.
+
+Implemented:
+
+- Preserved custom email/password authentication and added linked-only Google sign-in. Google identities are matched only by immutable provider subject; matching email alone never creates or merges an account.
+- Added authorization-code OAuth with PKCE, hashed single-use browser-bound state, exact stored callback validation, AES-256-GCM refresh-token encryption, refresh, disconnect, provider revocation attempt, and explicit conflict/revocation states.
+- Requested only `openid`, `email`, `profile`, and `https://www.googleapis.com/auth/drive.file`. No Gmail scope, route, or control was added.
+- Added Settings connection status plus default-hidden Google controls, restricted-key Picker sessions, Firm Library/Matter Picker import, and refresh/re-import lifecycle states.
+- Copied selected PDF/DOCX/TXT and exported Google Docs into the existing private storage/version model before enqueueing the established scan/extract/index worker.
+- Retained Drive file ID, canonical link, imported/current modification/parent/revision/checksum data, private import/version identities, import/check times, and sync/error state.
+- Added Matter-scoped Work Product and Matter Intelligence DOCX export to Drive with firm/user/Matter/source audit rows.
+
+Schema changes:
+
+- Migration 016 additively creates `oauth_connections`, `oauth_authorization_states`, `drive_file_imports`, and `drive_exports`, plus scoped uniqueness/lifecycle indexes.
+- No table or column is renamed or dropped, no data is reset, and password hashes/sessions remain independent of Google connections.
+- Rollback compatibility is flag-based: disable `FEATURE_GOOGLE_DRIVE`; the additive rows/tables may remain for forward recovery. Do not drop encrypted connection/import metadata during rollback.
+
+Dependencies added:
+
+- None. OAuth, PKCE, AES-GCM, Google REST calls, Picker loading, and multipart Drive uploads use Node/browser platform APIs and existing packages.
+
+Feature gate:
+
+- `FEATURE_GOOGLE_DRIVE=false` remains the exact gate until the Google staging checklist passes.
+- Activation requires the already-staged `FEATURE_PRIVATE_STORAGE=true` and `FEATURE_ASYNC_INGESTION=true`.
+- `FEATURE_GMAIL_SEND=false` remains disabled and no Gmail scope is requested.
+
+Verification:
+
+- Pre-change `npm ci`: passed; npm reported two existing high-severity advisories.
+- Pre-change `npm run verify`: passed, 107/107 active tests with one environment-gated GovInfo smoke skipped, and the existing Vite large-chunk warning.
+- Mocked behavioral coverage includes exact scopes/PKCE, encrypted-token tamper rejection, exchange/identity/refresh/revocation, Google Doc import, Drive export, lifecycle states, provider permission failure, configuration gates, and authorization/migration query boundaries.
+- The environment-gated live Google Drive smoke is skipped in normal CI.
+- Final `npm run lint`: passed.
+- Final `npm test`: passed, 115/115 active tests; the environment-gated GovInfo and Google Drive live smokes were skipped as designed.
+- Final `npm run build` and `npm run verify`: passed; the existing Vite large-chunk warning remains.
+- `docker compose config --quiet`: passed.
+- `docker build -t exepts:google-drive-phase .` could not run because Docker Desktop's Linux engine pipe was unavailable at `npipe:////./pipe/dockerDesktopLinuxEngine`.
+
+Known limitations:
+
+- Google Drive returns an indistinguishable not-found response for some deleted and lost-permission cases; Exepts reports the honest `unavailable` state unless metadata explicitly shows trash or Google returns a permission error.
+- Picker browser-key restrictions, provider consent, actual private-object copying, worker completion, provider revocation, and exported-file opening require staging infrastructure.
+- Google Document AI OCR, CourtListener, and Gmail sending remain deferred and unavailable.
+
 ## V1 Completion Phase — Live GovInfo Traceability and Citation Validation
 
 Status: Complete in code; staging gate remains closed.

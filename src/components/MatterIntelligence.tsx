@@ -4,7 +4,7 @@ import { MatterIntelligenceRecord } from "../types";
 import FormattedMarkdown from "./FormattedMarkdown";
 import RichDocumentEditor from "./RichDocumentEditor";
 
-export default function MatterIntelligence({ matterId }: { matterId: string }) {
+export default function MatterIntelligence({ matterId, googleDriveEnabled = false }: { matterId: string; googleDriveEnabled?: boolean }) {
   const [record, setRecord] = useState<MatterIntelligenceRecord | null>(null);
   const [content, setContent] = useState("");
   const [editing, setEditing] = useState(false);
@@ -60,6 +60,20 @@ export default function MatterIntelligence({ matterId }: { matterId: string }) {
     }
   };
 
+  const exportToDrive = async () => {
+    setBusy(true);
+    try {
+      const response = await fetch(`/api/cases/${matterId}/intelligence/export/drive`, { method: "POST" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Drive export failed.");
+      if (data.url) window.open(data.url, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Drive export failed.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   if (!loaded) return <p className="py-16 text-center text-xs font-mono uppercase text-zinc-400">Loading Matter Intelligence...</p>;
   if (!record) {
     return (
@@ -95,6 +109,11 @@ export default function MatterIntelligence({ matterId }: { matterId: string }) {
           <a href={`/api/cases/${matterId}/intelligence/export`} className="flex items-center gap-1 rounded border px-4 py-2 text-[10px] font-mono font-bold uppercase hover:bg-zinc-50">
             <Download className="h-3.5 w-3.5" />Export .docx
           </a>
+          {googleDriveEnabled && (
+            <button onClick={() => void exportToDrive()} disabled={busy} className="flex items-center gap-1 rounded border px-4 py-2 text-[10px] font-mono font-bold uppercase hover:bg-zinc-50 disabled:opacity-50">
+              <Download className="h-3.5 w-3.5" />Export to Drive
+            </button>
+          )}
           {editing ? (
             <button onClick={() => void save()} disabled={busy} className="flex items-center gap-1 rounded bg-zinc-950 px-4 py-2 text-[10px] font-mono font-bold uppercase text-white disabled:cursor-not-allowed disabled:opacity-50">
               <Save className="h-3.5 w-3.5" />{busy ? "Saving..." : "Save"}

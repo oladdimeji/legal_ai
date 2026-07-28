@@ -1,7 +1,7 @@
 import express from "express";
 import type { NextFunction, Request, Response } from "express";
 import path from "path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import multer from "multer";
 import { createServer as createViteServer } from "vite";
 import { registerProductionFrontend } from "./server/frontend.js";
@@ -41,6 +41,17 @@ import {
 } from "./server/auth.js";
 import { PgBossJobsProvider } from "./server/jobs.js";
 import { INGESTION_QUEUE } from "./server/ingestion.js";
+import {
+  GOOGLE_DRIVE_MIME_TYPES,
+  GoogleOAuthDriveProvider,
+  GoogleProviderError,
+  createPkcePair,
+  determineDriveSyncState,
+  isSupportedGoogleDriveMime,
+  type GoogleDriveFileMetadata,
+} from "./server/providers/google.js";
+import { decryptProviderSecret, encryptProviderSecret } from "./server/providerTokens.js";
+import { isDriveImportAccessible } from "./server/googleAuthorization.js";
 
 const config = loadServerConfig();
 const isProduction = config.environment === "production";
@@ -52,6 +63,13 @@ const privateStorage = config.features.privateStorage
     )
   : null;
 const jobs = config.features.asyncIngestion ? new PgBossJobsProvider(config.databaseUrl!) : null;
+const google = config.features.googleDrive
+  ? new GoogleOAuthDriveProvider({
+      clientId: config.providers.google.clientId!,
+      clientSecret: config.providers.google.clientSecret!,
+      redirectUri: config.providers.google.oauthRedirectUri!,
+    })
+  : null;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const SIMILARITY_THRESHOLD = 0.65;
@@ -59,6 +77,28 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: MAX_FILE_SIZE_BYTES, files: MAX_FILE_COUNT },
 });
+const GOOGLE_OAUTH_COOKIE_NAME = "exepts_google_oauth";
+const GOOGLE_OAUTH_TTL_MS = 10 * 60 * 1000;
+
+function sha256(value: string | Uint8Array): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function googleOAuthCookie(value: string, production: boolean, clear = false): string {
+  return [
+    `${GOOGLE_OAUTH_COOKIE_NAME}=${clear ? "" : encodeURIComponent(value)}`,
+    "Path=/api/auth/google/callback",
+    "HttpOnly",
+    "SameSite=Lax",
+    clear ? "Max-Age=0" : `Max-Age=${Math.floor(GOOGLE_OAUTH_TTL_MS / 1000)}`,
+    ...(production ? ["Secure"] : []),
+  ].join("; ");
+}
+
+function safeGoogleRedirect(mode: "link" | "signin", result: string): string {
+  const base = mode === "link" ? "/app/settings" : "/login";
+  return `${base}?google=${encodeURIComponent(result)}`;
+}
 
 interface AuthenticatedRequest extends Request {
   auth?: {
@@ -365,6 +405,296 @@ async function startServer() {
     }
   };
 
+  const beginGoogleOAuth = async (
+    mode: "link" | "signin",
+    context: OwnershipContext | null,
+    res: Response,
+  ) => {
+    if (!google) return res.status(404).json({ error: "Google Drive is not enabled." });
+    const state = randomBytes(32).toString("base64url");
+    const binding = randomBytes(32).toString("base64url");
+    const pkce = createPkcePair();
+    await db.createOAuthAuthorizationState({
+      stateHash: sha256(state),
+      browserBindingHash: sha256(binding),
+      mode,
+      userId: context?.userId || null,
+      firmId: context?.firmId || null,
+      redirectUri: config.providers.google.oauthRedirectUri!,
+      encryptedCodeVerifier: encryptProviderSecret(pkce.verifier, config.encryptionKeyBase64!),
+      expiresAt: new Date(Date.now() + GOOGLE_OAUTH_TTL_MS).toISOString(),
+    });
+    res.setHeader("Set-Cookie", googleOAuthCookie(binding, isProduction));
+    res.setHeader("Cache-Control", "no-store");
+    return res.json({ authorizationUrl: google.authorizationUrl(state, pkce.challenge) });
+  };
+
+  const refreshGoogleAccessToken = async (
+    context: OwnershipContext,
+  ): Promise<{ accessToken: string; connection: any }> => {
+    if (!google) throw new Error("Google Drive is not enabled.");
+    const connection = await db.getGoogleConnection(context);
+    if (
+      !connection
+      || connection.revocation_state !== "active"
+      || typeof connection.encrypted_refresh_token !== "string"
+    ) {
+      throw new Error("Google account is not connected.");
+    }
+    try {
+      const refreshToken = decryptProviderSecret(
+        connection.encrypted_refresh_token,
+        config.encryptionKeyBase64!,
+      );
+      const tokens = await google.refreshAccessToken(refreshToken);
+      await db.updateGoogleTokenMetadata(connection.id, context, {
+        encryptedRefreshToken: tokens.refreshToken
+          ? encryptProviderSecret(tokens.refreshToken, config.encryptionKeyBase64!)
+          : undefined,
+        tokenType: tokens.tokenType,
+        scopes: tokens.scopes,
+        expiresAt: new Date(Date.now() + tokens.expiresIn * 1000).toISOString(),
+      });
+      return { accessToken: tokens.accessToken, connection };
+    } catch (error) {
+      if (error instanceof GoogleProviderError && error.code === "unauthorized") {
+        await db.markGoogleConnectionRevoked(
+          connection.id,
+          context,
+          "revoked",
+          "google_refresh_revoked",
+        );
+      }
+      throw error;
+    }
+  };
+
+  const driveSyncState = (tracked: any, metadata: GoogleDriveFileMetadata): string => {
+    return determineDriveSyncState({
+      importedParentIds: Array.isArray(tracked.imported_parent_ids) ? tracked.imported_parent_ids : [],
+      driveRevisionId: tracked.drive_revision_id || null,
+      driveChecksum: tracked.drive_checksum || null,
+      driveModifiedTime: tracked.drive_modified_time || null,
+    }, metadata);
+  };
+
+  const refreshDriveImportState = async (
+    tracked: any,
+    context: OwnershipContext,
+    accessToken: string,
+  ) => {
+    try {
+      const metadata = await google!.getFileMetadata(tracked.drive_file_id, accessToken);
+      return await db.updateDriveImportSyncState(tracked.id, context, {
+        syncState: driveSyncState(tracked, metadata),
+        modifiedTime: metadata.modifiedTime,
+        revisionId: metadata.headRevisionId,
+        driveChecksum: metadata.md5Checksum,
+        canonicalUrl: metadata.webViewLink,
+        parentIds: metadata.parents,
+      });
+    } catch (error) {
+      const state = error instanceof GoogleProviderError && error.code === "permission_restricted"
+        ? "permission_restricted"
+        : error instanceof GoogleProviderError && error.code === "not_found"
+          ? "unavailable"
+          : "check_failed";
+      return db.updateDriveImportSyncState(tracked.id, context, {
+        syncState: state,
+        errorCode: error instanceof GoogleProviderError ? `google_${error.code}` : "google_check_failed",
+      });
+    }
+  };
+
+  const importDriveFile = async (
+    fileId: string,
+    context: OwnershipContext,
+    caseId: string | null,
+    existingImportId: string | null,
+  ) => {
+    if (!google || !privateStorage || !jobs) {
+      throw new Error("Google Drive import is not enabled.");
+    }
+    const { accessToken, connection } = await refreshGoogleAccessToken(context);
+    const metadata = await google.getFileMetadata(fileId, accessToken);
+    if (metadata.trashed) {
+      if (existingImportId) {
+        await db.updateDriveImportSyncState(existingImportId, context, { syncState: "deleted" });
+      }
+      throw new Error("Google Drive file has been deleted.");
+    }
+    if (!isSupportedGoogleDriveMime(metadata.mimeType)) {
+      throw new Error("Select a PDF, DOCX, TXT, or Google Doc file.");
+    }
+    const existing = existingImportId
+      ? await db.getDriveImport(existingImportId, context)
+      : (await db.getDriveImports(context, caseId)).find((item) => item.drive_file_id === fileId) || null;
+    if (
+      existingImportId
+      && (
+        !existing
+        || !isDriveImportAccessible(existing, context, caseId)
+        || existing.drive_file_id !== fileId
+      )
+    ) {
+      throw new Error("Drive import not found.");
+    }
+    const downloaded = await google.downloadFile(metadata, accessToken);
+    if (downloaded.bytes.byteLength > STORAGE_LIMITS.maxFileBytes) {
+      throw new Error("Google Drive file exceeds the 50 MB storage limit.");
+    }
+    const storedChecksum = sha256(downloaded.bytes);
+    if (existing?.stored_checksum_sha256 === storedChecksum) {
+      return db.updateDriveImportSyncState(existing.id, context, {
+        syncState: "current",
+        modifiedTime: metadata.modifiedTime,
+        revisionId: metadata.headRevisionId,
+        driveChecksum: metadata.md5Checksum,
+        canonicalUrl: metadata.webViewLink,
+        parentIds: metadata.parents,
+      });
+    }
+
+    const documentId = existing?.document_id || `doc_${randomUUID()}`;
+    const versionId = `version_${randomUUID()}`;
+    const reservationId = existing ? `drive_reservation_${randomUUID()}` : documentId;
+    const batchId = `upload_batch_${randomUUID()}`;
+    const safeFilename = safeStorageFilename(downloaded.filename);
+    const objectKey = buildObjectKey(context.firmId, caseId, documentId, versionId, safeFilename);
+    const reserved = await db.reserveDriveImport({
+      context,
+      connectionId: connection.id,
+      caseId,
+      existingImportId: existing?.id || null,
+      driveFileId: metadata.id,
+      driveName: metadata.name,
+      mimeType: metadata.mimeType,
+      canonicalUrl: metadata.webViewLink,
+      modifiedTime: metadata.modifiedTime,
+      revisionId: metadata.headRevisionId,
+      driveChecksum: metadata.md5Checksum,
+      parentIds: metadata.parents,
+      storedChecksum,
+      byteSize: downloaded.bytes.byteLength,
+      contentType: downloaded.contentType,
+      originalFilename: downloaded.filename,
+      safeFilename,
+      documentId,
+      versionId,
+      reservationId,
+      batchId,
+      objectKey,
+      bucket: config.providers.objectStorage.bucket!,
+      expiresAt: new Date(Date.now() + UPLOAD_AUTHORIZATION_TTL_MS).toISOString(),
+      limits: STORAGE_LIMITS,
+    });
+    try {
+      await privateStorage.upload(objectKey, downloaded.bytes, downloaded.contentType, {
+        checksumSha256: storedChecksum,
+        source: "google-drive",
+      });
+      const document = await db.confirmPrivateUpload(versionId, context);
+      const imported = await db.completeDriveImport(
+        reserved.importId,
+        document.id,
+        versionId,
+        storedChecksum,
+        context,
+      );
+      const jobId = await jobs.enqueueIngestion({ versionId, firmId: context.firmId });
+      await db.attachIngestionJob(versionId, jobId, context);
+      return { ...imported, jobId };
+    } catch (error) {
+      await db.updateDriveImportSyncState(reserved.importId, context, {
+        syncState: "import_failed",
+        errorCode: "drive_import_failed",
+      });
+      throw error;
+    }
+  };
+
+  app.get("/api/auth/google/start", async (_req, res) => {
+    try {
+      return await beginGoogleOAuth("signin", null, res);
+    } catch {
+      return res.status(503).json({ error: "Google sign-in could not be started." });
+    }
+  });
+
+  app.get("/api/auth/google/callback", async (req, res) => {
+    const state = typeof req.query.state === "string" ? req.query.state : "";
+    const binding = parseCookie(req.headers.cookie, GOOGLE_OAUTH_COOKIE_NAME) || "";
+    let mode: "link" | "signin" = "signin";
+    res.setHeader("Set-Cookie", googleOAuthCookie("", isProduction, true));
+    res.setHeader("Cache-Control", "no-store");
+    if (!google || !state || !binding) return res.redirect(303, safeGoogleRedirect(mode, "invalid_state"));
+    try {
+      const stored = await db.consumeOAuthAuthorizationState(sha256(state), sha256(binding));
+      if (!stored) return res.redirect(303, safeGoogleRedirect(mode, "invalid_state"));
+      mode = stored.mode === "link" ? "link" : "signin";
+      if (stored.redirect_uri !== config.providers.google.oauthRedirectUri) {
+        return res.redirect(303, safeGoogleRedirect(mode, "invalid_callback"));
+      }
+      if (typeof req.query.error === "string") {
+        return res.redirect(303, safeGoogleRedirect(mode, "cancelled"));
+      }
+      const code = typeof req.query.code === "string" ? req.query.code : "";
+      if (!code) return res.redirect(303, safeGoogleRedirect(mode, "invalid_callback"));
+      const verifier = decryptProviderSecret(stored.encrypted_code_verifier, config.encryptionKeyBase64!);
+      const tokens = await google.exchangeCode(code, verifier);
+      const identity = await google.getIdentity(tokens.accessToken);
+      if (!identity.emailVerified) return res.redirect(303, safeGoogleRedirect(mode, "email_unverified"));
+
+      if (mode === "link") {
+        const context = { userId: stored.user_id, firmId: stored.firm_id };
+        if (!context.userId || !context.firmId) {
+          return res.redirect(303, safeGoogleRedirect(mode, "invalid_state"));
+        }
+        const prior = await db.getGoogleConnection(context);
+        const encryptedRefreshToken = tokens.refreshToken
+          ? encryptProviderSecret(tokens.refreshToken, config.encryptionKeyBase64!)
+          : prior?.encrypted_refresh_token;
+        if (!encryptedRefreshToken) {
+          return res.redirect(303, safeGoogleRedirect(mode, "offline_access_required"));
+        }
+        await db.saveGoogleConnection({
+          context,
+          providerSubject: identity.subject,
+          providerEmail: identity.email,
+          scopes: tokens.scopes,
+          encryptedRefreshToken,
+          tokenType: tokens.tokenType,
+          expiresAt: new Date(Date.now() + tokens.expiresIn * 1000).toISOString(),
+        });
+        return res.redirect(303, safeGoogleRedirect(mode, "connected"));
+      }
+
+      const connection = await db.getGoogleSigninConnection(identity.subject);
+      if (!connection) return res.redirect(303, safeGoogleRedirect(mode, "not_linked"));
+      const context = { userId: connection.user_id, firmId: connection.firm_id };
+      await db.updateGoogleTokenMetadata(connection.id, context, {
+        encryptedRefreshToken: tokens.refreshToken
+          ? encryptProviderSecret(tokens.refreshToken, config.encryptionKeyBase64!)
+          : undefined,
+        tokenType: tokens.tokenType,
+        scopes: tokens.scopes,
+        expiresAt: new Date(Date.now() + tokens.expiresIn * 1000).toISOString(),
+      });
+      const { token, tokenHash } = createSessionToken();
+      await db.createSession(connection.user_id, tokenHash, new Date(Date.now() + SESSION_TTL_MS).toISOString());
+      res.setHeader("Set-Cookie", [
+        googleOAuthCookie("", isProduction, true),
+        sessionCookie(token, isProduction),
+      ]);
+      return res.redirect(303, "/app");
+    } catch (error) {
+      const result = error instanceof Error && error.message === "google_connection_conflict"
+        ? "connection_conflict"
+        : "callback_failed";
+      return res.redirect(303, safeGoogleRedirect(mode, result));
+    }
+  });
+
   app.get("/api/auth/me", requireAuth, (req: AuthenticatedRequest, res) => {
     res.setHeader("Cache-Control", "no-store");
     return res.json(req.auth);
@@ -532,6 +862,225 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
 
   // All remaining API routes require a server-validated session.
   app.use("/api", requireAuth);
+
+  app.post("/api/google/oauth/start", async (req, res) => {
+    try {
+      return await beginGoogleOAuth("link", ownership(req), res);
+    } catch {
+      return res.status(503).json({ error: "Google account linking could not be started." });
+    }
+  });
+
+  app.get("/api/google/connection", async (req, res) => {
+    if (!google) return res.status(404).json({ error: "Google Drive is not enabled." });
+    const connection = await db.getGoogleConnection(ownership(req));
+    res.setHeader("Cache-Control", "no-store");
+    if (!connection) return res.json({ connected: false });
+    return res.json({
+      connected: connection.revocation_state === "active" && Boolean(connection.encrypted_refresh_token),
+      email: connection.provider_email,
+      scopes: connection.scopes,
+      revocationState: connection.revocation_state,
+      connectedAt: connection.connected_at,
+      updatedAt: connection.updated_at,
+    });
+  });
+
+  app.delete("/api/google/connection", async (req, res) => {
+    if (!google) return res.status(404).json({ error: "Google Drive is not enabled." });
+    const context = ownership(req);
+    const connection = await db.getGoogleConnection(context);
+    if (!connection) return res.status(404).json({ error: "Google account is not connected." });
+    let revoked = false;
+    if (connection.encrypted_refresh_token) {
+      try {
+        revoked = await google.revoke(decryptProviderSecret(
+          connection.encrypted_refresh_token,
+          config.encryptionKeyBase64!,
+        ));
+      } catch {
+        revoked = false;
+      }
+    }
+    await db.markGoogleConnectionRevoked(
+      connection.id,
+      context,
+      revoked ? "disconnected" : "provider_revocation_failed",
+      revoked ? null : "google_revocation_failed",
+    );
+    res.setHeader("Cache-Control", "no-store");
+    return res.json({ connected: false, providerRevoked: revoked, passwordLoginPreserved: true });
+  });
+
+  app.get("/api/google/drive/picker-session", async (req, res) => {
+    if (!google) return res.status(404).json({ error: "Google Drive is not enabled." });
+    try {
+      const { accessToken } = await refreshGoogleAccessToken(ownership(req));
+      res.setHeader("Cache-Control", "no-store");
+      return res.json({
+        accessToken,
+        apiKey: config.providers.google.pickerApiKey,
+        appId: config.providers.google.cloudProjectNumber,
+        mimeTypes: Object.values(GOOGLE_DRIVE_MIME_TYPES),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Google account is unavailable.";
+      return res.status(401).json({ error: message });
+    }
+  });
+
+  app.get("/api/google/drive/imports", async (req, res) => {
+    if (!google) return res.status(404).json({ error: "Google Drive is not enabled." });
+    const caseId = requestedCaseId(req.query.caseId);
+    if (caseId && !(await db.getCaseById(caseId, ownership(req)))) {
+      return res.status(404).json({ error: "Matter not found." });
+    }
+    res.setHeader("Cache-Control", "no-store");
+    return res.json(await db.getDriveImports(ownership(req), caseId));
+  });
+
+  app.post("/api/google/drive/import", async (req, res) => {
+    if (!google) return res.status(404).json({ error: "Google Drive is not enabled." });
+    const caseId = requestedCaseId(req.body.caseId);
+    const fileIds: string[] = Array.isArray(req.body.fileIds)
+      ? Array.from(new Set(req.body.fileIds.filter((id: unknown): id is string =>
+          typeof id === "string" && id.trim().length > 0
+        ).map((id: string) => id.trim())))
+      : [];
+    if (fileIds.length === 0 || fileIds.length > STORAGE_LIMITS.maxFilesPerBatch) {
+      return res.status(400).json({ error: "Select between 1 and 25 Drive files." });
+    }
+    if (caseId && !(await db.getCaseById(caseId, ownership(req)))) {
+      return res.status(404).json({ error: "Matter not found." });
+    }
+    const imported = [];
+    const failures = [];
+    for (const fileId of fileIds) {
+      try {
+        imported.push(await importDriveFile(fileId, ownership(req), caseId, null));
+      } catch (error) {
+        failures.push({
+          fileId,
+          error: error instanceof Error ? error.message : "Drive file could not be imported.",
+        });
+      }
+    }
+    const status = imported.length === 0 ? 409 : 201;
+    return res.status(status).json({ imported, failures });
+  });
+
+  app.post("/api/google/drive/imports/refresh", async (req, res) => {
+    if (!google) return res.status(404).json({ error: "Google Drive is not enabled." });
+    const context = ownership(req);
+    const caseId = requestedCaseId(req.body.caseId);
+    try {
+      const { accessToken } = await refreshGoogleAccessToken(context);
+      const tracked = await db.getDriveImports(context, caseId);
+      const refreshed = [];
+      for (const item of tracked) {
+        refreshed.push(await refreshDriveImportState(item, context, accessToken));
+      }
+      return res.json({ imports: refreshed });
+    } catch (error) {
+      return res.status(401).json({
+        error: error instanceof Error ? error.message : "Drive status could not be refreshed.",
+      });
+    }
+  });
+
+  app.post("/api/google/drive/imports/:importId/reimport", async (req, res) => {
+    if (!google) return res.status(404).json({ error: "Google Drive is not enabled." });
+    const context = ownership(req);
+    const tracked = await db.getDriveImport(req.params.importId, context);
+    if (!tracked) return res.status(404).json({ error: "Drive import not found." });
+    try {
+      return res.status(201).json(await importDriveFile(
+        tracked.drive_file_id,
+        context,
+        tracked.case_id,
+        tracked.id,
+      ));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Drive file could not be re-imported.";
+      return res.status(/not found|deleted|unavailable/i.test(message) ? 404 : 409).json({ error: message });
+    }
+  });
+
+  const exportDocxToDrive = async (input: {
+    context: OwnershipContext;
+    caseId: string;
+    sourceType: "work_product" | "matter_intelligence";
+    sourceId: string;
+    title: string;
+    content: string;
+  }) => {
+    if (!google) throw new Error("Google Drive is not enabled.");
+    const { accessToken, connection } = await refreshGoogleAccessToken(input.context);
+    const buffer = await Packer.toBuffer(markdownToDocxDocument(input.title, input.content));
+    const driveName = `${input.title.replace(/[\\/:*?"<>|]+/g, "_").slice(0, 180)}.docx`;
+    const exported = await google.createFile(
+      driveName,
+      new Uint8Array(buffer),
+      GOOGLE_DRIVE_MIME_TYPES.docx,
+      accessToken,
+    );
+    await db.recordDriveExport({
+      context: input.context,
+      connectionId: connection.id,
+      caseId: input.caseId,
+      sourceType: input.sourceType,
+      sourceId: input.sourceId,
+      driveFileId: exported.id,
+      driveName,
+      canonicalUrl: exported.webViewLink,
+      modifiedTime: exported.modifiedTime,
+      revisionId: exported.revisionId,
+      checksum: exported.checksum,
+    });
+    return { driveFileId: exported.id, name: driveName, url: exported.webViewLink };
+  };
+
+  app.post("/api/drafts/:id/export/drive", async (req, res) => {
+    const caseId = requestedCaseId(req.body.caseId);
+    if (!caseId) return res.status(400).json({ error: "Matter context is required." });
+    const draft = await db.getDraftById(req.params.id, caseId, ownership(req));
+    if (!draft) return res.status(404).json({ error: "Work Product not found." });
+    try {
+      return res.status(201).json(await exportDocxToDrive({
+        context: ownership(req),
+        caseId,
+        sourceType: "work_product",
+        sourceId: draft.id,
+        title: draft.title,
+        content: cleanWorkProductContent(draft.content),
+      }));
+    } catch (error) {
+      return res.status(503).json({
+        error: error instanceof Error ? error.message : "Work Product could not be exported to Drive.",
+      });
+    }
+  });
+
+  app.post("/api/cases/:caseId/intelligence/export/drive", async (req, res) => {
+    const context = ownership(req);
+    const record = await db.getMatterIntelligence(req.params.caseId, context);
+    const matter = await db.getCaseById(req.params.caseId, context);
+    if (!record || !matter) return res.status(404).json({ error: "Matter Intelligence not found." });
+    try {
+      return res.status(201).json(await exportDocxToDrive({
+        context,
+        caseId: matter.id,
+        sourceType: "matter_intelligence",
+        sourceId: matter.id,
+        title: `${matter.name} Matter Intelligence`,
+        content: cleanMatterIntelligenceContent(record.content),
+      }));
+    } catch (error) {
+      return res.status(503).json({
+        error: error instanceof Error ? error.message : "Matter Intelligence could not be exported to Drive.",
+      });
+    }
+  });
 
   app.get("/api/uploads/capabilities", (_req, res) => {
     res.setHeader("Cache-Control", "no-store");

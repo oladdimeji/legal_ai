@@ -653,6 +653,129 @@ const migrations: Migration[] = [
       }
     },
   },
+  {
+    version: 16,
+    name: "google_oauth_and_drive_file_lifecycle",
+    async run(client) {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS oauth_connections (
+          id TEXT PRIMARY KEY,
+          provider TEXT NOT NULL,
+          provider_subject TEXT NOT NULL,
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          firm_id TEXT NOT NULL REFERENCES firm(id) ON DELETE CASCADE,
+          provider_email TEXT,
+          scopes JSONB NOT NULL DEFAULT '[]'::jsonb,
+          encrypted_refresh_token TEXT,
+          token_type TEXT,
+          access_token_expires_at TIMESTAMPTZ,
+          token_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+          revocation_state TEXT NOT NULL DEFAULT 'active',
+          connected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          revoked_at TIMESTAMPTZ,
+          last_error_code TEXT,
+          UNIQUE (provider, provider_subject),
+          UNIQUE (provider, user_id)
+        )
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS oauth_authorization_states (
+          state_hash TEXT PRIMARY KEY,
+          browser_binding_hash TEXT NOT NULL,
+          provider TEXT NOT NULL,
+          mode TEXT NOT NULL,
+          user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+          firm_id TEXT REFERENCES firm(id) ON DELETE CASCADE,
+          redirect_uri TEXT NOT NULL,
+          encrypted_code_verifier TEXT NOT NULL,
+          expires_at TIMESTAMPTZ NOT NULL,
+          consumed_at TIMESTAMPTZ,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          CHECK (
+            (mode = 'link' AND user_id IS NOT NULL AND firm_id IS NOT NULL)
+            OR (mode = 'signin' AND user_id IS NULL AND firm_id IS NULL)
+          )
+        )
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS oauth_states_expiry_idx
+        ON oauth_authorization_states(expires_at)
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS drive_file_imports (
+          id TEXT PRIMARY KEY,
+          firm_id TEXT NOT NULL REFERENCES firm(id) ON DELETE CASCADE,
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+          oauth_connection_id TEXT NOT NULL REFERENCES oauth_connections(id) ON DELETE RESTRICT,
+          case_id TEXT REFERENCES cases(id) ON DELETE CASCADE,
+          document_id TEXT REFERENCES documents(id) ON DELETE SET NULL,
+          document_version_id TEXT REFERENCES document_versions(id) ON DELETE SET NULL,
+          drive_file_id TEXT NOT NULL,
+          drive_name TEXT NOT NULL,
+          mime_type TEXT NOT NULL,
+          canonical_url TEXT,
+          drive_modified_time TIMESTAMPTZ,
+          current_drive_modified_time TIMESTAMPTZ,
+          imported_at TIMESTAMPTZ,
+          drive_revision_id TEXT,
+          current_drive_revision_id TEXT,
+          drive_checksum TEXT,
+          current_drive_checksum TEXT,
+          stored_checksum_sha256 TEXT,
+          imported_parent_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+          current_parent_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+          sync_state TEXT NOT NULL DEFAULT 'importing',
+          last_checked_at TIMESTAMPTZ,
+          last_error_code TEXT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `);
+      await client.query(`
+        ALTER TABLE drive_file_imports
+          ADD COLUMN IF NOT EXISTS current_drive_modified_time TIMESTAMPTZ,
+          ADD COLUMN IF NOT EXISTS current_drive_revision_id TEXT,
+          ADD COLUMN IF NOT EXISTS current_drive_checksum TEXT
+      `);
+      await client.query(`
+        CREATE UNIQUE INDEX IF NOT EXISTS drive_imports_connection_file_library_unique
+        ON drive_file_imports(oauth_connection_id, drive_file_id)
+        WHERE case_id IS NULL
+      `);
+      await client.query(`
+        CREATE UNIQUE INDEX IF NOT EXISTS drive_imports_connection_file_matter_unique
+        ON drive_file_imports(oauth_connection_id, drive_file_id, case_id)
+        WHERE case_id IS NOT NULL
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS drive_imports_firm_user_context_idx
+        ON drive_file_imports(firm_id, user_id, case_id, updated_at DESC)
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS drive_exports (
+          id TEXT PRIMARY KEY,
+          firm_id TEXT NOT NULL REFERENCES firm(id) ON DELETE CASCADE,
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+          oauth_connection_id TEXT NOT NULL REFERENCES oauth_connections(id) ON DELETE RESTRICT,
+          case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+          source_type TEXT NOT NULL,
+          source_id TEXT NOT NULL,
+          drive_file_id TEXT NOT NULL,
+          drive_name TEXT NOT NULL,
+          canonical_url TEXT,
+          drive_modified_time TIMESTAMPTZ,
+          drive_revision_id TEXT,
+          drive_checksum TEXT,
+          exported_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS drive_exports_firm_user_case_idx
+        ON drive_exports(firm_id, user_id, case_id, exported_at DESC)
+      `);
+    },
+  },
 ];
 
 export async function runMigrations(pool: Pool): Promise<void> {

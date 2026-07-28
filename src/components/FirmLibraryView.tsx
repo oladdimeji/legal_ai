@@ -4,8 +4,9 @@ import { Document } from "../types";
 import SelectedFileList from "./SelectedFileList";
 import { useCumulativeFileSelection } from "../hooks/useCumulativeFileSelection";
 import { PRIVATE_UPLOAD_MAX_FILES, uploadPrivateFiles } from "../lib/durableUploads";
+import GoogleDrivePanel from "./GoogleDrivePanel";
 
-export default function FirmLibraryView() {
+export default function FirmLibraryView({ googleDriveEnabled = false }: { googleDriveEnabled?: boolean }) {
   const [documents, setDocuments] = useState<Document[]>([]);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<string[]>([]);
@@ -122,7 +123,8 @@ export default function FirmLibraryView() {
             ))}
           </section>
 
-          <form onSubmit={upload} className="h-fit space-y-3 rounded border border-zinc-200 bg-zinc-50 p-4">
+          <div className="h-fit space-y-3">
+          <form onSubmit={upload} className="space-y-3 rounded border border-zinc-200 bg-zinc-50 p-4">
             <div className="flex items-center gap-2"><Upload className="h-4 w-4" /><h3 className="text-[10px] font-mono font-bold uppercase">Add Firm Library Document</h3></div>
             <label className="block rounded border border-dashed border-zinc-300 bg-white px-3 py-5 text-center text-xs text-zinc-500 hover:bg-zinc-50 cursor-pointer">
               <span className="block">Choose PDF, DOCX, or TXT</span>
@@ -135,6 +137,8 @@ export default function FirmLibraryView() {
             {uploadError && <p className="text-xs text-red-700">{uploadError}</p>}
             <button disabled={uploading || fileSelection.files.length === 0} className="w-full rounded bg-zinc-950 px-3 py-2 text-[10px] font-mono font-bold uppercase text-white disabled:cursor-not-allowed disabled:opacity-40">{uploading ? "Uploading..." : "Upload for processing"}</button>
           </form>
+          {googleDriveEnabled && <GoogleDrivePanel caseId={null} onImported={load} compact />}
+          </div>
         </div>
       </div>
 

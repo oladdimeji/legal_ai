@@ -8,6 +8,7 @@ export interface ProviderHealth {
 export interface ObjectStorageProvider {
   health(): Promise<ProviderHealth>;
   createSignedUpload(key: string): Promise<{ token: string; expiresAt: string }>;
+  upload(key: string, content: Uint8Array, contentType: string, metadata?: Record<string, string>): Promise<void>;
   stat(key: string): Promise<{ size: number; contentType: string | null; metadata: Record<string, string> } | null>;
   download(key: string): Promise<Uint8Array>;
   createSignedDownload(key: string, expiresInSeconds: number, downloadName: string): Promise<string>;
@@ -30,8 +31,67 @@ export interface GovInfoProvider {
 
 export interface GoogleDriveProvider {
   health(): Promise<ProviderHealth>;
-  importFile(fileId: string, userId: string): Promise<Uint8Array>;
-  exportFile(name: string, content: Uint8Array, userId: string): Promise<string>;
+  authorizationUrl(state: string, codeChallenge: string): string;
+  exchangeCode(code: string, codeVerifier: string): Promise<{
+    accessToken: string;
+    refreshToken?: string;
+    expiresIn: number;
+    tokenType: string;
+    scopes: string[];
+  }>;
+  refreshAccessToken(refreshToken: string): Promise<{
+    accessToken: string;
+    refreshToken?: string;
+    expiresIn: number;
+    tokenType: string;
+    scopes: string[];
+  }>;
+  getIdentity(accessToken: string): Promise<{
+    subject: string;
+    email: string;
+    emailVerified: boolean;
+    name: string | null;
+  }>;
+  revoke(token: string): Promise<boolean>;
+  getFileMetadata(fileId: string, accessToken: string): Promise<{
+    id: string;
+    name: string;
+    mimeType: string;
+    webViewLink: string | null;
+    modifiedTime: string | null;
+    md5Checksum: string | null;
+    headRevisionId: string | null;
+    parents: string[];
+    trashed: boolean;
+    size: number | null;
+  }>;
+  downloadFile(
+    metadata: {
+      id: string;
+      name: string;
+      mimeType: string;
+      webViewLink: string | null;
+      modifiedTime: string | null;
+      md5Checksum: string | null;
+      headRevisionId: string | null;
+      parents: string[];
+      trashed: boolean;
+      size: number | null;
+    },
+    accessToken: string,
+  ): Promise<{ bytes: Uint8Array; filename: string; contentType: string }>;
+  createFile(
+    name: string,
+    content: Uint8Array,
+    contentType: string,
+    accessToken: string,
+  ): Promise<{
+    id: string;
+    webViewLink: string | null;
+    modifiedTime: string | null;
+    revisionId: string | null;
+    checksum: string | null;
+  }>;
 }
 
 export interface TransactionalEmailProvider {

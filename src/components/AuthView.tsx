@@ -5,14 +5,29 @@ import { Firm, User } from "../types";
 interface AuthViewProps {
   mode: "login" | "signup";
   onAuthenticated: (account: { user: User; firm: Firm }) => void;
+  googleDriveEnabled: boolean;
 }
 
-export default function AuthView({ mode, onAuthenticated }: AuthViewProps) {
+export default function AuthView({ mode, onAuthenticated, googleDriveEnabled }: AuthViewProps) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+
+  React.useEffect(() => {
+    if (mode !== "login") return;
+    const result = new URLSearchParams(window.location.search).get("google");
+    const messages: Record<string, string> = {
+      not_linked: "That Google account is not linked. Log in with your password, then link it in Settings.",
+      email_unverified: "Google did not confirm a verified email for this account.",
+      cancelled: "Google sign-in was cancelled.",
+      invalid_state: "Google sign-in expired or could not be validated. Please try again.",
+      invalid_callback: "Google sign-in callback validation failed.",
+      callback_failed: "Google sign-in could not be completed.",
+    };
+    if (result && messages[result]) setError(messages[result]);
+  }, [mode]);
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -31,6 +46,18 @@ export default function AuthView({ mode, onAuthenticated }: AuthViewProps) {
       setError(err.message || "Authentication failed.");
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const signInWithGoogle = async () => {
+    setError("");
+    try {
+      const response = await fetch("/api/auth/google/start");
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Google sign-in could not be started.");
+      window.location.assign(data.authorizationUrl);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Google sign-in could not be started.");
     }
   };
 
@@ -107,6 +134,16 @@ export default function AuthView({ mode, onAuthenticated }: AuthViewProps) {
           >
             {submitting ? "Please wait..." : mode === "login" ? "Log in" : "Sign up"}
           </button>
+
+          {mode === "login" && googleDriveEnabled && (
+            <>
+              <div className="flex items-center gap-3 text-[9px] font-mono uppercase text-zinc-400"><span className="h-px flex-1 bg-zinc-200" />Or<span className="h-px flex-1 bg-zinc-200" /></div>
+              <button type="button" onClick={() => void signInWithGoogle()} className="w-full rounded border border-zinc-300 bg-white px-4 py-2.5 text-xs font-mono font-semibold uppercase hover:border-zinc-900">
+                Continue with linked Google account
+              </button>
+              <p className="text-[10px] leading-relaxed text-zinc-500">Google sign-in works only after you link the account from Settings. Accounts are never merged by email.</p>
+            </>
+          )}
 
           <Link
             to={mode === "login" ? "/signup" : "/login"}

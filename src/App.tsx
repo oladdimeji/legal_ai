@@ -54,8 +54,8 @@ export default function App() {
   return <Routes>
     <Route element={<PublicLayout />}>
       <Route index element={<PublicLandingPage />} />
-      <Route path="login" element={account ? <Navigate to="/app" replace /> : <AuthView mode="login" onAuthenticated={setAccount} />} />
-      <Route path="signup" element={account ? <Navigate to="/app" replace /> : <AuthView mode="signup" onAuthenticated={setAccount} />} />
+      <Route path="login" element={account ? <Navigate to="/app" replace /> : <AuthView mode="login" onAuthenticated={setAccount} googleDriveEnabled={publicConfig.features.googleDrive} />} />
+      <Route path="signup" element={account ? <Navigate to="/app" replace /> : <AuthView mode="signup" onAuthenticated={setAccount} googleDriveEnabled={false} />} />
     </Route>
 
     <Route path="app/*" element={account
@@ -105,10 +105,10 @@ function LawyerWorkspace({ account, cases, fetchCases, logout, featureFlags }: L
         <Route index element={<AssistantView cases={cases} activeCaseId={activeCaseId} setActiveCaseId={setActiveCaseId} activeThreadId={activeThreadId} setActiveThreadId={setActiveThreadId} onMessagesChange={() => undefined} onNavigateToDrafts={(draftId) => { setInitialDraftId(draftId); if (activeCaseId) navigate(`/app/matters/${activeCaseId}`); }} featureFlags={featureFlags} />} />
         <Route path="assistant" element={<Navigate to="/app" replace />} />
         <Route path="matters" element={<MattersView matters={cases} onRefresh={fetchCases} onOpenMatter={(matterId) => { setActiveCaseId(matterId); setActiveThreadId(null); navigate(`/app/matters/${matterId}`); }} />} />
-        <Route path="matters/:matterId" element={<MatterRoute cases={cases} onBack={() => navigate("/app/matters")} onMatterChange={(matter) => { setActiveCaseId(matter.id); void fetchCases(); }} initialDraftId={initialDraftId} clearDraft={() => setInitialDraftId(null)} />} />
-        <Route path="library" element={<FirmLibraryView />} />
+        <Route path="matters/:matterId" element={<MatterRoute cases={cases} onBack={() => navigate("/app/matters")} onMatterChange={(matter) => { setActiveCaseId(matter.id); void fetchCases(); }} initialDraftId={initialDraftId} clearDraft={() => setInitialDraftId(null)} googleDriveEnabled={featureFlags.googleDrive} />} />
+        <Route path="library" element={<FirmLibraryView googleDriveEnabled={featureFlags.googleDrive} />} />
         <Route path="history" element={<HistoryView cases={cases} activeThreadId={activeThreadId} onSelectThread={(thread) => { setActiveCaseId(thread.case_id); setActiveThreadId(thread.id); navigate("/app"); }} />} />
-        <Route path="settings" element={<SettingsView user={account.user} onLogout={() => void logout().then(() => navigate("/login"))} />} />
+        <Route path="settings" element={<SettingsView user={account.user} onLogout={() => void logout().then(() => navigate("/login"))} googleDriveEnabled={featureFlags.googleDrive} />} />
         <Route path="*" element={<Navigate to="/app" replace />} />
       </Routes>
     </main>
@@ -116,11 +116,11 @@ function LawyerWorkspace({ account, cases, fetchCases, logout, featureFlags }: L
   </div>;
 }
 
-function MatterRoute({ cases, onBack, onMatterChange, initialDraftId, clearDraft }: { cases: Case[]; onBack: () => void; onMatterChange: (matter: Case) => void; initialDraftId: string | null; clearDraft: () => void }) {
+function MatterRoute({ cases, onBack, onMatterChange, initialDraftId, clearDraft, googleDriveEnabled }: { cases: Case[]; onBack: () => void; onMatterChange: (matter: Case) => void; initialDraftId: string | null; clearDraft: () => void; googleDriveEnabled: boolean }) {
   const { matterId } = useParams();
   useEffect(() => {
     if (matterId && cases.some((matter) => matter.id === matterId)) return;
   }, [cases, matterId]);
   if (!matterId) return <ErrorState title="Matter unavailable" />;
-  return <MatterWorkspaceView matterId={matterId} onBack={onBack} onMatterChange={onMatterChange} initialDraftId={initialDraftId} onClearInitialDraftId={clearDraft} />;
+  return <MatterWorkspaceView matterId={matterId} onBack={onBack} onMatterChange={onMatterChange} initialDraftId={initialDraftId} onClearInitialDraftId={clearDraft} googleDriveEnabled={googleDriveEnabled} />;
 }

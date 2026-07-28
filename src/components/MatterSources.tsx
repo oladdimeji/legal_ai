@@ -4,8 +4,9 @@ import { Document } from "../types";
 import SelectedFileList from "./SelectedFileList";
 import { useCumulativeFileSelection } from "../hooks/useCumulativeFileSelection";
 import { PRIVATE_UPLOAD_MAX_FILES, uploadPrivateFiles } from "../lib/durableUploads";
+import GoogleDrivePanel from "./GoogleDrivePanel";
 
-export default function MatterSources({ matterId }: { matterId: string }) {
+export default function MatterSources({ matterId, googleDriveEnabled = false }: { matterId: string; googleDriveEnabled?: boolean }) {
   const [sources, setSources] = useState<Document[]>([]);
   const [library, setLibrary] = useState<Document[]>([]);
   const [query, setQuery] = useState("");
@@ -13,7 +14,7 @@ export default function MatterSources({ matterId }: { matterId: string }) {
   const [preview, setPreview] = useState<Document | null>(null);
   const [title, setTitle] = useState("");
   const [text, setText] = useState("");
-  const [type, setType] = useState<"note" | "upload" | "library">("note");
+  const [type, setType] = useState<"note" | "upload" | "library" | "drive">("note");
   const [selectedLibraryIds, setSelectedLibraryIds] = useState<string[]>([]);
   const [processing, setProcessing] = useState(false);
   const [error, setError] = useState("");
@@ -134,11 +135,13 @@ export default function MatterSources({ matterId }: { matterId: string }) {
           <form onSubmit={add} className="w-full max-w-lg space-y-4 rounded border bg-white p-6">
             <h3 className="text-sm font-semibold uppercase">Add Matter Source</h3>
             <div className="flex gap-2">
-              {(["note", "upload", "library"] as const).map((item) => (
+              {(["note", "upload", "library", ...(googleDriveEnabled ? ["drive" as const] : [])] as const).map((item) => (
                 <button type="button" key={item} onClick={() => { setType(item); setError(""); }} className={`rounded border px-3 py-2 text-[9px] font-mono uppercase ${type === item ? "bg-zinc-900 text-white" : ""}`}>{item === "library" ? "Firm Library" : item}</button>
               ))}
             </div>
-            {type === "library" ? (
+            {type === "drive" ? (
+              <GoogleDrivePanel caseId={matterId} onImported={load} />
+            ) : type === "library" ? (
               <div className="space-y-2">
                 <div className="max-h-48 overflow-y-auto rounded border p-2">
                   {library.length === 0 ? <p className="p-3 text-xs text-zinc-400">No Firm Library documents.</p> : library.map((document) => (
@@ -175,7 +178,7 @@ export default function MatterSources({ matterId }: { matterId: string }) {
             {error && <p className="text-xs text-red-700">{error}</p>}
             <div className="flex justify-end gap-2">
               <button type="button" onClick={() => { resetAddForm(); setShowAdd(false); }} className="rounded border px-4 py-2 text-[10px] uppercase">Cancel</button>
-              <button disabled={processing || (type === "library" ? selectedLibraryIds.length === 0 : type === "upload" ? fileSelection.files.length === 0 : !text.trim())} className="rounded bg-zinc-950 px-4 py-2 text-[10px] font-bold uppercase text-white disabled:cursor-not-allowed disabled:opacity-40">{processing ? "Processing..." : "Add Source"}</button>
+              {type !== "drive" && <button disabled={processing || (type === "library" ? selectedLibraryIds.length === 0 : type === "upload" ? fileSelection.files.length === 0 : !text.trim())} className="rounded bg-zinc-950 px-4 py-2 text-[10px] font-bold uppercase text-white disabled:cursor-not-allowed disabled:opacity-40">{processing ? "Processing..." : "Add Source"}</button>}
             </div>
           </form>
         </div>

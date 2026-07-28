@@ -7,6 +7,7 @@ import {
   migrateLegacyDraftsFromEnvironment,
   migrateLegacyOwnerFromEnvironment,
 } from "./legacyMigration.js";
+import { assertGoogleLinkAllowed } from "./googleAuthorization.js";
 
 const { Pool } = pg;
 
@@ -697,6 +698,186 @@ class DatabaseService {
     return { ...inserted[0], documents: owned, responses: [] };
   }
 
+  public async createOAuthAuthorizationState(input: {
+    stateHash: string;
+    browserBindingHash: string;
+    mode: "link" | "signin";
+    userId: string | null;
+    firmId: string | null;
+    redirectUri: string;
+    encryptedCodeVerifier: string;
+    expiresAt: string;
+  }): Promise<void> {
+    await this.query(
+      `INSERT INTO oauth_authorization_states
+        (state_hash, browser_binding_hash, provider, mode, user_id, firm_id,
+         redirect_uri, encrypted_code_verifier, expires_at)
+       VALUES ($1, $2, 'google', $3, $4, $5, $6, $7, $8)`,
+      [
+        input.stateHash, input.browserBindingHash, input.mode, input.userId, input.firmId,
+        input.redirectUri, input.encryptedCodeVerifier, input.expiresAt,
+      ],
+    );
+  }
+
+  public async consumeOAuthAuthorizationState(
+    stateHash: string,
+    browserBindingHash: string,
+  ): Promise<any | undefined> {
+    const rows = await this.query(
+      `UPDATE oauth_authorization_states
+       SET consumed_at = NOW()
+       WHERE state_hash = $1 AND browser_binding_hash = $2 AND provider = 'google'
+         AND consumed_at IS NULL AND expires_at > NOW()
+       RETURNING *`,
+      [stateHash, browserBindingHash],
+    );
+    return rows[0];
+  }
+
+  public async getGoogleConnection(context: OwnershipContext): Promise<any | undefined> {
+    const rows = await this.query(
+      `SELECT id, provider_subject, provider_email, scopes, token_type,
+              access_token_expires_at, revocation_state, connected_at, updated_at,
+              revoked_at, last_error_code, encrypted_refresh_token
+       FROM oauth_connections
+       WHERE provider = 'google' AND user_id = $1 AND firm_id = $2`,
+      [context.userId, context.firmId],
+    );
+    return rows[0];
+  }
+
+  public async getGoogleSigninConnection(providerSubject: string): Promise<any | undefined> {
+    const rows = await this.query(
+      `SELECT oc.*, u.name, u.email, f.name AS firm_name
+       FROM oauth_connections oc
+       JOIN users u ON u.id = oc.user_id AND u.firm_id = oc.firm_id
+       JOIN firm f ON f.id = oc.firm_id
+       WHERE oc.provider = 'google' AND oc.provider_subject = $1
+         AND oc.revocation_state = 'active' AND oc.encrypted_refresh_token IS NOT NULL`,
+      [providerSubject],
+    );
+    return rows[0];
+  }
+
+  public async saveGoogleConnection(input: {
+    context: OwnershipContext;
+    providerSubject: string;
+    providerEmail: string;
+    scopes: string[];
+    encryptedRefreshToken: string;
+    tokenType: string;
+    expiresAt: string;
+  }): Promise<any> {
+    await this.ensureSchema();
+    const client = await getPool().connect();
+    try {
+      await client.query("BEGIN");
+      const bySubject = await client.query(
+        `SELECT id, user_id, firm_id FROM oauth_connections
+         WHERE provider = 'google' AND provider_subject = $1 FOR UPDATE`,
+        [input.providerSubject],
+      );
+      const byUser = await client.query(
+        `SELECT id, provider_subject FROM oauth_connections
+         WHERE provider = 'google' AND user_id = $1 FOR UPDATE`,
+        [input.context.userId],
+      );
+      assertGoogleLinkAllowed(bySubject.rows[0], byUser.rows[0], input.context, input.providerSubject);
+      const id = bySubject.rows[0]?.id || byUser.rows[0]?.id || `oauth_${randomUUID()}`;
+      const result = await client.query(
+        `INSERT INTO oauth_connections
+          (id, provider, provider_subject, user_id, firm_id, provider_email, scopes,
+           encrypted_refresh_token, token_type, access_token_expires_at,
+           token_metadata, revocation_state, connected_at, updated_at, revoked_at, last_error_code)
+         VALUES ($1, 'google', $2, $3, $4, $5, $6::jsonb, $7, $8, $9,
+           jsonb_build_object('refresh_token_present', true, 'granted_at', NOW()), 'active', NOW(), NOW(), NULL, NULL)
+         ON CONFLICT (id) DO UPDATE SET
+           provider_subject = EXCLUDED.provider_subject,
+           provider_email = EXCLUDED.provider_email,
+           scopes = EXCLUDED.scopes,
+           encrypted_refresh_token = EXCLUDED.encrypted_refresh_token,
+           token_type = EXCLUDED.token_type,
+           access_token_expires_at = EXCLUDED.access_token_expires_at,
+           token_metadata = EXCLUDED.token_metadata,
+           revocation_state = 'active',
+           updated_at = NOW(),
+           revoked_at = NULL,
+           last_error_code = NULL
+         RETURNING *`,
+        [
+          id, input.providerSubject, input.context.userId, input.context.firmId,
+          input.providerEmail, JSON.stringify(input.scopes), input.encryptedRefreshToken,
+          input.tokenType, input.expiresAt,
+        ],
+      );
+      await client.query("COMMIT");
+      return result.rows[0];
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async updateGoogleTokenMetadata(
+    connectionId: string,
+    context: OwnershipContext,
+    input: { encryptedRefreshToken?: string; tokenType: string; scopes: string[]; expiresAt: string },
+  ): Promise<boolean> {
+    const rows = await this.query(
+      `UPDATE oauth_connections SET
+         encrypted_refresh_token = COALESCE($4, encrypted_refresh_token),
+         token_type = $5,
+         scopes = $6::jsonb,
+         access_token_expires_at = $7,
+         token_metadata = token_metadata || jsonb_build_object(
+           'refresh_token_present', true,
+           'last_refreshed_at', NOW()
+         ),
+         updated_at = NOW(),
+         last_error_code = NULL
+       WHERE id = $1 AND provider = 'google' AND user_id = $2 AND firm_id = $3
+         AND revocation_state = 'active'
+       RETURNING id`,
+      [
+        connectionId, context.userId, context.firmId, input.encryptedRefreshToken || null,
+        input.tokenType, JSON.stringify(input.scopes), input.expiresAt,
+      ],
+    );
+    return rows.length === 1;
+  }
+
+  public async markGoogleConnectionRevoked(
+    connectionId: string,
+    context: OwnershipContext,
+    revocationState: "revoked" | "disconnected" | "provider_revocation_failed",
+    errorCode: string | null,
+  ): Promise<boolean> {
+    const rows = await this.query(
+      `UPDATE oauth_connections SET
+         encrypted_refresh_token = NULL,
+         access_token_expires_at = NULL,
+         revocation_state = $4,
+         revoked_at = NOW(),
+         updated_at = NOW(),
+         last_error_code = $5
+       WHERE id = $1 AND provider = 'google' AND user_id = $2 AND firm_id = $3
+       RETURNING id`,
+      [connectionId, context.userId, context.firmId, revocationState, errorCode],
+    );
+    if (rows.length === 1) {
+      await this.query(
+        `UPDATE drive_file_imports SET sync_state = 'connection_revoked',
+           last_checked_at = NOW(), updated_at = NOW(), last_error_code = 'google_connection_revoked'
+         WHERE oauth_connection_id = $1 AND firm_id = $2 AND user_id = $3`,
+        [connectionId, context.firmId, context.userId],
+      );
+    }
+    return rows.length === 1;
+  }
+
   private async getResponseAttachments(responseId: string): Promise<any[]> {
     return await this.query(
       `SELECT a.id, a.response_id, a.document_id, a.draft_id, a.created_at,
@@ -1258,23 +1439,42 @@ class DatabaseService {
       }
       if (version.upload_state !== "Authorized") throw new Error("Upload is not confirmable");
 
-      const documentId = version.reserved_document_id;
+      const documentId = version.document_id || version.reserved_document_id;
       const now = new Date().toISOString();
       const sourceType = version.case_id ? "Matter Upload" : "Firm Library Document";
-      const inserted = await client.query(
-        `INSERT INTO documents
-          (id, firm_id, case_id, title, source_url, drive_id, extracted_text, section,
-           uploaded_at, source_type, origin, processing_state)
-         SELECT $1, $2, v.case_id, v.original_filename, NULL, NULL, '', 'Uncategorized',
-           $3, $4, v.upload_source, 'Uploaded'
-         FROM document_versions v
-         WHERE v.id = $5 AND v.firm_id = $2
-           AND (v.case_id IS NULL OR EXISTS (
-             SELECT 1 FROM cases c WHERE c.id = v.case_id AND c.firm_id = $2
-           ))
-         RETURNING *`,
-        [documentId, context.firmId, now, sourceType, versionId],
-      );
+      const inserted = version.document_id
+        ? await client.query(
+            `UPDATE documents d SET
+               title = v.original_filename,
+               extracted_text = '',
+               uploaded_at = $2,
+               source_type = $3,
+               origin = v.upload_source,
+               processing_state = 'Uploaded'
+             FROM document_versions v
+             WHERE v.id = $4 AND v.firm_id = $1
+               AND d.id = v.document_id AND d.firm_id = v.firm_id
+               AND d.case_id IS NOT DISTINCT FROM v.case_id
+               AND (v.case_id IS NULL OR EXISTS (
+                 SELECT 1 FROM cases c WHERE c.id = v.case_id AND c.firm_id = $1
+               ))
+             RETURNING d.*`,
+            [context.firmId, now, sourceType, versionId],
+          )
+        : await client.query(
+            `INSERT INTO documents
+              (id, firm_id, case_id, title, source_url, drive_id, extracted_text, section,
+               uploaded_at, source_type, origin, processing_state)
+             SELECT $1, $2, v.case_id, v.original_filename, NULL, NULL, '', 'Uncategorized',
+               $3, $4, v.upload_source, 'Uploaded'
+             FROM document_versions v
+             WHERE v.id = $5 AND v.firm_id = $2
+               AND (v.case_id IS NULL OR EXISTS (
+                 SELECT 1 FROM cases c WHERE c.id = v.case_id AND c.firm_id = $2
+               ))
+             RETURNING *`,
+            [documentId, context.firmId, now, sourceType, versionId],
+          );
       if (inserted.rowCount !== 1) throw new Error("Upload scope is no longer available");
       await client.query(
         `UPDATE document_versions
@@ -1373,6 +1573,327 @@ class DatabaseService {
        ORDER BY v.created_at DESC`,
       [context.firmId],
     );
+  }
+
+  public async getDriveImports(context: OwnershipContext, caseId: string | null): Promise<any[]> {
+    return this.query(
+      `SELECT i.id, i.case_id, i.document_id, i.document_version_id, i.drive_file_id,
+              i.drive_name, i.mime_type, i.canonical_url, i.drive_modified_time,
+              i.current_drive_modified_time, i.imported_at, i.drive_revision_id,
+              i.current_drive_revision_id, i.drive_checksum, i.current_drive_checksum,
+              i.stored_checksum_sha256, i.sync_state, i.last_checked_at, i.last_error_code
+       FROM drive_file_imports i
+       WHERE i.firm_id = $1 AND i.user_id = $2 AND i.case_id IS NOT DISTINCT FROM $3
+         AND (
+           i.case_id IS NULL OR EXISTS (
+             SELECT 1 FROM cases c WHERE c.id = i.case_id AND c.firm_id = $1
+           )
+         )
+       ORDER BY i.updated_at DESC`,
+      [context.firmId, context.userId, caseId],
+    );
+  }
+
+  public async getDriveImport(
+    importId: string,
+    context: OwnershipContext,
+  ): Promise<any | undefined> {
+    const rows = await this.query(
+      `SELECT i.* FROM drive_file_imports i
+       WHERE i.id = $1 AND i.firm_id = $2 AND i.user_id = $3
+         AND (
+           i.case_id IS NULL OR EXISTS (
+             SELECT 1 FROM cases c WHERE c.id = i.case_id AND c.firm_id = $2
+           )
+         )`,
+      [importId, context.firmId, context.userId],
+    );
+    return rows[0];
+  }
+
+  public async reserveDriveImport(input: {
+    context: OwnershipContext;
+    connectionId: string;
+    caseId: string | null;
+    existingImportId: string | null;
+    driveFileId: string;
+    driveName: string;
+    mimeType: string;
+    canonicalUrl: string | null;
+    modifiedTime: string | null;
+    revisionId: string | null;
+    driveChecksum: string | null;
+    parentIds: string[];
+    storedChecksum: string;
+    byteSize: number;
+    contentType: string;
+    originalFilename: string;
+    safeFilename: string;
+    documentId: string;
+    versionId: string;
+    reservationId: string;
+    batchId: string;
+    objectKey: string;
+    bucket: string;
+    expiresAt: string;
+    limits: { maxWorkspaceBytes: number; maxWorkspaceFiles: number };
+  }): Promise<{ importId: string; documentId: string; versionId: string }> {
+    await this.ensureSchema();
+    const client = await getPool().connect();
+    try {
+      await client.query("BEGIN");
+      const firm = await client.query("SELECT id FROM firm WHERE id = $1 FOR UPDATE", [input.context.firmId]);
+      if (firm.rowCount !== 1) throw new Error("Workspace not found");
+      const connection = await client.query(
+        `SELECT id FROM oauth_connections
+         WHERE id = $1 AND provider = 'google' AND firm_id = $2 AND user_id = $3
+           AND revocation_state = 'active' AND encrypted_refresh_token IS NOT NULL`,
+        [input.connectionId, input.context.firmId, input.context.userId],
+      );
+      if (connection.rowCount !== 1) throw new Error("Google connection is unavailable");
+      if (input.caseId) {
+        const matter = await client.query(
+          "SELECT id FROM cases WHERE id = $1 AND firm_id = $2",
+          [input.caseId, input.context.firmId],
+        );
+        if (matter.rowCount !== 1) throw new Error("Matter not found");
+      }
+      const existing = input.existingImportId
+        ? await client.query(
+            `SELECT * FROM drive_file_imports
+             WHERE id = $1 AND firm_id = $2 AND user_id = $3 AND oauth_connection_id = $4
+               AND case_id IS NOT DISTINCT FROM $5 FOR UPDATE`,
+            [
+              input.existingImportId, input.context.firmId, input.context.userId,
+              input.connectionId, input.caseId,
+            ],
+          )
+        : await client.query(
+            `SELECT * FROM drive_file_imports
+             WHERE firm_id = $1 AND user_id = $2 AND oauth_connection_id = $3
+               AND drive_file_id = $4 AND case_id IS NOT DISTINCT FROM $5 FOR UPDATE`,
+            [
+              input.context.firmId, input.context.userId, input.connectionId,
+              input.driveFileId, input.caseId,
+            ],
+          );
+      const tracked = existing.rows[0];
+      if (input.existingImportId && (!tracked || tracked.drive_file_id !== input.driveFileId)) {
+        throw new Error("Drive import not found");
+      }
+      const usage = await client.query(
+        `SELECT COUNT(*)::int AS file_count, COALESCE(SUM(byte_size), 0)::bigint AS total_bytes
+         FROM document_versions
+         WHERE firm_id = $1 AND upload_state IN ('Authorized', 'Uploaded')`,
+        [input.context.firmId],
+      );
+      if (Number(usage.rows[0]?.file_count || 0) + 1 > input.limits.maxWorkspaceFiles) {
+        throw new Error("Workspace file limit exceeded.");
+      }
+      if (Number(usage.rows[0]?.total_bytes || 0) + input.byteSize > input.limits.maxWorkspaceBytes) {
+        throw new Error("Workspace storage limit exceeded.");
+      }
+      const duplicate = await client.query(
+        `SELECT id FROM document_versions
+         WHERE firm_id = $1 AND checksum_sha256 = $2 LIMIT 1`,
+        [input.context.firmId, input.storedChecksum],
+      );
+      if (duplicate.rowCount) throw new Error("A file with the same checksum already exists in this workspace.");
+
+      const documentId = tracked?.document_id || input.documentId;
+      const versionNumberResult = tracked?.document_id
+        ? await client.query(
+            "SELECT COALESCE(MAX(version_number), 0)::int + 1 AS next FROM document_versions WHERE document_id = $1",
+            [tracked.document_id],
+          )
+        : { rows: [{ next: 1 }] };
+      const versionNumber = Number(versionNumberResult.rows[0]?.next || 1);
+      await client.query(
+        `INSERT INTO upload_batches
+          (id, firm_id, case_id, created_by_user_id, upload_source, state, file_count,
+           total_bytes, authorization_expires_at)
+         VALUES ($1, $2, $3, $4, 'Google Drive Import', 'Authorized', 1, $5, $6)`,
+        [
+          input.batchId, input.context.firmId, input.caseId, input.context.userId,
+          input.byteSize, input.expiresAt,
+        ],
+      );
+      await client.query(
+        `INSERT INTO document_versions
+          (id, document_id, reserved_document_id, firm_id, case_id, upload_batch_id,
+           version_number, original_filename, safe_filename, object_key, storage_bucket,
+           content_type, byte_size, checksum_sha256, upload_source, uploaded_by_user_id,
+           upload_state, authorization_expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+           'Google Drive Import', $15, 'Authorized', $16)`,
+        [
+          input.versionId, tracked?.document_id || null, input.reservationId,
+          input.context.firmId, input.caseId, input.batchId, versionNumber,
+          input.originalFilename, input.safeFilename, input.objectKey, input.bucket,
+          input.contentType, input.byteSize, input.storedChecksum, input.context.userId,
+          input.expiresAt,
+        ],
+      );
+      const importId = tracked?.id || `drive_import_${randomUUID()}`;
+      if (tracked) {
+        await client.query(
+          `UPDATE drive_file_imports SET
+             drive_name = $2, mime_type = $3, canonical_url = $4,
+             current_drive_modified_time = $5,
+             current_drive_revision_id = $6, current_drive_checksum = $7,
+             current_parent_ids = $8::jsonb, sync_state = 'importing',
+             last_error_code = NULL, updated_at = NOW()
+           WHERE id = $1`,
+          [
+            importId, input.driveName, input.mimeType, input.canonicalUrl,
+            input.modifiedTime, input.revisionId, input.driveChecksum,
+            JSON.stringify(input.parentIds),
+          ],
+        );
+      } else {
+        await client.query(
+          `INSERT INTO drive_file_imports
+            (id, firm_id, user_id, oauth_connection_id, case_id, drive_file_id,
+             drive_name, mime_type, canonical_url, current_drive_modified_time,
+             current_drive_revision_id, current_drive_checksum, imported_parent_ids, current_parent_ids,
+             sync_state)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+             $13::jsonb, $13::jsonb, 'importing')`,
+          [
+            importId, input.context.firmId, input.context.userId, input.connectionId,
+            input.caseId, input.driveFileId, input.driveName, input.mimeType,
+            input.canonicalUrl, input.modifiedTime, input.revisionId, input.driveChecksum,
+            JSON.stringify(input.parentIds),
+          ],
+        );
+      }
+      await client.query("COMMIT");
+      return { importId, documentId, versionId: input.versionId };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async completeDriveImport(
+    importId: string,
+    documentId: string,
+    versionId: string,
+    storedChecksum: string,
+    context: OwnershipContext,
+  ): Promise<any> {
+    const rows = await this.query(
+      `UPDATE drive_file_imports i SET
+         document_id = $2,
+         document_version_id = $3,
+         stored_checksum_sha256 = $4,
+         imported_parent_ids = current_parent_ids,
+         drive_modified_time = current_drive_modified_time,
+         drive_revision_id = current_drive_revision_id,
+         drive_checksum = current_drive_checksum,
+         imported_at = NOW(),
+         last_checked_at = NOW(),
+         sync_state = 'current',
+         last_error_code = NULL,
+         updated_at = NOW()
+       WHERE i.id = $1 AND i.firm_id = $5 AND i.user_id = $6
+         AND EXISTS (
+           SELECT 1 FROM documents d
+           WHERE d.id = $2 AND d.firm_id = $5
+             AND d.case_id IS NOT DISTINCT FROM i.case_id
+         )
+       RETURNING i.*`,
+      [importId, documentId, versionId, storedChecksum, context.firmId, context.userId],
+    );
+    if (!rows[0]) throw new Error("Drive import not found");
+    await this.query(
+      `UPDATE documents d SET
+         title = i.drive_name,
+         source_url = i.canonical_url,
+         drive_id = i.drive_file_id,
+         origin = 'Google Drive',
+         uploaded_at = COALESCE(i.imported_at::text, d.uploaded_at)
+       FROM drive_file_imports i
+       WHERE i.id = $1 AND d.id = $2 AND d.firm_id = $3 AND i.firm_id = $3`,
+      [importId, documentId, context.firmId],
+    );
+    return rows[0];
+  }
+
+  public async updateDriveImportSyncState(
+    importId: string,
+    context: OwnershipContext,
+    input: {
+      syncState: string;
+      modifiedTime?: string | null;
+      revisionId?: string | null;
+      driveChecksum?: string | null;
+      canonicalUrl?: string | null;
+      parentIds?: string[];
+      errorCode?: string | null;
+    },
+  ): Promise<any | undefined> {
+    const rows = await this.query(
+      `UPDATE drive_file_imports SET
+         sync_state = $4,
+         current_drive_modified_time = COALESCE($5, current_drive_modified_time),
+         current_drive_revision_id = COALESCE($6, current_drive_revision_id),
+         current_drive_checksum = COALESCE($7, current_drive_checksum),
+         canonical_url = COALESCE($8, canonical_url),
+         current_parent_ids = COALESCE($9::jsonb, current_parent_ids),
+         last_error_code = $10,
+         last_checked_at = NOW(),
+         updated_at = NOW()
+       WHERE id = $1 AND firm_id = $2 AND user_id = $3
+       RETURNING *`,
+      [
+        importId, context.firmId, context.userId, input.syncState,
+        input.modifiedTime || null, input.revisionId || null, input.driveChecksum || null,
+        input.canonicalUrl || null,
+        input.parentIds ? JSON.stringify(input.parentIds) : null,
+        input.errorCode || null,
+      ],
+    );
+    return rows[0];
+  }
+
+  public async recordDriveExport(input: {
+    context: OwnershipContext;
+    connectionId: string;
+    caseId: string;
+    sourceType: "work_product" | "matter_intelligence";
+    sourceId: string;
+    driveFileId: string;
+    driveName: string;
+    canonicalUrl: string | null;
+    modifiedTime: string | null;
+    revisionId: string | null;
+    checksum: string | null;
+  }): Promise<void> {
+    const rows = await this.query(
+      `INSERT INTO drive_exports
+        (id, firm_id, user_id, oauth_connection_id, case_id, source_type, source_id,
+         drive_file_id, drive_name, canonical_url, drive_modified_time,
+         drive_revision_id, drive_checksum)
+       SELECT $1, $2, $3, $4, c.id, $6, $7, $8, $9, $10, $11, $12, $13
+       FROM cases c
+       WHERE c.id = $5 AND c.firm_id = $2
+         AND EXISTS (
+           SELECT 1 FROM oauth_connections oc
+           WHERE oc.id = $4 AND oc.firm_id = $2 AND oc.user_id = $3
+             AND oc.revocation_state = 'active'
+         )
+       RETURNING id`,
+      [
+        `drive_export_${randomUUID()}`, input.context.firmId, input.context.userId,
+        input.connectionId, input.caseId, input.sourceType, input.sourceId,
+        input.driveFileId, input.driveName, input.canonicalUrl, input.modifiedTime,
+        input.revisionId, input.checksum,
+      ],
+    );
+    if (!rows[0]) throw new Error("Export scope is unavailable");
   }
 
   public async deleteDocument(
