@@ -18,6 +18,7 @@
     "smoke:production-routes": "tsx scripts/manager-preview-production-smoke.ts",
     "verify:compose-web": "node scripts/manager-preview-compose-check.mjs",
     "verify": "npm run lint && npm test && npm run build",
+    "verify:migrations:staging": "tsx scripts/verify-staging-migrations.ts",
     "verify:manager-preview": "node scripts/verify-manager-preview.mjs"
   },
   "dependencies": {

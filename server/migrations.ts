@@ -8,6 +8,45 @@ interface Migration {
 
 const migrations: Migration[] = [
   {
+    version: 0,
+    name: "legacy_firm_scope_column_repair",
+    async run(client) {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS firm (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL
+        )
+      `);
+      for (const table of ["users", "cases", "documents"]) {
+        await client.query(`ALTER TABLE IF EXISTS ${table} ADD COLUMN IF NOT EXISTS firm_id TEXT`);
+        await client.query(`
+          DO $$
+          DECLARE
+            relation_oid oid := to_regclass('${table}');
+          BEGIN
+            IF relation_oid IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1
+                FROM pg_constraint con
+                JOIN pg_attribute att
+                  ON att.attrelid = con.conrelid
+                 AND att.attnum = ANY(con.conkey)
+                WHERE con.conrelid = relation_oid
+                  AND con.contype = 'f'
+                  AND con.confrelid = 'firm'::regclass
+                  AND att.attname = 'firm_id'
+              )
+            THEN
+              ALTER TABLE ${table}
+                ADD CONSTRAINT ${table}_firm_id_fkey
+                FOREIGN KEY (firm_id) REFERENCES firm(id) NOT VALID;
+            END IF;
+          END $$;
+        `);
+      }
+    },
+  },
+  {
     version: 1,
     name: "baseline_schema",
     async run(client) {
@@ -1072,6 +1111,7 @@ const migrations: Migration[] = [
           c.created_by_user_id, d.uploaded_at::timestamptz
         FROM documents d
         LEFT JOIN cases c ON c.id = d.case_id
+        WHERE d.firm_id IS NOT NULL
         ON CONFLICT (document_id, version_number) DO NOTHING
       `);
       await client.query(`
@@ -1085,6 +1125,8 @@ const migrations: Migration[] = [
           d.created_at::timestamptz
         FROM drafts d
         JOIN cases c ON c.id = d.case_id
+        WHERE c.firm_id IS NOT NULL
+          AND COALESCE(d.last_edited_by_user_id, c.created_by_user_id) IS NOT NULL
         ON CONFLICT (draft_id, version_number) DO NOTHING
       `);
     },

@@ -1,5 +1,29 @@
 # Compact Upgrade Progress
 
+## Manager Preview legacy-database migration compatibility
+
+Status: Complete and verified.
+
+Implemented:
+
+- Added migration 000 `legacy_firm_scope_column_repair` before baseline migration 001 so databases that already recorded migrations 001-003 still receive the missing nullable `firm_id` compatibility columns before migration 004 creates ownership indexes.
+- The compatibility migration creates `firm` when missing, adds nullable `firm_id` columns to existing `users`, `cases`, and `documents`, and adds absent firm foreign keys as `NOT VALID` constraints without assigning ownership.
+- Guarded migration 018 immutable-history backfills so unowned legacy Matter and Source rows are preserved and do not fail `firm_id NOT NULL` history inserts before the explicit legacy-owner migration runs.
+- Added an opt-in real PostgreSQL legacy-schema migration test for the case where `cases` and `documents` lack `firm_id` and migrations 001-003 are already recorded.
+- Added `npm run verify:migrations:staging` to report sanitized database target, applied migration versions, relevant schema columns, and firm ownership constraints without exposing credentials.
+
+Schema changes:
+
+- Migration 000 is additive and non-destructive. It does not drop, truncate, rename, recreate existing tables, reset data, or infer ownership.
+
+Verification:
+
+- `npm run verify`: passed.
+- `npm run verify:manager-preview`: passed.
+- Real PostgreSQL legacy-schema migration test with migrations 001-003 pre-recorded: passed, reached migration 019, preserved legacy row ownership as NULL, and reran idempotently.
+- `npm run verify:migrations:staging`: passed and reported applied versions/schema without credentials.
+- Docker web-only startup against a disposable PostgreSQL schema: passed; `/api/health/ready` returned ready with jobs disabled.
+
 ## Manager Preview Release — Independent Google capabilities
 
 Status: Complete in code; live Google staging smoke remains required before
