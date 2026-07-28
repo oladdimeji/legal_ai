@@ -6,7 +6,7 @@ import { useCumulativeFileSelection } from "../hooks/useCumulativeFileSelection"
 import { PRIVATE_UPLOAD_MAX_FILES, uploadPrivateFiles } from "../lib/durableUploads";
 import GoogleDrivePanel from "./GoogleDrivePanel";
 
-export default function MatterSources({ matterId, googleDriveEnabled = false }: { matterId: string; googleDriveEnabled?: boolean }) {
+export default function MatterSources({ matterId, googleDriveEnabled = false, resourceLifecycleEnabled = false }: { matterId: string; googleDriveEnabled?: boolean; resourceLifecycleEnabled?: boolean }) {
   const [sources, setSources] = useState<Document[]>([]);
   const [library, setLibrary] = useState<Document[]>([]);
   const [query, setQuery] = useState("");
@@ -99,6 +99,27 @@ export default function MatterSources({ matterId, googleDriveEnabled = false }: 
     if (response.ok) await load();
   };
 
+  const sourceAction = async (source: Document, action: "rename" | "reindex" | "archive" | "restore" | "download") => {
+    if (action === "download") {
+      const response = await fetch(`/api/documents/${source.id}/original-download?caseId=${matterId}`);
+      const data = await response.json();
+      if (!response.ok) return alert(data.error || "Original is unavailable");
+      return window.open(data.url, "_blank", "noopener,noreferrer");
+    }
+    const title = action === "rename" ? prompt("Source title", source.title)?.trim() : null;
+    if (action === "rename" && !title) return;
+    const response = action === "reindex"
+      ? await fetch(`/api/documents/${source.id}/reindex?caseId=${matterId}`, { method: "POST" })
+      : await fetch(`/api/documents/${source.id}?caseId=${matterId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(action === "rename" ? { title } : { lifecycleState: action === "archive" ? "archived" : "active" }),
+        });
+    const data = await response.json();
+    if (!response.ok) return alert(data.error || "Source could not be updated");
+    await load();
+  };
+
   const selectedLibraryNames = selectedLibraryIds
     .map((id) => library.find((document) => document.id === id)?.title)
     .filter(Boolean);
@@ -117,7 +138,7 @@ export default function MatterSources({ matterId, googleDriveEnabled = false }: 
 
       <div className="overflow-hidden rounded border">
         {visible.length === 0 ? <p className="p-10 text-center text-xs text-zinc-500">No Sources match this view.</p> : visible.map((source) => (
-          <div key={source.id} className="grid grid-cols-[1fr_150px_120px_110px_70px] items-center gap-3 border-t px-4 py-3 first:border-t-0">
+          <div key={source.id} className="grid grid-cols-[1fr_150px_120px_110px_120px] items-center gap-3 border-t px-4 py-3 first:border-t-0">
             <button onClick={() => setPreview(source)} className="flex min-w-0 items-center gap-2 text-left">
               <FileText className="h-4 w-4 text-zinc-400" />
               <span className="truncate text-xs font-semibold">{source.title}</span>
@@ -125,7 +146,7 @@ export default function MatterSources({ matterId, googleDriveEnabled = false }: 
             <span className="text-[9px] font-mono uppercase">{source.case_id === null ? "Linked Firm Library" : source.source_type || "Matter Upload"}{source.link_origin === "AI Suggested" && <em className="block not-italic text-zinc-400">AI Suggested</em>}</span>
             <span className="text-[10px] text-zinc-500">{source.origin || "Lawyer"}</span>
             <span className="text-[9px] font-mono uppercase">{(source.processing_state || "ready").replaceAll("_", " ")}</span>
-            <span className="flex gap-3"><button onClick={() => setPreview(source)}><Eye className="h-4 w-4" /></button><button onClick={() => void remove(source)}><Trash2 className="h-4 w-4 text-zinc-400" /></button></span>
+            <span className="flex gap-2"><button onClick={() => setPreview(source)}><Eye className="h-4 w-4" /></button>{resourceLifecycleEnabled && <button onClick={() => void sourceAction(source, "reindex")} title="Retry indexing" className="text-[9px] font-mono uppercase">Retry</button>}<button onClick={() => void remove(source)}><Trash2 className="h-4 w-4 text-zinc-400" /></button></span>
           </div>
         ))}
       </div>
@@ -184,7 +205,7 @@ export default function MatterSources({ matterId, googleDriveEnabled = false }: 
         </div>
       )}
 
-      {preview && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-6"><div className="max-h-[85vh] w-full max-w-3xl overflow-y-auto rounded border bg-white p-6"><button onClick={() => setPreview(null)} className="float-right"><X className="h-4 w-4" /></button><h3 className="font-semibold">{preview.title}</h3><p className="mt-4 whitespace-pre-wrap text-sm leading-relaxed text-zinc-700">{preview.extracted_text}</p></div></div>}
+      {preview && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-6"><div className="max-h-[85vh] w-full max-w-3xl overflow-y-auto rounded border bg-white p-6"><button onClick={() => setPreview(null)} className="float-right"><X className="h-4 w-4" /></button><h3 className="font-semibold">{preview.title}</h3>{resourceLifecycleEnabled && <div className="mt-3 flex flex-wrap gap-2"><button onClick={() => void sourceAction(preview, "rename")} className="rounded border px-3 py-1 text-[9px] font-mono uppercase">Rename</button><button onClick={() => void sourceAction(preview, "download")} className="rounded border px-3 py-1 text-[9px] font-mono uppercase">Original</button><button onClick={() => void sourceAction(preview, "archive")} className="rounded border px-3 py-1 text-[9px] font-mono uppercase">Archive</button></div>}<p className="mt-4 whitespace-pre-wrap text-sm leading-relaxed text-zinc-700">{preview.extracted_text}</p></div></div>}
     </div>
   );
 }

@@ -17,9 +17,12 @@ export type AuthorizationAction =
   | "matter.content.write"
   | "matter.content.delete"
   | "matter.client_access.manage"
+  | "matter.retention.manage"
+  | "matter.permanent_delete"
   | "library.view"
   | "library.write"
   | "library.delete"
+  | "library.permanent_delete"
   | "integration.use"
   | "team.manage";
 
@@ -60,6 +63,7 @@ const roleActions: Record<FirmRole, ReadonlySet<AuthorizationAction>> = {
     "workspace.view", "assistant.use", "matter.list", "matter.create", "matter.view",
     "matter.download", "matter.edit", "matter.content.write", "matter.content.delete",
     "matter.client_access.manage", "library.view", "library.write", "library.delete",
+    "matter.retention.manage", "matter.permanent_delete", "library.permanent_delete",
     "integration.use", "team.manage",
   ]),
   lawyer: new Set([
@@ -174,6 +178,9 @@ export function classifyProtectedRequest(req: Request): AuthorizationRoute | nul
     if (method === "POST") return { action: "matter.create" };
   }
   if (matterFromPath) {
+    if (pathname.endsWith("/retention")) return { action: "matter.retention.manage", matterId };
+    if (/\/permanent-deletion(?:\/cancel)?$/.test(pathname)) return { action: "matter.permanent_delete", matterId };
+    if (pathname.endsWith("/export-package")) return { action: "matter.download", matterId };
     if (/\/collaboration(?:\/|$)/.test(pathname)) {
       return {
         action: method === "GET" ? "matter.view" : "matter.client_access.manage",
@@ -196,10 +203,13 @@ export function classifyProtectedRequest(req: Request): AuthorizationRoute | nul
   if (pathname === "/documents") {
     return { action: method === "GET" ? "library.view" : "library.write" };
   }
+  if (pathname === "/documents/bulk-lifecycle") return { action: "library.write" };
   const documentId = pathId(pathname, /^\/documents\/([^/]+)/);
   if (documentId) {
     return {
-      action: method === "DELETE" ? "library.delete" : "library.view",
+      action: /\/permanent-deletion(?:\/cancel)?$/.test(pathname) ? "library.permanent_delete"
+        : pathname.endsWith("/original-download") ? "matter.download"
+        : method === "GET" ? "library.view" : method === "DELETE" ? "library.delete" : "library.write",
       reference: { type: "document", id: documentId },
     };
   }
@@ -227,8 +237,15 @@ export function classifyProtectedRequest(req: Request): AuthorizationRoute | nul
   }
   const draftId = pathId(pathname, /^\/drafts\/([^/]+)/);
   if (draftId) {
-    const isDownload = method === "GET" && pathname.endsWith("/export");
-    const isRead = method === "GET" && !pathname.endsWith("/export");
+    if (/\/permanent-deletion(?:\/cancel)?$/.test(pathname)) {
+      return {
+        action: "matter.permanent_delete",
+        matterId,
+        reference: { type: "draft", id: draftId },
+      };
+    }
+    const isDownload = method === "GET" && /\/export(?:\/pdf)?$/.test(pathname);
+    const isRead = method === "GET" && !isDownload;
     const isClientAccess = pathname.endsWith("/sharing") || pathname.endsWith("/client-revision");
     return {
       action: isDownload ? "matter.download" : isRead ? "matter.view" : isClientAccess

@@ -11,6 +11,7 @@ export interface FeatureFlags {
   clientAccounts: boolean;
   firmTeams: boolean;
   privateStorage: boolean;
+  resourceLifecycle: boolean;
 }
 
 export interface ServerConfig {
@@ -46,7 +47,7 @@ export interface ServerConfig {
 export interface PublicBrowserConfig {
   features: Pick<
     FeatureFlags,
-    "publicLanding" | "govInfo" | "courtListener" | "googleDrive" | "clientAccounts" | "firmTeams" | "privateStorage"
+    "publicLanding" | "govInfo" | "courtListener" | "googleDrive" | "clientAccounts" | "firmTeams" | "privateStorage" | "resourceLifecycle"
   >;
 }
 
@@ -101,6 +102,7 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
     clientAccounts: parseBoolean(env, "FEATURE_CLIENT_ACCOUNTS"),
     firmTeams: parseBoolean(env, "FEATURE_FIRM_TEAMS"),
     privateStorage: parseBoolean(env, "FEATURE_PRIVATE_STORAGE"),
+    resourceLifecycle: parseBoolean(env, "FEATURE_RESOURCE_LIFECYCLE"),
   };
 
   requireWhen(features.privateStorage, env, [
@@ -145,6 +147,9 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
   }
   if (features.googleDrive && !features.asyncIngestion) {
     throw new Error("FEATURE_GOOGLE_DRIVE requires FEATURE_ASYNC_INGESTION=true.");
+  }
+  if (features.resourceLifecycle && !features.asyncIngestion) {
+    throw new Error("FEATURE_RESOURCE_LIFECYCLE requires FEATURE_ASYNC_INGESTION=true.");
   }
   if (features.googleDrive && !/^\d+$/.test(env.GOOGLE_CLOUD_PROJECT_NUMBER || "")) {
     throw new Error("GOOGLE_CLOUD_PROJECT_NUMBER must be the numeric Google Cloud project number.");
@@ -196,9 +201,9 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
 }
 
 export function toPublicBrowserConfig(config: ServerConfig): PublicBrowserConfig {
-  const { publicLanding, govInfo, courtListener, googleDrive, clientAccounts, firmTeams, privateStorage } =
+  const { publicLanding, govInfo, courtListener, googleDrive, clientAccounts, firmTeams, privateStorage, resourceLifecycle } =
     config.features;
   return {
-    features: { publicLanding, govInfo, courtListener, googleDrive, clientAccounts, firmTeams, privateStorage },
+    features: { publicLanding, govInfo, courtListener, googleDrive, clientAccounts, firmTeams, privateStorage, resourceLifecycle },
   };
 }

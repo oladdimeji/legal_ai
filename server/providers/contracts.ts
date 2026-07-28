@@ -11,6 +11,7 @@ export interface ObjectStorageProvider {
   upload(key: string, content: Uint8Array, contentType: string, metadata?: Record<string, string>): Promise<void>;
   stat(key: string): Promise<{ size: number; contentType: string | null; metadata: Record<string, string> } | null>;
   download(key: string): Promise<Uint8Array>;
+  remove(keys: string[]): Promise<void>;
   createSignedDownload(key: string, expiresInSeconds: number, downloadName: string): Promise<string>;
 }
 

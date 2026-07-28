@@ -9,8 +9,9 @@ import { db } from "./server/db.js";
 import type { OwnershipContext, SessionAccount } from "./server/db.js";
 import { callModel, MODEL_CONFIGS } from "./server/model.js";
 import { queryLegalSources } from "./server/connectors/legalSources.js";
-import { Document, Citation, Message, Draft, ResearchStep } from "./src/types.js";
+import { Document, Citation, Message, Draft, ResearchStep, Case } from "./src/types.js";
 import { Packer } from "docx";
+import PDFDocument from "pdfkit";
 import { extractUploads, MAX_FILE_COUNT, MAX_FILE_SIZE_BYTES } from "./server/fileExtraction.js";
 import { markdownToDocxDocument } from "./server/docxMarkdown.js";
 import { cleanMatterIntelligenceContent } from "./server/matterIntelligenceContent.js";
@@ -1418,7 +1419,8 @@ Raw prompt: "${prompt}"`;
 
   // Cases List and Create
   app.get("/api/cases", async (req, res) => {
-    res.json(await db.getCases(ownership(req)));
+    const includeArchived = config.features.resourceLifecycle && req.query.includeArchived === "true";
+    res.json(await db.getCases(ownership(req), includeArchived));
   });
 
   app.get("/api/cases/:id", async (req, res) => {
@@ -1493,6 +1495,80 @@ Raw prompt: "${prompt}"`;
     }
   });
 
+  app.post("/api/cases/:id/archive", async (req, res) => {
+    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
+    try {
+      return res.json(await db.setMatterLifecycle(req.params.id, "archived", ownership(req)));
+    } catch (err: any) {
+      return res.status(ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/cases/:id/restore", async (req, res) => {
+    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
+    try {
+      return res.json(await db.setMatterLifecycle(req.params.id, "active", ownership(req)));
+    } catch (err: any) {
+      return res.status(ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
+  app.put("/api/cases/:id/retention", async (req, res) => {
+    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
+    try {
+      const state = req.body.state === "held" ? "held" : req.body.state === "standard" ? "standard" : null;
+      if (!state) return res.status(400).json({ error: "Retention state must be standard or held." });
+      return res.json(await db.setMatterRetention(req.params.id, {
+        state,
+        until: typeof req.body.until === "string" ? req.body.until : null,
+        reason: typeof req.body.reason === "string" ? req.body.reason : null,
+      }, ownership(req)));
+    } catch (err: any) {
+      return res.status(/invalid retention/i.test(err.message) ? 400 : ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/cases/:id/dependencies", async (req, res) => {
+    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
+    try {
+      return res.json(await db.getMatterDependencies(req.params.id, ownership(req)));
+    } catch (err: any) {
+      return res.status(ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/cases/:id/export-package", async (req, res) => {
+    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
+    try {
+      const matterPackage = await db.exportMatterPackage(req.params.id, ownership(req));
+      const safeName = String((matterPackage.matter as Case).name || "matter")
+        .replace(/[^a-z0-9]+/gi, "_").toLowerCase();
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      res.setHeader("Content-Disposition", `attachment; filename="${safeName}_export.json"`);
+      return res.send(JSON.stringify(matterPackage, null, 2));
+    } catch (err: any) {
+      return res.status(ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/cases/:id/permanent-deletion", async (req, res) => {
+    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
+    try {
+      const confirmation = typeof req.body.confirmation === "string" ? req.body.confirmation : "";
+      return res.status(202).json(
+        await db.requestPermanentDeletion("matter", req.params.id, req.params.id, confirmation, ownership(req)),
+      );
+    } catch (err: any) {
+      return res.status(/archive|retention|confirmation/i.test(err.message) ? 409 : ownedErrorStatus(err))
+        .json({ error: err.message });
+    }
+  });
+
+  app.post("/api/cases/:id/permanent-deletion/cancel", async (req, res) => {
+    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
+    return res.json(await db.cancelPermanentDeletion("matter", req.params.id, ownership(req)));
+  });
+
   app.get("/api/cases/:id/sources", async (req, res) => {
     const matter = await db.getCaseById(req.params.id, ownership(req));
     if (!matter) return res.status(404).json({ error: "Matter not found" });
@@ -1552,11 +1628,16 @@ Raw prompt: "${prompt}"`;
   });
 
   app.delete("/api/cases/:caseId/sources/:documentId", async (req, res) => {
-    const removed = await db.deleteDocument(
-      req.params.documentId, ownership(req), req.params.caseId
-    );
-    if (!removed) return res.status(404).json({ error: "Matter Source not found" });
-    await db.touchCase(req.params.caseId, ownership(req));
+    const requestOwnership = ownership(req);
+    const source = await db.getDocumentById(req.params.documentId, requestOwnership, req.params.caseId);
+    if (!source) return res.status(404).json({ error: "Matter Source not found" });
+    if (source.case_id === null) {
+      const removed = await db.deleteDocument(req.params.documentId, requestOwnership, req.params.caseId);
+      if (!removed) return res.status(404).json({ error: "Matter Source not found" });
+    } else {
+      await db.updateDocumentLifecycle(req.params.documentId, { lifecycleState: "archived" }, requestOwnership);
+    }
+    await db.touchCase(req.params.caseId, requestOwnership);
     return res.json({ success: true });
   });
 
@@ -1698,7 +1779,8 @@ ${sourceText}`;
   // Documents Library
   app.get("/api/documents", async (req, res) => {
     const caseId = requestedCaseId(req.query.caseId);
-    res.json(await db.getDocuments(ownership(req), caseId));
+    const includeArchived = config.features.resourceLifecycle && req.query.includeArchived === "true";
+    res.json(await db.getDocuments(ownership(req), caseId, includeArchived));
   });
 
   // Upload/create Document
@@ -1740,17 +1822,131 @@ ${sourceText}`;
     }
   });
 
+  app.put("/api/documents/:id", async (req, res) => {
+    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
+    try {
+      return res.json(await db.updateDocumentLifecycle(req.params.id, {
+        title: typeof req.body.title === "string" ? req.body.title : undefined,
+        section: typeof req.body.category === "string" ? req.body.category : undefined,
+        folderPath: typeof req.body.folderPath === "string" ? req.body.folderPath : undefined,
+        tags: req.body.tags,
+        metadata: req.body.metadata && typeof req.body.metadata === "object" ? req.body.metadata : undefined,
+        lifecycleState: req.body.lifecycleState === "archived" ? "archived"
+          : req.body.lifecycleState === "active" ? "active" : undefined,
+      }, ownership(req)));
+    } catch (err: any) {
+      return res.status(ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/documents/:id/dependencies", async (req, res) => {
+    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
+    try {
+      return res.json(await db.getDocumentDependencies(req.params.id, ownership(req)));
+    } catch (err: any) {
+      return res.status(ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/documents/:id/versions", async (req, res) => {
+    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
+    return res.json(await db.getDocumentResourceVersions(req.params.id, ownership(req)));
+  });
+
+  app.post("/api/documents/:id/versions/:versionId/restore", async (req, res) => {
+    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
+    try {
+      return res.json(await db.restoreDocumentResourceVersion(
+        req.params.id, req.params.versionId, ownership(req),
+      ));
+    } catch (err: any) {
+      return res.status(ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/documents/:id/original-download", async (req, res) => {
+    if (!config.features.resourceLifecycle || !privateStorage) {
+      return res.status(404).json({ error: "Private originals are not enabled." });
+    }
+    const original = await db.getLatestDocumentOriginal(req.params.id, ownership(req));
+    if (!original) return res.status(404).json({ error: "Original file not found." });
+    try {
+      const url = await privateStorage.createSignedDownload(
+        original.object_key, DOWNLOAD_TTL_SECONDS, original.original_filename,
+      );
+      res.setHeader("Cache-Control", "no-store");
+      return res.json({ url, expiresAt: new Date(Date.now() + DOWNLOAD_TTL_SECONDS * 1000).toISOString() });
+    } catch {
+      return res.status(503).json({ error: "Original download is temporarily unavailable." });
+    }
+  });
+
+  app.post("/api/documents/:id/replace", upload.single("file"), async (req, res) => {
+    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
+    try {
+      const file = req.file as Express.Multer.File | undefined;
+      const replacement = file ? (await extractUploads([file]))[0] : null;
+      const text = replacement?.text || (typeof req.body.text === "string" ? req.body.text : "");
+      const title = typeof req.body.title === "string" ? req.body.title : replacement?.filename || null;
+      return res.status(201).json(await db.replaceDocumentContent(req.params.id, title, text, ownership(req)));
+    } catch (err: any) {
+      return res.status(/required/i.test(err.message) ? 400 : ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/documents/:id/reindex", async (req, res) => {
+    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
+    try {
+      return res.status(202).json(await db.reindexDocument(req.params.id, ownership(req)));
+    } catch {
+      return res.status(503).json({ error: "Document re-indexing failed safely." });
+    }
+  });
+
+  app.post("/api/documents/bulk-lifecycle", async (req, res) => {
+    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
+    const ids = Array.isArray(req.body.documentIds)
+      ? req.body.documentIds.filter((id: unknown): id is string => typeof id === "string") : [];
+    const lifecycleState = req.body.lifecycleState === "archived" ? "archived"
+      : req.body.lifecycleState === "active" ? "active" : undefined;
+    return res.json(await db.bulkUpdateLibraryDocuments(ids, {
+      folderPath: typeof req.body.folderPath === "string" ? req.body.folderPath : undefined,
+      addTags: req.body.addTags,
+      lifecycleState,
+    }, ownership(req)));
+  });
+
+  app.post("/api/documents/:id/permanent-deletion", async (req, res) => {
+    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
+    try {
+      const confirmation = typeof req.body.confirmation === "string" ? req.body.confirmation : "";
+      return res.status(202).json(
+        await db.requestPermanentDeletion("document", req.params.id,
+          requestedCaseId(req.query.caseId), confirmation, ownership(req)),
+      );
+    } catch (err: any) {
+      return res.status(/archive|dependencies|confirmation/i.test(err.message) ? 409 : ownedErrorStatus(err))
+        .json({ error: err.message });
+    }
+  });
+
+  app.post("/api/documents/:id/permanent-deletion/cancel", async (req, res) => {
+    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
+    return res.json(await db.cancelPermanentDeletion("document", req.params.id, ownership(req)));
+  });
+
   app.delete("/api/documents/:id", async (req, res) => {
     try {
       if (typeof req.query.caseId !== "string") {
         return res.status(400).json({ error: "Document context is required" });
       }
-      const deleted = await db.deleteDocument(
-        req.params.id,
-        ownership(req),
-        requestedCaseId(req.query.caseId)
-      );
-      if (!deleted) return res.status(404).json({ error: "Document not found" });
+      const caseId = requestedCaseId(req.query.caseId);
+      if (config.features.resourceLifecycle && caseId === null) {
+        await db.updateDocumentLifecycle(req.params.id, { lifecycleState: "archived" }, ownership(req));
+      } else {
+        const deleted = await db.deleteDocument(req.params.id, ownership(req), caseId);
+        if (!deleted) return res.status(404).json({ error: "Document not found" });
+      }
       res.json({ success: true });
     } catch (err: any) {
       res.status(ownedErrorStatus(err)).json({ error: err.message });
@@ -2326,7 +2522,11 @@ ${citationInstSearch}`;
   app.get("/api/cases/:caseId/work-product", async (req, res) => {
     const matter = await db.getCaseById(req.params.caseId, ownership(req));
     if (!matter) return res.status(404).json({ error: "Matter not found" });
-    const drafts = await db.getDrafts(ownership(req), matter.id);
+    const drafts = await db.getDrafts(
+      ownership(req),
+      matter.id,
+      config.features.resourceLifecycle && req.query.includeArchived === "true",
+    );
     return res.json(drafts.map((draft) => ({ ...draft, content: cleanWorkProductContent(draft.content) })));
   });
 
@@ -2443,7 +2643,13 @@ INSTRUCTIONS:
       const { content } = req.body;
       const caseId = requestedCaseId(req.query.caseId);
       if (!caseId) return res.status(400).json({ error: "Matter context is required" });
-      const updated = await db.updateDraft(req.params.id, caseId, cleanWorkProductContent(content), ownership(req));
+      const updated = config.features.resourceLifecycle
+        ? await db.saveWorkProductVersion(req.params.id, caseId, {
+            title: typeof req.body.title === "string" ? req.body.title : undefined,
+            content: cleanWorkProductContent(content),
+            autosave: req.body.autosave === true,
+          }, ownership(req))
+        : await db.updateDraft(req.params.id, caseId, cleanWorkProductContent(content), ownership(req));
       res.json({ ...updated, content: cleanWorkProductContent(updated.content) });
     } catch (err: any) {
       res.status(ownedErrorStatus(err)).json({ error: err.message });
@@ -2516,6 +2722,33 @@ INSTRUCTIONS:
     }
   });
 
+  app.get("/api/drafts/:id/export/pdf", async (req, res) => {
+    try {
+      const caseId = requestedCaseId(req.query.caseId);
+      if (!caseId) return res.status(400).json({ error: "Matter context is required" });
+      const draft = await db.getDraftById(req.params.id, caseId, ownership(req));
+      if (!draft) return res.status(404).json({ error: "Work Product not found" });
+      const safeTitle = draft.title.replace(/[^a-z0-9]/gi, "_").toLowerCase();
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `attachment; filename="${safeTitle}.pdf"`);
+      const pdf = new PDFDocument({ size: "LETTER", margins: { top: 54, bottom: 54, left: 54, right: 54 } });
+      pdf.on("error", () => {
+        if (!res.headersSent) res.status(500).end();
+        else res.end();
+      });
+      pdf.pipe(res);
+      pdf.font("Helvetica-Bold").fontSize(16).text(draft.title);
+      pdf.moveDown();
+      pdf.font("Helvetica").fontSize(10).text(cleanWorkProductContent(draft.content), {
+        align: "left",
+        lineGap: 2,
+      });
+      pdf.end();
+    } catch (err: any) {
+      return res.status(ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
   // --- VITE MIDDLEWARE SETUP ---
 
   if (!isProduction) {
@@ -2531,6 +2764,79 @@ INSTRUCTIONS:
 
   app.listen(config.port, "0.0.0.0", () => {
     console.log(`Server running on port ${config.port}`);
+  });
+
+  app.get("/api/drafts/:id/versions", async (req, res) => {
+    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
+    const caseId = requestedCaseId(req.query.caseId);
+    if (!caseId) return res.status(400).json({ error: "Matter context is required" });
+    return res.json(await db.getWorkProductVersions(req.params.id, caseId, ownership(req)));
+  });
+
+  app.post("/api/drafts/:id/versions/:versionId/restore", async (req, res) => {
+    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
+    try {
+      const caseId = requestedCaseId(req.query.caseId);
+      if (!caseId) return res.status(400).json({ error: "Matter context is required" });
+      const restored = await db.restoreWorkProductVersion(
+        req.params.id, caseId, req.params.versionId, ownership(req),
+      );
+      return res.json({ ...restored, content: cleanWorkProductContent(restored.content) });
+    } catch (err: any) {
+      return res.status(ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/drafts/:id/archive", async (req, res) => {
+    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
+    const caseId = requestedCaseId(req.query.caseId);
+    if (!caseId) return res.status(400).json({ error: "Matter context is required" });
+    return res.json(await db.setWorkProductLifecycle(req.params.id, caseId, "archived", ownership(req)));
+  });
+
+  app.post("/api/drafts/:id/restore", async (req, res) => {
+    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
+    const caseId = requestedCaseId(req.query.caseId);
+    if (!caseId) return res.status(400).json({ error: "Matter context is required" });
+    return res.json(await db.setWorkProductLifecycle(req.params.id, caseId, "active", ownership(req)));
+  });
+
+  app.get("/api/drafts/:id/dependencies", async (req, res) => {
+    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
+    return res.json(await db.getWorkProductDependencies(req.params.id, ownership(req)));
+  });
+
+  app.post("/api/drafts/:id/add-as-source", async (req, res) => {
+    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
+    try {
+      const caseId = requestedCaseId(req.query.caseId);
+      if (!caseId) return res.status(400).json({ error: "Matter context is required" });
+      return res.status(201).json(
+        await db.addWorkProductAsMatterSource(req.params.id, caseId, ownership(req)),
+      );
+    } catch (err: any) {
+      return res.status(ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/drafts/:id/permanent-deletion", async (req, res) => {
+    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
+    try {
+      const caseId = requestedCaseId(req.query.caseId);
+      if (!caseId) return res.status(400).json({ error: "Matter context is required" });
+      const confirmation = typeof req.body.confirmation === "string" ? req.body.confirmation : "";
+      return res.status(202).json(
+        await db.requestPermanentDeletion("work_product", req.params.id, caseId, confirmation, ownership(req)),
+      );
+    } catch (err: any) {
+      return res.status(/archive|dependencies|confirmation/i.test(err.message) ? 409 : ownedErrorStatus(err))
+        .json({ error: err.message });
+    }
+  });
+
+  app.post("/api/drafts/:id/permanent-deletion/cancel", async (req, res) => {
+    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
+    return res.json(await db.cancelPermanentDeletion("work_product", req.params.id, ownership(req)));
   });
 }
 

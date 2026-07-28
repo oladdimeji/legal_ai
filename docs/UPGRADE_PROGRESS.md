@@ -1,5 +1,51 @@
 # Compact Upgrade Progress
 
+## V1 Completion Phase — Complete Resource Lifecycle and Version Paths
+
+Status: Complete in code; staging gate remains closed.
+
+Implemented:
+
+- Added active/archive/restore/deletion-pending lifecycle state to Matters, Sources, Firm Library documents, and Work Product. Matter retention supports standard/held state, optional retain-until dates and reasons.
+- Added authenticated Matter export packages with Matter data, direct and linked Sources, authorized Matter conversations, Work Product and immutable history, client-access metadata without tokens, collaboration requests, and lifecycle audit events.
+- Added Source rename, metadata/category/folder/tag updates, replacement, immutable resource versions, restore-as-new-version, private original download, retry/re-index, archive/restore, dependency summaries, and protected permanent deletion.
+- Added Firm Library folders, normalized tags, category reuse, selection and bulk move/tag/archive/restore controls, usage references, and dependency-based deletion protection.
+- Added Work Product title editing, two-second autosave, before-unload/selection unsaved-change protection, archive/restore, immutable actor/time history with separate lawyer/client lanes, restore-as-new-version, DOCX/PDF export, and explicit add-as-Matter-Source lineage.
+- Added a firm-administrator-only, typed-confirmation permanent-deletion queue with a 24-hour delay, cancellation, retention/dependency checks, private-object removal before database changes, safe blocked states, and append-only audit events. Matter completion leaves only a non-confidential tombstone needed by immutable research/audit references.
+
+Schema changes:
+
+- Migration 018 additively extends `cases`, `documents`, and `drafts` with lifecycle, retention, archive, metadata/folder/tag and actor fields.
+- Migration 018 creates `document_resource_versions`, `work_product_versions`, `work_product_source_links`, `resource_audit_events`, and `permanent_deletion_requests` with scoped indexes, checks, append-only update protection, and non-destructive legacy version backfills.
+- No table is renamed, dropped, truncated, reset, or recreated. Rollback is flag-based: set `FEATURE_RESOURCE_LIFECYCLE=false` and retain the additive schema/history. Do not drop history or queued/audit rows during rollback.
+
+Dependencies added:
+
+- `pdfkit` and `@types/pdfkit` provide real server-generated Work Product PDF exports. DOCX continues to use the existing `docx` dependency.
+
+Feature gate:
+
+- `FEATURE_RESOURCE_LIFECYCLE=false` remains the exact gate until the lifecycle staging checklist passes.
+- Enabling it requires `FEATURE_ASYNC_INGESTION=true`, which already requires staged private storage and the worker topology.
+
+Verification:
+
+- Pre-change `npm ci`: passed.
+- Pre-change `npm run verify`: passed, 120/120 active tests; the GovInfo and Google Drive live smokes were skipped.
+- Behavioral coverage includes archive/restore transitions, retention and dependency blocks, scoped hash-only confirmation and delay, folder/tag normalization, lawyer/client revision lanes, role restrictions, migration safety, restore-as-new-version query behavior, PDF/export paths, and worker failure states.
+- Final `npm run lint`: passed.
+- Final `npm test`: passed, 127/127 active tests; the GovInfo and Google Drive live smokes were skipped as designed.
+- Final `npm run build` and `npm run verify`: passed; the existing Vite large-chunk warning remains.
+- `docker compose config --quiet`: passed.
+- `docker build -t exepts:resource-lifecycle-phase .` could not start because Docker Desktop's Linux engine pipe was unavailable at `npipe:////./pipe/dockerDesktopLinuxEngine`.
+
+Known limitations:
+
+- Live PostgreSQL migration application, Supabase object removal, worker claiming under concurrency, generated DOCX/PDF visual review, and full browser role walkthroughs require staging.
+- Matter export packages include original-file metadata and preserve authorized download paths but do not embed private binary originals in the JSON package.
+- Matter permanent deletion retains immutable research trace rows and a scrubbed non-confidential Matter tombstone so audit foreign keys remain valid; confidential Matter content and operational dependencies are removed.
+- Google Document AI OCR, CourtListener, and Gmail sending remain deferred and unavailable.
+
 ## V1 Completion Phase — Firm Memberships, Invitations, Matter Assignments, and Central Authorization
 
 Status: Complete in code; staging gate remains closed.

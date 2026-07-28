@@ -6,7 +6,7 @@ import { useCumulativeFileSelection } from "../hooks/useCumulativeFileSelection"
 import { PRIVATE_UPLOAD_MAX_FILES, uploadPrivateFiles } from "../lib/durableUploads";
 import GoogleDrivePanel from "./GoogleDrivePanel";
 
-export default function FirmLibraryView({ googleDriveEnabled = false }: { googleDriveEnabled?: boolean }) {
+export default function FirmLibraryView({ googleDriveEnabled = false, resourceLifecycleEnabled = false }: { googleDriveEnabled?: boolean; resourceLifecycleEnabled?: boolean }) {
   const [documents, setDocuments] = useState<Document[]>([]);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<string[]>([]);
@@ -16,10 +16,12 @@ export default function FirmLibraryView({ googleDriveEnabled = false }: { google
   const [title, setTitle] = useState("");
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
+  const [showArchived, setShowArchived] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const fileSelection = useCumulativeFileSelection(PRIVATE_UPLOAD_MAX_FILES);
 
   const load = async () => {
-    const response = await fetch("/api/documents?caseId=null");
+    const response = await fetch(`/api/documents?caseId=null${resourceLifecycleEnabled && showArchived ? "&includeArchived=true" : ""}`);
     if (response.ok) setDocuments(await response.json());
   };
 
@@ -27,7 +29,7 @@ export default function FirmLibraryView({ googleDriveEnabled = false }: { google
     void load();
     const interval = window.setInterval(() => void load(), 5_000);
     return () => window.clearInterval(interval);
-  }, []);
+  }, [showArchived, resourceLifecycleEnabled]);
 
   const sections = useMemo(() => Array.from(new Set(documents.map((document) => document.section))).sort(), [documents]);
   const visible = documents.filter((document) => {
@@ -87,6 +89,32 @@ export default function FirmLibraryView({ googleDriveEnabled = false }: { google
     }
   };
 
+  const bulkUpdate = async (input: Record<string, unknown>) => {
+    const response = await fetch("/api/documents/bulk-lifecycle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ documentIds: selectedIds, ...input }),
+    });
+    const data = await response.json();
+    if (!response.ok) return alert(data.error || "Documents could not be updated");
+    setSelectedIds([]);
+    await load();
+  };
+
+  const editDocument = async (document: Document, lifecycleState?: "active" | "archived") => {
+    const nextTitle = lifecycleState ? undefined : prompt("Document title", document.title)?.trim();
+    if (!lifecycleState && !nextTitle) return;
+    const response = await fetch(`/api/documents/${document.id}?caseId=null`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(lifecycleState ? { lifecycleState } : { title: nextTitle }),
+    });
+    const data = await response.json();
+    if (!response.ok) return alert(data.error || "Document could not be updated");
+    setPreview(data);
+    await load();
+  };
+
   return (
     <div className="flex-1 h-full overflow-y-auto bg-white p-8">
       <div className="max-w-6xl mx-auto space-y-6">
@@ -95,7 +123,7 @@ export default function FirmLibraryView({ googleDriveEnabled = false }: { google
             <div className="flex items-center gap-2"><Database className="h-5 w-5" /><h2 className="text-lg font-bold uppercase">Firm Library</h2></div>
             <p className="mt-1 text-[11px] font-mono uppercase text-zinc-400">Reusable workspace documents and semantic search</p>
           </div>
-          <span className="text-[10px] font-mono uppercase text-zinc-500">{documents.length} documents</span>
+          <div className="flex items-center gap-3"><span className="text-[10px] font-mono uppercase text-zinc-500">{documents.length} documents</span>{resourceLifecycleEnabled && <label className="text-[9px] font-mono uppercase"><input type="checkbox" checked={showArchived} onChange={(event) => setShowArchived(event.target.checked)} className="mr-1" />Show archived</label>}</div>
         </header>
 
         <form onSubmit={search} className="flex gap-2 rounded border border-zinc-200 bg-zinc-50 p-3">
@@ -113,8 +141,10 @@ export default function FirmLibraryView({ googleDriveEnabled = false }: { google
           </aside>
 
           <section className="space-y-2">
+            {resourceLifecycleEnabled && selectedIds.length > 0 && <div className="flex flex-wrap items-center gap-2 rounded border bg-zinc-50 p-3 text-[9px] font-mono uppercase"><strong>{selectedIds.length} selected</strong><button onClick={() => { const folderPath = prompt("Move to folder", "/"); if (folderPath) void bulkUpdate({ folderPath }); }} className="rounded border bg-white px-2 py-1">Move</button><button onClick={() => { const tags = prompt("Tags, comma-separated"); if (tags) void bulkUpdate({ addTags: tags.split(",") }); }} className="rounded border bg-white px-2 py-1">Tag</button><button onClick={() => void bulkUpdate({ lifecycleState: "archived" })} className="rounded border bg-white px-2 py-1">Archive</button><button onClick={() => void bulkUpdate({ lifecycleState: "active" })} className="rounded border bg-white px-2 py-1">Restore</button></div>}
             {visible.length === 0 ? <div className="rounded border border-dashed border-zinc-300 p-10 text-center text-xs text-zinc-500">No Firm Library documents match this view.</div> : visible.map((document) => (
               <div key={document.id} className="flex items-start gap-3 rounded border border-zinc-200 p-4 hover:border-zinc-400">
+                {resourceLifecycleEnabled && <input type="checkbox" checked={selectedIds.includes(document.id)} onChange={(event) => setSelectedIds((current) => event.target.checked ? [...current, document.id] : current.filter((id) => id !== document.id))} />}
                 <FileText className="mt-0.5 h-4 w-4 text-zinc-400" />
                 <button onClick={() => setPreview(document)} className="min-w-0 flex-1 text-left cursor-pointer"><p className="truncate text-xs font-semibold">{document.title}</p><p className="mt-1 text-[10px] font-mono uppercase text-zinc-400">{document.section} · {new Date(document.uploaded_at).toLocaleDateString()} · {(document.processing_state || "ready").replaceAll("_", " ")}</p></button>
                 <button onClick={() => setPreview(document)} title="Preview" className="rounded p-1 hover:bg-zinc-100 cursor-pointer"><Eye className="h-4 w-4 text-zinc-500" /></button>
@@ -142,7 +172,7 @@ export default function FirmLibraryView({ googleDriveEnabled = false }: { google
         </div>
       </div>
 
-      {preview && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-6"><div className="flex max-h-[85vh] w-full max-w-3xl flex-col rounded border border-zinc-300 bg-white shadow-xl"><header className="flex items-center justify-between border-b p-4"><div><h3 className="text-sm font-semibold">{preview.title}</h3><p className="text-[10px] font-mono uppercase text-zinc-400">Firm Library · {preview.section}</p></div><button onClick={() => setPreview(null)} className="rounded p-1 hover:bg-zinc-100"><X className="h-4 w-4" /></button></header><div className="overflow-y-auto whitespace-pre-wrap p-6 text-sm leading-relaxed text-zinc-700">{preview.extracted_text}</div></div></div>}
+      {preview && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-6"><div className="flex max-h-[85vh] w-full max-w-3xl flex-col rounded border border-zinc-300 bg-white shadow-xl"><header className="flex items-center justify-between border-b p-4"><div><h3 className="text-sm font-semibold">{preview.title}</h3><p className="text-[10px] font-mono uppercase text-zinc-400">Firm Library · {preview.section} · {preview.folder_path || "/"}</p>{resourceLifecycleEnabled && <p className="mt-1 text-[9px] font-mono uppercase text-zinc-500">{preview.tags?.join(", ") || "No tags"} · {preview.lifecycle_state || "active"}</p>}</div><div className="flex gap-2">{resourceLifecycleEnabled && <><button onClick={() => void editDocument(preview)} className="rounded border px-2 py-1 text-[9px] font-mono uppercase">Rename</button><button onClick={() => void editDocument(preview, preview.lifecycle_state === "archived" ? "active" : "archived")} className="rounded border px-2 py-1 text-[9px] font-mono uppercase">{preview.lifecycle_state === "archived" ? "Restore" : "Archive"}</button></>}<button onClick={() => setPreview(null)} className="rounded p-1 hover:bg-zinc-100"><X className="h-4 w-4" /></button></div></header><div className="overflow-y-auto whitespace-pre-wrap p-6 text-sm leading-relaxed text-zinc-700">{preview.extracted_text}</div></div></div>}
     </div>
   );
 }

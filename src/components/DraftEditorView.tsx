@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
-import { Check, Copy, Download, Edit, Eye, FileText, FileWarning, RefreshCw, Save } from "lucide-react";
-import { Draft } from "../types";
+import { Archive, Check, Copy, Download, Edit, Eye, FileText, FileWarning, History, Plus, RefreshCw, Save } from "lucide-react";
+import { Draft, ResourceVersion } from "../types";
 import RichDocumentEditor from "./RichDocumentEditor";
 import WorkProductDocument from "./WorkProductDocument";
 
@@ -9,9 +9,10 @@ interface DraftEditorViewProps {
   onClearInitialDraftId: () => void;
   caseId: string | null;
   googleDriveEnabled?: boolean;
+  resourceLifecycleEnabled?: boolean;
 }
 
-export default function DraftEditorView({ initialDraftId, onClearInitialDraftId, caseId, googleDriveEnabled = false }: DraftEditorViewProps) {
+export default function DraftEditorView({ initialDraftId, onClearInitialDraftId, caseId, googleDriveEnabled = false, resourceLifecycleEnabled = false }: DraftEditorViewProps) {
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [activeDraft, setActiveDraft] = useState<Draft | null>(null);
   const [title, setTitle] = useState("");
@@ -20,6 +21,9 @@ export default function DraftEditorView({ initialDraftId, onClearInitialDraftId,
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">("idle");
   const [editMode, setEditMode] = useState(true);
   const [sharingBusy, setSharingBusy] = useState<"sharing" | "stopping" | null>(null);
+  const [versions, setVersions] = useState<ResourceVersion[]>([]);
+  const [showVersions, setShowVersions] = useState(false);
+  const dirty = Boolean(activeDraft && (title !== activeDraft.title || content !== activeDraft.content));
 
   useEffect(() => {
     setActiveDraft(null);
@@ -37,6 +41,22 @@ export default function DraftEditorView({ initialDraftId, onClearInitialDraftId,
     }
   }, [initialDraftId, drafts]);
 
+  useEffect(() => {
+    if (!dirty) return;
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", beforeUnload);
+    return () => window.removeEventListener("beforeunload", beforeUnload);
+  }, [dirty]);
+
+  useEffect(() => {
+    if (!resourceLifecycleEnabled || !dirty || !activeDraft || !caseId || saving) return;
+    const timer = window.setTimeout(() => void saveWorkProduct(true), 2_000);
+    return () => window.clearTimeout(timer);
+  }, [resourceLifecycleEnabled, dirty, title, content, activeDraft?.id, caseId]);
+
   const fetchDrafts = async () => {
     if (!caseId) return setDrafts([]);
     const response = await fetch(`/api/cases/${caseId}/work-product`);
@@ -51,33 +71,73 @@ export default function DraftEditorView({ initialDraftId, onClearInitialDraftId,
   };
 
   const selectDraft = (draft: Draft) => {
+    if (dirty && activeDraft?.id !== draft.id && !confirm("Discard unsaved changes and open another Work Product?")) return;
     setActiveDraft(draft);
     setTitle(draft.title);
     setContent(draft.content);
     setSaveStatus("idle");
   };
 
-  const handleSave = async () => {
+  const saveWorkProduct = async (autosave: boolean) => {
     if (!activeDraft || !caseId) return;
     setSaving(true);
-    setSaveStatus("saving");
+    if (!autosave) setSaveStatus("saving");
     try {
       const response = await fetch(`/api/drafts/${activeDraft.id}?caseId=${caseId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({ title, content, autosave }),
       });
       const data = await response.json();
-      if (data.id) {
-        setSaveStatus("saved");
-        setActiveDraft(data);
-        setContent(data.content);
-        setDrafts((current) => current.map((draft) => draft.id === data.id ? data : draft));
-        window.setTimeout(() => setSaveStatus("idle"), 2000);
-      }
+      if (!response.ok) throw new Error(data.error || "Work Product could not be saved");
+      setSaveStatus("saved");
+      setActiveDraft(data);
+      setTitle(data.title);
+      setContent(data.content);
+      setDrafts((current) => current.map((draft) => draft.id === data.id ? data : draft));
+      window.setTimeout(() => setSaveStatus("idle"), 2000);
+    } catch (error) {
+      if (!autosave) alert(error instanceof Error ? error.message : "Work Product could not be saved");
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleSave = async () => {
+    await saveWorkProduct(false);
+  };
+
+  const loadVersions = async () => {
+    if (!activeDraft || !caseId) return;
+    const response = await fetch(`/api/drafts/${activeDraft.id}/versions?caseId=${caseId}`);
+    if (response.ok) setVersions(await response.json());
+    setShowVersions(true);
+  };
+
+  const restoreVersion = async (version: ResourceVersion) => {
+    if (!activeDraft || !caseId || !confirm(`Restore version ${version.version_number} as a new current version?`)) return;
+    const response = await fetch(`/api/drafts/${activeDraft.id}/versions/${version.id}/restore?caseId=${caseId}`, { method: "POST" });
+    const data = await response.json();
+    if (!response.ok) return alert(data.error || "Version could not be restored");
+    selectDraft(data);
+    await loadVersions();
+  };
+
+  const archiveActive = async () => {
+    if (!activeDraft || !caseId || !confirm(`Archive "${activeDraft.title}"?`)) return;
+    const response = await fetch(`/api/drafts/${activeDraft.id}/archive?caseId=${caseId}`, { method: "POST" });
+    const data = await response.json();
+    if (!response.ok) return alert(data.error || "Work Product could not be archived");
+    setActiveDraft(null);
+    await fetchDrafts();
+  };
+
+  const addAsSource = async () => {
+    if (!activeDraft || !caseId || !confirm("Add the current Work Product as a new Matter Source?")) return;
+    if (dirty) await saveWorkProduct(false);
+    const response = await fetch(`/api/drafts/${activeDraft.id}/add-as-source?caseId=${caseId}`, { method: "POST" });
+    const data = await response.json();
+    if (!response.ok) alert(data.error || "Matter Source could not be created");
   };
 
   const handleCreateWorkProduct = async () => {
@@ -186,7 +246,9 @@ export default function DraftEditorView({ initialDraftId, onClearInitialDraftId,
           <>
             <div className="z-10 shrink-0 border-b border-zinc-100 bg-white px-8 py-4">
               <div className="min-w-0">
-                <h2 className="whitespace-normal break-words text-sm font-bold uppercase tracking-tight text-zinc-900">{title}</h2>
+                {resourceLifecycleEnabled && editMode
+                  ? <input value={title} onChange={(event) => setTitle(event.target.value)} aria-label="Work Product title" className="w-full border-b border-transparent text-sm font-bold uppercase tracking-tight text-zinc-900 outline-none focus:border-zinc-300" />
+                  : <h2 className="whitespace-normal break-words text-sm font-bold uppercase tracking-tight text-zinc-900">{title}</h2>}
                 <p className="mt-0.5 text-[10px] font-mono uppercase text-zinc-400">
                   Updated {new Date(activeDraft.updated_at || activeDraft.created_at).toLocaleString()} · {activeDraft.origin || "Work Product"} · {activeDraft.shared_with_client ? "Shared with client" : "Private"}
                 </p>
@@ -203,6 +265,7 @@ export default function DraftEditorView({ initialDraftId, onClearInitialDraftId,
                   {saveStatus === "saving" ? "Saving..." : saveStatus === "saved" ? "Saved" : "Save"}
                 </button>
                 <button onClick={() => caseId && window.open(`/api/drafts/${activeDraft.id}/export?caseId=${caseId}`, "_blank")} id="editor-export-btn" className="inline-flex items-center gap-1.5 rounded bg-zinc-950 px-3.5 py-1.5 text-[10px] font-mono font-bold uppercase text-white hover:bg-zinc-900"><Download className="h-3.5 w-3.5" />Export .docx</button>
+                {resourceLifecycleEnabled && <><button onClick={() => caseId && window.open(`/api/drafts/${activeDraft.id}/export/pdf?caseId=${caseId}`, "_blank")} className="inline-flex items-center gap-1.5 rounded border border-zinc-300 px-3.5 py-1.5 text-[10px] font-mono font-bold uppercase"><Download className="h-3.5 w-3.5" />PDF</button><button onClick={() => void loadVersions()} className="inline-flex items-center gap-1.5 rounded border border-zinc-300 px-3 py-1.5 text-[10px] font-mono font-bold uppercase"><History className="h-3.5 w-3.5" />History</button><button onClick={() => void addAsSource()} className="inline-flex items-center gap-1.5 rounded border border-zinc-300 px-3 py-1.5 text-[10px] font-mono font-bold uppercase"><Plus className="h-3.5 w-3.5" />Add as Source</button><button onClick={() => void archiveActive()} className="inline-flex items-center gap-1.5 rounded border border-zinc-300 px-3 py-1.5 text-[10px] font-mono font-bold uppercase"><Archive className="h-3.5 w-3.5" />Archive</button></>}
                 {googleDriveEnabled && <button onClick={() => void exportToDrive()} disabled={saving} className="inline-flex items-center gap-1.5 rounded border border-zinc-300 px-3.5 py-1.5 text-[10px] font-mono font-bold uppercase hover:bg-zinc-50 disabled:opacity-50"><Download className="h-3.5 w-3.5" />Export to Drive</button>}
               </div>
             </div>
@@ -221,6 +284,7 @@ export default function DraftEditorView({ initialDraftId, onClearInitialDraftId,
           </div>
         )}
       </div>
+      {showVersions && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-6"><div className="max-h-[80vh] w-full max-w-xl overflow-y-auto rounded border bg-white p-5"><div className="flex items-center justify-between"><h3 className="text-sm font-bold uppercase">Immutable version history</h3><button onClick={() => setShowVersions(false)} className="text-xs uppercase">Close</button></div><div className="mt-4 space-y-2">{versions.map((version) => <div key={version.id} className="flex items-center justify-between rounded border p-3"><div><p className="text-xs font-semibold">Version {version.version_number} · {version.change_type} · {version.revision_lane}</p><p className="mt-1 text-[9px] font-mono uppercase text-zinc-500">{version.actor_name || "Legacy actor unavailable"} · {new Date(version.created_at).toLocaleString()}</p></div><button onClick={() => void restoreVersion(version)} className="rounded border px-3 py-1 text-[9px] font-mono uppercase">Restore as new version</button></div>)}</div></div></div>}
     </div>
   );
 }

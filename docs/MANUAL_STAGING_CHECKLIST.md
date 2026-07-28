@@ -1,5 +1,21 @@
 # Manual Staging Checklist
 
+## Resource lifecycle and immutable versions
+
+- Back up staging and deploy migration 018 with `FEATURE_RESOURCE_LIFECYCLE=false`. Confirm it only adds lifecycle columns, indexes, immutable version/audit/link tables, and the delayed deletion-request table; confirm no existing Matter, Source, Firm Library document, Work Product, original, conversation, client access, or collaboration row is removed.
+- Complete private-storage and async-ingestion staging first. Set `FEATURE_PRIVATE_STORAGE=true` and `FEATURE_ASYNC_INGESTION=true`, verify the web/worker/storage/ClamAV topology, then enable `FEATURE_RESOURCE_LIFECYCLE=true` only in staging.
+- Archive and restore representative Matters. Confirm active lists hide archives by default, Show archived reveals them, direct authorized access remains scoped, and retention hold/future retention dates block permanent deletion.
+- Export a Matter package and verify the manifest, Matter data, direct and linked Sources, authorized Matter conversations, Work Product and immutable versions, client-access metadata without tokens, requests, and audit events. Confirm embeddings are omitted and private original bytes remain available only through authorized signed downloads.
+- For direct Matter Sources and Firm Library documents, exercise rename, metadata/category/folder/tag changes, replacement, version listing, restore, original download, retry/re-index, archive/restore, usage references, and dependency warnings. Confirm replacement and restore clear stale embeddings before re-indexing and never mutate an earlier version.
+- Exercise Firm Library bulk move, tag, archive, and restore across mixed selections. Confirm a linked document cannot be permanently deleted until Matter and Work Product usage links are removed, and cross-firm/cross-Matter identifiers disclose nothing.
+- Edit and rename Work Product, wait for autosave, navigate with unsaved changes, inspect actor/time history, and restore an old version. Confirm the restore creates a new highest-numbered version and newer history remains unchanged.
+- Create lawyer and client revisions and confirm their immutable history lanes remain separate. Export representative Work Product as valid DOCX and PDF, then intentionally add one as a Matter Source and verify its lineage/deletion dependency.
+- As a lawyer, staff member, and read-only member, attempt retention changes and permanent deletion; confirm denial. As a firm administrator, archive a disposable fixture, review its dependency snapshot, type its exact name, and confirm the deletion request is delayed by at least 24 hours and can be cancelled while pending.
+- In an isolated disposable staging workspace, advance one deletion request to eligibility. Confirm the worker claims it once, removes private originals before database content, preserves non-confidential audit references, records completion, and never logs names, content, extracted text, object keys, prompts, credentials, tokens, cookies, or database URLs. Simulate storage/dependency failure and confirm the request becomes safely blocked without partial database deletion.
+- Verify the legacy token Client Portal remains functional and Work Product still survives deletion of its originating conversation.
+
+Keep `FEATURE_RESOURCE_LIFECYCLE=false` until every item above passes.
+
 ## Firm memberships, invitations, and Matter assignments
 
 - Back up the staging database and deploy migration 017 with `FEATURE_FIRM_TEAMS=false`. Confirm the migration is additive and that every existing user has one active `firm_admin` membership plus preserved access to every pre-migration Matter in that user's firm.
@@ -43,7 +59,7 @@ Keep `FEATURE_GOOGLE_DRIVE=false` until every Google staging item passes. Keep `
 - Deploy with every new `FEATURE_*` variable set explicitly to `false`.
 - Confirm existing signup, login, Matters, Firm Library, Assistant, Matter Intelligence, Work Product, collaboration, and legacy token Client Portal workflows.
 - Confirm `GET /api/health`, `GET /api/health/live`, and `GET /api/health/ready` return successful non-secret status payloads.
-- Inspect `GET /api/config` while signed out and confirm it contains only the seven allow-listed browser flags and no credentials, URLs, tokens, cookies, or provider details.
+- Inspect `GET /api/config` while signed out and confirm it contains only the eight allow-listed browser flags and no credentials, URLs, tokens, cookies, or provider details.
 - Open Assistant Research sources and confirm CourtListener controls are absent while GovInfo remains absent with its flag false.
 - Submit a direct authenticated Assistant request containing `enableCourtListener: true`; confirm no CourtListener citation or canned authority is returned.
 - Start a staging process with each deferred flag set to `true` in isolation and confirm startup fails with a flag-name-only message that contains no secret.

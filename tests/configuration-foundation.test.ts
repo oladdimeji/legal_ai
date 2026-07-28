@@ -19,6 +19,7 @@ test("all completion-phase feature flags default false independently", () => {
     clientAccounts: false,
     firmTeams: false,
     privateStorage: false,
+    resourceLifecycle: false,
   });
 });
 
@@ -99,6 +100,7 @@ test("public browser configuration has an explicit allow-list and cannot expose 
     "clientAccounts",
     "firmTeams",
     "privateStorage",
+    "resourceLifecycle",
   ]);
   assert.doesNotMatch(JSON.stringify(publicConfig), new RegExp(secret));
 });

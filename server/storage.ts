@@ -170,6 +170,12 @@ export class SupabaseStorageProvider implements ObjectStorageProvider {
     return new Uint8Array(await data.arrayBuffer());
   }
 
+  async remove(keys: string[]): Promise<void> {
+    if (keys.length === 0) return;
+    const { error } = await this.client.storage.from(this.bucket).remove(keys);
+    if (error) throw new Error("Private originals could not be removed.");
+  }
+
   get resumableUrl(): string {
     return resumableEndpoint(this.url);
   }

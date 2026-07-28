@@ -16,6 +16,15 @@ import type {
   MemberStatus,
 } from "./authorization.js";
 import { assertMemberRemovalAllowed } from "./authorization.js";
+import {
+  deletionConfirmationDigest,
+  deletionNotBefore,
+  assertPermanentDeletionEligible,
+  normalizeFolderPath,
+  normalizeTags,
+  revisionLane,
+  type DependencySummary,
+} from "./lifecycle.js";
 
 const { Pool } = pg;
 
@@ -208,7 +217,8 @@ class DatabaseService {
     caseId: string | null = null,
     firmId: string,
     sourceType = caseId ? "Matter Upload" : "Firm Library Document",
-    origin = "Lawyer"
+    origin = "Lawyer",
+    actorUserId: string | null = null,
   ): Promise<Document> {
     const docId = `doc_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const uploadedAt = new Date().toISOString();
@@ -220,6 +230,15 @@ class DatabaseService {
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'Processing')`,
       [docId, firmId, caseId, title, sourceUrl, driveId, text, section, uploadedAt, sourceType, origin]
     );
+    await this.query(
+      `INSERT INTO document_resource_versions
+        (id, firm_id, document_id, version_number, title, extracted_text, section,
+         change_type, created_by_user_id, created_at)
+       VALUES ($1, $2, $3, 1, $4, $5, $6, 'created', $7, $8)
+       ON CONFLICT (document_id, version_number) DO NOTHING`,
+      [`doc_resource_version_${randomUUID()}`, firmId, docId, title, text, section,
+        actorUserId, uploadedAt],
+    );
 
     // Paragraph splitting
     const paragraphs = text
@@ -227,7 +246,7 @@ class DatabaseService {
       .map((p) => p.trim())
       .filter((p) => p.length > 15);
 
-    console.log(`Generating embeddings for ${paragraphs.length} chunks of "${title}"...`);
+    console.log(`Generating embeddings for ${paragraphs.length} document chunks.`);
     for (let i = 0; i < paragraphs.length; i++) {
       const chunkText = paragraphs[i];
       try {
@@ -241,7 +260,7 @@ class DatabaseService {
           [`chunk_${docId}_${i}`, docId, chunkText, vectorStr]
         );
       } catch (error) {
-        console.error(`Embedding generation failed for document ${docId}, chunk ${i}; chunk left unindexed.`, error);
+        console.error(`Embedding generation failed for document ${docId}, chunk ${i}; chunk left unindexed.`);
       }
     }
     const indexed = await this.query(
@@ -458,8 +477,10 @@ class DatabaseService {
           action = route.action === "matter.download" ? "matter.download" : "matter.view";
         } else if (route.action === "library.delete") {
           action = "matter.content.delete";
-        } else if (route.action === "matter.content.write") {
+        } else if (route.action === "matter.content.write" || route.action === "library.write") {
           action = "matter.content.write";
+        } else if (route.action === "library.permanent_delete") {
+          action = "matter.permanent_delete";
         }
       } else {
         if (route.action === "matter.download") action = "library.view";
@@ -874,12 +895,13 @@ class DatabaseService {
     }
   }
 
-  public async getCases(context: OwnershipContext): Promise<Case[]> {
+  public async getCases(context: OwnershipContext, includeArchived = false): Promise<Case[]> {
     return await this.query(
       `SELECT c.* FROM cases c
        JOIN firm_memberships fm
          ON fm.firm_id = c.firm_id AND fm.user_id = $2 AND fm.status = 'active'
        WHERE c.firm_id = $1
+         AND ($3::boolean OR c.lifecycle_state = 'active')
          AND (
            fm.role = 'firm_admin'
            OR EXISTS (
@@ -889,7 +911,7 @@ class DatabaseService {
            )
          )
        ORDER BY COALESCE(c.last_activity_at, c.created_at) DESC`,
-      [context.firmId, context.userId]
+      [context.firmId, context.userId, includeArchived]
     );
   }
 
@@ -962,7 +984,7 @@ class DatabaseService {
     };
 
     try {
-      console.log(`Auto-attaching documents for case: "${name}" based on description context...`);
+      console.log("Evaluating scoped Firm Library suggestions for a newly created Matter.");
       const searchResults = description
         ? await this.vectorSearch(`${name}\n${description}`, "wide", context, 3)
         : [];
@@ -984,11 +1006,11 @@ class DatabaseService {
              ON CONFLICT DO NOTHING`,
             [caseId, doc.id, context.firmId, createdAt]
           );
-          console.log(`Auto-attached document: "${doc.title}" (Score: ${chunk.similarity.toFixed(4)})`);
+          console.log("Attached one scoped Firm Library suggestion to the new Matter.");
         }
       }
     } catch (err) {
-      console.error("Error auto-attaching documents to case:", err);
+      console.error("Scoped Firm Library suggestions could not be attached.");
     }
 
     return newCase;
@@ -1054,6 +1076,7 @@ class DatabaseService {
        JOIN documents d ON d.firm_id = c.firm_id
        LEFT JOIN case_documents cd ON cd.case_id = c.id AND cd.document_id = d.id
        WHERE c.id = $2 AND c.firm_id = $1 AND d.is_generated_draft_duplicate = FALSE
+         AND d.lifecycle_state = 'active'
          AND (d.case_id = c.id OR (d.case_id IS NULL AND cd.document_id IS NOT NULL))
        ORDER BY COALESCE(cd.added_at, d.uploaded_at) DESC`,
       [context.firmId, caseId]
@@ -1589,6 +1612,15 @@ class DatabaseService {
        RETURNING *`,
       [id, access.case_id, `${original.title} (Client Revision)`, content, now, original.id]
     );
+    await this.query(
+      `INSERT INTO work_product_versions
+        (id, firm_id, case_id, draft_id, version_number, title, content,
+         revision_lane, change_type, created_by_user_id, created_at)
+       VALUES ($1, $2, $3, $4, 1, $5, $6, 'client', 'created', NULL, $7)
+       ON CONFLICT (draft_id, version_number) DO NOTHING`,
+      [`work_product_version_${randomUUID()}`, access.firm_id, access.case_id, id,
+        `${original.title} (Client Revision)`, content, now],
+    );
     return rows[0];
   }
 
@@ -1647,6 +1679,14 @@ class DatabaseService {
              'Client Submission', 'Client', 'Processing')`,
           [documentId, access.firm_id, access.case_id, file.filename, file.text, now]
         );
+        await client.query(
+          `INSERT INTO document_resource_versions
+            (id, firm_id, document_id, version_number, title, extracted_text, section,
+             change_type, created_by_user_id, created_at)
+           VALUES ($1, $2, $3, 1, $4, $5, 'Client Submission', 'created', NULL, $6)`,
+          [`doc_resource_version_${randomUUID()}`, access.firm_id, documentId,
+            file.filename, file.text, now],
+        );
         const paragraphs = file.text
           .split(/\n\s*\n/)
           .map((paragraph) => paragraph.trim())
@@ -1660,7 +1700,7 @@ class DatabaseService {
               [`chunk_${documentId}_${i}`, documentId, paragraphs[i], `[${embedding.join(",")}]`]
             );
           } catch (error) {
-            console.error(`Embedding generation failed for portal response document ${documentId}, chunk ${i}; chunk left unindexed.`, error);
+            console.error(`Embedding generation failed for portal response document ${documentId}, chunk ${i}; chunk left unindexed.`);
           }
         }
         const indexed = await client.query(
@@ -1678,6 +1718,15 @@ class DatabaseService {
             (id, thread_id, case_id, title, content, created_at, updated_at, origin, revision_type)
            VALUES($1, NULL, $2, $3, $4, $5, $5, 'Client Response Upload', 'Client Response')`,
           [draftId, access.case_id, `Client Response — ${file.filename}`, file.text, now]
+        );
+        await client.query(
+          `INSERT INTO work_product_versions
+            (id, firm_id, case_id, draft_id, version_number, title, content,
+             revision_lane, change_type, created_by_user_id, created_at)
+           SELECT $1, $2, $3, d.id, 1, d.title, d.content,
+             'client', 'created', NULL, $5
+           FROM drafts d WHERE d.id = $4`,
+          [`work_product_version_${randomUUID()}`, access.firm_id, access.case_id, draftId, now],
         );
         uploadedPairs.push({ documentId, draftId });
       }
@@ -1776,13 +1825,14 @@ class DatabaseService {
     return rows[0];
   }
 
-  public async getDocuments(context: OwnershipContext, caseId: string | null): Promise<Document[]> {
+  public async getDocuments(context: OwnershipContext, caseId: string | null, includeArchived = false): Promise<Document[]> {
     if (!caseId) {
       return await this.query(
         `SELECT * FROM documents
          WHERE firm_id = $1 AND case_id IS NULL AND is_generated_draft_duplicate = FALSE
+           AND ($2::boolean OR lifecycle_state = 'active')
          ORDER BY uploaded_at DESC`,
-        [context.firmId]
+        [context.firmId, includeArchived]
       );
     }
     return await this.query(
@@ -1790,6 +1840,7 @@ class DatabaseService {
        FROM documents d
        WHERE d.firm_id = $1
          AND d.is_generated_draft_duplicate = FALSE
+         AND ($4::boolean OR d.lifecycle_state = 'active')
          AND EXISTS (SELECT 1 FROM cases c WHERE c.id = $2 AND c.firm_id = $1)
          AND EXISTS (
            SELECT 1 FROM firm_memberships fm
@@ -1811,7 +1862,7 @@ class DatabaseService {
            )
          )
        ORDER BY d.uploaded_at DESC`,
-      [context.firmId, caseId, context.userId]
+      [context.firmId, caseId, context.userId, includeArchived]
     );
   }
 
@@ -1878,6 +1929,7 @@ class DatabaseService {
          FROM document_chunks dc
          JOIN documents d ON dc.document_id = d.id
          WHERE d.firm_id = $2 AND d.case_id IS NULL
+           AND d.lifecycle_state = 'active'
            AND d.is_generated_draft_duplicate = FALSE
          GROUP BY d.section
          ORDER BY avg_sim DESC
@@ -1889,7 +1941,7 @@ class DatabaseService {
         suggestedSection = rows[0].section;
       }
     } catch (e) {
-      console.error("Error suggesting section for document:", e);
+      console.error("Document category suggestion failed safely.");
     }
 
     return await this.addDocumentInternal(
@@ -1901,7 +1953,8 @@ class DatabaseService {
       caseId,
       context.firmId,
       sourceType || (caseId ? "Matter Upload" : "Firm Library Document"),
-      origin
+      origin,
+      context.userId === "client-portal" ? null : context.userId,
     );
   }
 
@@ -2564,7 +2617,7 @@ class DatabaseService {
     try {
       queryEmbedding = await callModel("embedding", [], { textToEmbed: query }) as number[];
     } catch (err) {
-      console.error("Failed to generate embedding for vector search:", err);
+      console.error("Vector search embedding generation failed safely.");
       return [];
     }
 
@@ -2587,6 +2640,7 @@ class DatabaseService {
          FROM document_chunks dc
          JOIN documents d ON dc.document_id = d.id
          WHERE d.firm_id = $2 AND d.is_generated_draft_duplicate = FALSE
+           AND d.lifecycle_state = 'active'
            AND EXISTS (SELECT 1 FROM cases c WHERE c.id = $3 AND c.firm_id = $2)
            AND (
              d.case_id = $3 OR (
@@ -2944,14 +2998,15 @@ class DatabaseService {
     };
   }
 
-  public async getDrafts(context: OwnershipContext, caseId: string | null): Promise<Draft[]> {
+  public async getDrafts(context: OwnershipContext, caseId: string | null, includeArchived = false): Promise<Draft[]> {
     if (!caseId) return [];
     return await this.query(
       `SELECT d.* FROM drafts d
        JOIN cases c ON c.id = d.case_id
        WHERE d.case_id = $1 AND c.firm_id = $2
+         AND ($3::boolean OR d.lifecycle_state = 'active')
        ORDER BY COALESCE(d.updated_at, d.created_at) DESC`,
-      [caseId, context.firmId]
+      [caseId, context.firmId, includeArchived]
     );
   }
 
@@ -2991,6 +3046,15 @@ class DatabaseService {
       [draftId, threadId, caseId, title, content, createdAt, context.userId, context.firmId]
     );
     if (inserted.length !== 1) throw new Error("Thread or Matter not found");
+    await this.query(
+      `INSERT INTO work_product_versions
+        (id, firm_id, case_id, draft_id, version_number, title, content,
+         revision_lane, change_type, created_by_user_id, created_at)
+       VALUES ($1, $2, $3, $4, 1, $5, $6, 'lawyer', 'created', $7, $8)
+       ON CONFLICT (draft_id, version_number) DO NOTHING`,
+      [`work_product_version_${randomUUID()}`, context.firmId, caseId, draftId,
+        title, content, context.userId, createdAt],
+    );
 
     return {
       id: draftId,
@@ -3017,6 +3081,15 @@ class DatabaseService {
       [id, caseId, title, content, now, context.firmId]
     );
     if (!rows[0]) throw new Error("Matter not found");
+    await this.query(
+      `INSERT INTO work_product_versions
+        (id, firm_id, case_id, draft_id, version_number, title, content,
+         revision_lane, change_type, created_by_user_id, created_at)
+       VALUES ($1, $2, $3, $4, 1, $5, $6, 'lawyer', 'created', $7, $8)
+       ON CONFLICT (draft_id, version_number) DO NOTHING`,
+      [`work_product_version_${randomUUID()}`, context.firmId, caseId, id,
+        title, content, context.userId, now],
+    );
     return rows[0];
   }
 
@@ -3034,6 +3107,15 @@ class DatabaseService {
       [duplicateId, id, caseId, now, context.firmId]
     );
     if (!rows[0]) throw new Error("Work Product not found");
+    await this.query(
+      `INSERT INTO work_product_versions
+        (id, firm_id, case_id, draft_id, version_number, title, content,
+         revision_lane, change_type, created_by_user_id, created_at)
+       VALUES ($1, $2, $3, $4, 1, $5, $6, 'lawyer', 'created', $7, $8)
+       ON CONFLICT (draft_id, version_number) DO NOTHING`,
+      [`work_product_version_${randomUUID()}`, context.firmId, caseId, duplicateId,
+        rows[0].title, rows[0].content, context.userId, now],
+    );
     return rows[0];
   }
 
@@ -3068,6 +3150,15 @@ class DatabaseService {
       [revisionId, id, caseId, content, now, context.firmId]
     );
     if (!rows[0]) throw new Error("Work Product not found");
+    await this.query(
+      `INSERT INTO work_product_versions
+        (id, firm_id, case_id, draft_id, version_number, title, content,
+         revision_lane, change_type, created_by_user_id, created_at)
+       VALUES ($1, $2, $3, $4, 1, $5, $6, 'client', 'created', $7, $8)
+       ON CONFLICT (draft_id, version_number) DO NOTHING`,
+      [`work_product_version_${randomUUID()}`, context.firmId, caseId, revisionId,
+        rows[0].title, rows[0].content, context.userId, now],
+    );
     return rows[0];
   }
 
@@ -3088,6 +3179,789 @@ class DatabaseService {
       throw new Error("Work Product not found");
     }
     return rows[0];
+  }
+
+  private async recordResourceAudit(
+    client: pg.PoolClient,
+    context: OwnershipContext,
+    resourceType: "matter" | "document" | "work_product",
+    resourceId: string,
+    caseId: string | null,
+    action: string,
+    details: Record<string, unknown> = {},
+  ): Promise<void> {
+    await client.query(
+      `INSERT INTO resource_audit_events
+        (id, firm_id, actor_user_id, resource_type, resource_id, case_id, action, details)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)`,
+      [`audit_${randomUUID()}`, context.firmId, context.userId, resourceType, resourceId,
+        caseId, action, JSON.stringify(details)],
+    );
+  }
+
+  public async setMatterLifecycle(
+    caseId: string,
+    state: "active" | "archived",
+    context: OwnershipContext,
+  ): Promise<Case> {
+    await this.ensureSchema();
+    const client = await getPool().connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query(
+        `UPDATE cases SET lifecycle_state = $1,
+           archived_at = CASE WHEN $1 = 'archived' THEN NOW() ELSE NULL END,
+           archived_by_user_id = CASE WHEN $1 = 'archived' THEN $4 ELSE NULL END,
+           updated_at = NOW(), last_activity_at = NOW()
+         WHERE id = $2 AND firm_id = $3 AND lifecycle_state <> 'deletion_pending'
+         RETURNING *`,
+        [state, caseId, context.firmId, context.userId],
+      );
+      if (!result.rows[0]) throw new Error("Matter not found");
+      await this.recordResourceAudit(client, context, "matter", caseId, caseId, state);
+      await client.query("COMMIT");
+      return result.rows[0];
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async setMatterRetention(
+    caseId: string,
+    input: { state: "standard" | "held"; until?: string | null; reason?: string | null },
+    context: OwnershipContext,
+  ): Promise<Case> {
+    if (input.until && !Number.isFinite(new Date(input.until).getTime())) throw new Error("Invalid retention date");
+    await this.ensureSchema();
+    const client = await getPool().connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query(
+        `UPDATE cases SET retention_state = $1, retention_until = $2,
+           retention_reason = $3, retention_updated_by_user_id = $4, updated_at = NOW()
+         WHERE id = $5 AND firm_id = $6 RETURNING *`,
+        [input.state, input.until || null, input.reason?.trim().slice(0, 500) || null,
+          context.userId, caseId, context.firmId],
+      );
+      if (!result.rows[0]) throw new Error("Matter not found");
+      await this.recordResourceAudit(client, context, "matter", caseId, caseId, "retention_updated", {
+        state: input.state,
+        until: input.until || null,
+      });
+      await client.query("COMMIT");
+      return result.rows[0];
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async getMatterDependencies(caseId: string, context: OwnershipContext): Promise<DependencySummary> {
+    const rows = await this.query(
+      `SELECT
+         (SELECT COUNT(DISTINCT d.id)::int FROM documents d
+            LEFT JOIN case_documents cd ON cd.document_id = d.id AND cd.case_id = c.id
+            WHERE d.firm_id = $2 AND (d.case_id = c.id OR cd.case_id = c.id)) AS sources,
+         (SELECT COUNT(*)::int FROM case_documents WHERE case_id = c.id) AS "libraryLinks",
+         (SELECT COUNT(*)::int FROM threads WHERE case_id = c.id) AS conversations,
+         (SELECT COUNT(*)::int FROM drafts WHERE case_id = c.id) AS "workProducts",
+         (SELECT COUNT(*)::int FROM matter_client_access WHERE case_id = c.id) AS "clientAccess",
+         (SELECT COUNT(*)::int FROM collaboration_requests WHERE case_id = c.id) AS requests,
+         (SELECT COUNT(*)::int FROM document_versions WHERE firm_id = $2 AND case_id = c.id) AS originals,
+         (SELECT COUNT(*)::int FROM document_resource_versions drv
+            JOIN documents d ON d.id = drv.document_id WHERE d.case_id = c.id) +
+           (SELECT COUNT(*)::int FROM work_product_versions WHERE case_id = c.id) AS versions,
+         (SELECT COUNT(*)::int FROM document_chunks dc
+            JOIN documents d ON d.id = dc.document_id WHERE d.case_id = c.id) AS embeddings,
+         (SELECT COUNT(*)::int FROM resource_audit_events WHERE firm_id = $2 AND case_id = c.id) AS "auditReferences"
+       FROM cases c WHERE c.id = $1 AND c.firm_id = $2`,
+      [caseId, context.firmId],
+    );
+    if (!rows[0]) throw new Error("Matter not found");
+    return rows[0];
+  }
+
+  public async exportMatterPackage(caseId: string, context: OwnershipContext): Promise<Record<string, unknown>> {
+    const matter = await this.getCaseById(caseId, context);
+    if (!matter) throw new Error("Matter not found");
+    const [sources, conversations, workProducts, clientAccess, requests, originals, versions, audit] = await Promise.all([
+      this.query(`SELECT d.id, d.title, d.source_url, d.drive_id, d.extracted_text, d.section,
+          d.uploaded_at, d.source_type, d.origin, d.processing_state, d.lifecycle_state,
+          d.folder_path, d.tags, d.metadata, cd.link_origin
+        FROM documents d
+        LEFT JOIN case_documents cd ON cd.document_id = d.id AND cd.case_id = $2
+        WHERE d.firm_id = $1 AND (d.case_id = $2 OR cd.case_id = $2)
+        ORDER BY d.uploaded_at`, [context.firmId, caseId]),
+      this.query(`SELECT t.id, t.title, t.scope, t.created_at, t.last_activity_at,
+          COALESCE(jsonb_agg(jsonb_build_object('id', m.id, 'role', m.role, 'content', m.content,
+            'citations', m.citations, 'created_at', m.created_at) ORDER BY m.created_at)
+            FILTER (WHERE m.id IS NOT NULL), '[]'::jsonb) AS messages
+        FROM threads t LEFT JOIN messages m ON m.thread_id = t.id
+        WHERE t.case_id = $1 GROUP BY t.id ORDER BY t.created_at`,
+      [caseId]),
+      this.query(`SELECT id, title, content, created_at, updated_at, origin, parent_draft_id,
+          revision_type, lifecycle_state, shared_with_client, shared_at
+        FROM drafts WHERE case_id = $1 ORDER BY created_at`, [caseId]),
+      this.query(`SELECT id, client_name, client_email, invitation_status, created_at,
+          activated_at, revoked_at FROM matter_client_access WHERE case_id = $1`, [caseId]),
+      this.query(`SELECT id, request_type, instruction, status, created_at, updated_at
+        FROM collaboration_requests WHERE case_id = $1 ORDER BY created_at`, [caseId]),
+      this.query(`SELECT v.id AS version_id, v.document_id, v.version_number,
+          v.original_filename, v.content_type, v.byte_size, v.checksum_sha256,
+          v.upload_state, v.confirmed_at,
+          '/api/document-versions/' || v.id || '/original-download' AS download_path
+        FROM document_versions v
+        JOIN documents d ON d.id = v.document_id AND d.firm_id = v.firm_id
+        LEFT JOIN case_documents cd ON cd.document_id = d.id AND cd.case_id = $2
+        WHERE v.firm_id = $1 AND (d.case_id = $2 OR cd.case_id = $2)
+          AND v.upload_state = 'Uploaded'
+        ORDER BY d.id, v.version_number`, [context.firmId, caseId]),
+      this.query(`SELECT id, draft_id, version_number, title, content, revision_lane,
+          change_type, created_by_user_id, created_at
+        FROM work_product_versions WHERE firm_id = $1 AND case_id = $2
+        ORDER BY draft_id, version_number`, [context.firmId, caseId]),
+      this.query(`SELECT resource_type, resource_id, action, details, actor_user_id, occurred_at
+        FROM resource_audit_events WHERE firm_id = $1 AND case_id = $2 ORDER BY occurred_at`,
+      [context.firmId, caseId]),
+    ]);
+    return {
+      manifest: {
+        format: "exepts-matter-export",
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        exportedByUserId: context.userId,
+        dependencyPolicy: {
+          sources: "included",
+          conversations: "included for the authorized Matter",
+          workProduct: "included with immutable versions",
+          clientAccess: "included without invitation tokens",
+          originals: "manifested separately; bytes remain available through authorized original downloads",
+          embeddings: "excluded because they are reproducible indexes",
+          auditReferences: "included",
+        },
+      },
+      matter, sources, conversations, workProducts, clientAccess, requests, originals, versions, audit,
+    };
+  }
+
+  public async requestPermanentDeletion(
+    resourceType: "matter" | "document" | "work_product",
+    resourceId: string,
+    caseId: string | null,
+    confirmation: string,
+    context: OwnershipContext,
+  ): Promise<any> {
+    if (!confirmation.trim()) throw new Error("Typed confirmation is required");
+    await this.ensureSchema();
+    const client = await getPool().connect();
+    try {
+      await client.query("BEGIN");
+      let expected = "";
+      let dependencies: DependencySummary = {};
+      if (resourceType === "matter") {
+        const record = await client.query(
+          `SELECT * FROM cases WHERE id = $1 AND firm_id = $2 FOR UPDATE`,
+          [resourceId, context.firmId],
+        );
+        const matter = record.rows[0];
+        if (!matter) throw new Error("Matter not found");
+        assertPermanentDeletionEligible({
+          lifecycleState: matter.lifecycle_state,
+          retentionState: matter.retention_state,
+          retentionUntil: matter.retention_until,
+        });
+        expected = matter.name;
+        dependencies = await this.getMatterDependencies(resourceId, context);
+      } else if (resourceType === "document") {
+        const record = await client.query(
+          `SELECT id, title, case_id, lifecycle_state FROM documents
+           WHERE id = $1 AND firm_id = $2 FOR UPDATE`,
+          [resourceId, context.firmId],
+        );
+        const document = record.rows[0];
+        if (!document) throw new Error("Document not found");
+        expected = document.title;
+        caseId = document.case_id;
+        dependencies = await this.getDocumentDependencies(resourceId, context);
+        assertPermanentDeletionEligible({
+          lifecycleState: document.lifecycle_state,
+          blockingDependencies: Number(dependencies.libraryLinks || 0)
+            + Number(dependencies.workProductLinks || 0),
+        });
+      } else {
+        const record = await client.query(
+          `SELECT d.id, d.title, d.case_id, d.lifecycle_state FROM drafts d
+           JOIN cases c ON c.id = d.case_id
+           WHERE d.id = $1 AND c.firm_id = $2 FOR UPDATE OF d`,
+          [resourceId, context.firmId],
+        );
+        const draft = record.rows[0];
+        if (!draft) throw new Error("Work Product not found");
+        expected = draft.title;
+        caseId = draft.case_id;
+        dependencies = await this.getWorkProductDependencies(resourceId, context);
+        assertPermanentDeletionEligible({
+          lifecycleState: draft.lifecycle_state,
+          blockingDependencies: Number(dependencies.workProductLinks || 0)
+            + Number(dependencies.requests || 0),
+        });
+      }
+      if (confirmation !== expected) throw new Error("Typed confirmation does not match the resource name");
+      const id = `deletion_${randomUUID()}`;
+      const digest = deletionConfirmationDigest(context.firmId, resourceType, resourceId, confirmation);
+      const inserted = await client.query(
+        `INSERT INTO permanent_deletion_requests
+          (id, firm_id, resource_type, resource_id, case_id, requested_by_user_id,
+           confirmation_digest, not_before, dependency_snapshot)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+         RETURNING id, resource_type, resource_id, status, not_before, requested_at`,
+        [id, context.firmId, resourceType, resourceId, caseId, context.userId, digest,
+          deletionNotBefore(), JSON.stringify(dependencies)],
+      );
+      const table = resourceType === "matter" ? "cases" : resourceType === "document" ? "documents" : "drafts";
+      await client.query(`UPDATE ${table} SET lifecycle_state = 'deletion_pending' WHERE id = $1`, [resourceId]);
+      await this.recordResourceAudit(client, context, resourceType, resourceId, caseId, "permanent_deletion_requested", {
+        requestId: id,
+        notBefore: inserted.rows[0].not_before,
+        dependencies,
+      });
+      await client.query("COMMIT");
+      return inserted.rows[0];
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async cancelPermanentDeletion(
+    resourceType: "matter" | "document" | "work_product",
+    resourceId: string,
+    context: OwnershipContext,
+  ): Promise<any> {
+    await this.ensureSchema();
+    const client = await getPool().connect();
+    try {
+      await client.query("BEGIN");
+      const cancelled = await client.query(
+        `UPDATE permanent_deletion_requests SET status = 'cancelled', completed_at = NOW()
+         WHERE firm_id = $1 AND resource_type = $2 AND resource_id = $3
+           AND status = 'pending' RETURNING *`,
+        [context.firmId, resourceType, resourceId],
+      );
+      if (!cancelled.rows[0]) throw new Error("Pending deletion request not found");
+      const table = resourceType === "matter" ? "cases" : resourceType === "document" ? "documents" : "drafts";
+      await client.query(
+        `UPDATE ${table} SET lifecycle_state = 'archived' WHERE id = $1 AND lifecycle_state = 'deletion_pending'`,
+        [resourceId],
+      );
+      await this.recordResourceAudit(client, context, resourceType, resourceId,
+        cancelled.rows[0].case_id, "permanent_deletion_cancelled", { requestId: cancelled.rows[0].id });
+      await client.query("COMMIT");
+      return { id: cancelled.rows[0].id, status: "cancelled" };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async getDocumentDependencies(documentId: string, context: OwnershipContext): Promise<DependencySummary> {
+    const rows = await this.query(
+      `SELECT
+        (SELECT COUNT(*)::int FROM case_documents WHERE document_id = d.id) AS "libraryLinks",
+        (SELECT COUNT(*)::int FROM work_product_source_links WHERE document_id = d.id) AS "workProductLinks",
+        (SELECT COUNT(*)::int FROM client_response_attachments WHERE document_id = d.id) AS requests,
+        (SELECT COUNT(*)::int FROM document_versions WHERE document_id = d.id) AS originals,
+        (SELECT COUNT(*)::int FROM document_resource_versions WHERE document_id = d.id) AS versions,
+        (SELECT COUNT(*)::int FROM document_chunks WHERE document_id = d.id) AS embeddings,
+        (SELECT COUNT(*)::int FROM resource_audit_events
+          WHERE firm_id = $2 AND resource_type = 'document' AND resource_id = d.id) AS "auditReferences"
+       FROM documents d WHERE d.id = $1 AND d.firm_id = $2`,
+      [documentId, context.firmId],
+    );
+    if (!rows[0]) throw new Error("Document not found");
+    return rows[0];
+  }
+
+  public async updateDocumentLifecycle(
+    documentId: string,
+    input: {
+      title?: string;
+      section?: string;
+      folderPath?: string;
+      tags?: unknown;
+      metadata?: Record<string, unknown>;
+      lifecycleState?: "active" | "archived";
+    },
+    context: OwnershipContext,
+  ): Promise<Document> {
+    await this.ensureSchema();
+    const client = await getPool().connect();
+    try {
+      await client.query("BEGIN");
+      const current = await client.query(
+        `SELECT * FROM documents WHERE id = $1 AND firm_id = $2 FOR UPDATE`,
+        [documentId, context.firmId],
+      );
+      if (!current.rows[0]) throw new Error("Document not found");
+      if (current.rows[0].lifecycle_state === "deletion_pending") throw new Error("Document deletion is pending");
+      const title = input.title?.trim() || current.rows[0].title;
+      const section = input.section?.trim() || current.rows[0].section;
+      const folder = input.folderPath === undefined ? current.rows[0].folder_path : normalizeFolderPath(input.folderPath);
+      const tags = input.tags === undefined ? current.rows[0].tags : normalizeTags(input.tags);
+      const metadata = input.metadata === undefined ? current.rows[0].metadata : input.metadata;
+      const state = input.lifecycleState || current.rows[0].lifecycle_state;
+      const updated = await client.query(
+        `UPDATE documents SET title = $1, section = $2, folder_path = $3, tags = $4,
+           metadata = $5::jsonb, lifecycle_state = $6,
+           archived_at = CASE WHEN $6 = 'archived' THEN COALESCE(archived_at, NOW()) ELSE NULL END,
+           archived_by_user_id = CASE WHEN $6 = 'archived' THEN $8 ELSE NULL END
+         WHERE id = $7 AND firm_id = $9 RETURNING *`,
+        [title, section, folder, tags, JSON.stringify(metadata || {}), state, documentId,
+          context.userId, context.firmId],
+      );
+      const nextVersion = await client.query(
+        `SELECT COALESCE(MAX(version_number), 0) + 1 AS value
+         FROM document_resource_versions WHERE document_id = $1`,
+        [documentId],
+      );
+      await client.query(
+        `INSERT INTO document_resource_versions
+          (id, firm_id, document_id, version_number, title, extracted_text, section,
+           metadata, change_type, created_by_user_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, 'metadata', $9)`,
+        [`doc_resource_version_${randomUUID()}`, context.firmId, documentId,
+          nextVersion.rows[0].value, title, current.rows[0].extracted_text, section,
+          JSON.stringify(metadata || {}), context.userId],
+      );
+      await this.recordResourceAudit(client, context, "document", documentId,
+        current.rows[0].case_id, state !== current.rows[0].lifecycle_state ? state : "metadata_updated");
+      await client.query("COMMIT");
+      return updated.rows[0];
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async replaceDocumentContent(
+    documentId: string,
+    title: string | null,
+    text: string,
+    context: OwnershipContext,
+  ): Promise<Document> {
+    if (!text.trim()) throw new Error("Replacement content is required");
+    await this.ensureSchema();
+    const client = await getPool().connect();
+    try {
+      await client.query("BEGIN");
+      const current = await client.query(
+        `SELECT * FROM documents WHERE id = $1 AND firm_id = $2 AND lifecycle_state <> 'deletion_pending' FOR UPDATE`,
+        [documentId, context.firmId],
+      );
+      if (!current.rows[0]) throw new Error("Document not found");
+      const nextVersion = await client.query(
+        `SELECT COALESCE(MAX(version_number), 0) + 1 AS value
+         FROM document_resource_versions WHERE document_id = $1`,
+        [documentId],
+      );
+      const newTitle = title?.trim() || current.rows[0].title;
+      const updated = await client.query(
+        `UPDATE documents SET title = $1, extracted_text = $2, processing_state = 'Processing'
+         WHERE id = $3 AND firm_id = $4 RETURNING *`,
+        [newTitle, text, documentId, context.firmId],
+      );
+      await client.query(`DELETE FROM document_chunks WHERE document_id = $1`, [documentId]);
+      await client.query(
+        `INSERT INTO document_resource_versions
+          (id, firm_id, document_id, version_number, title, extracted_text, section,
+           metadata, change_type, created_by_user_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, 'replacement', $9)`,
+        [`doc_resource_version_${randomUUID()}`, context.firmId, documentId,
+          nextVersion.rows[0].value, newTitle, text, current.rows[0].section,
+          JSON.stringify(current.rows[0].metadata || {}), context.userId],
+      );
+      await this.recordResourceAudit(client, context, "document", documentId,
+        current.rows[0].case_id, "replaced", { versionNumber: nextVersion.rows[0].value });
+      await client.query("COMMIT");
+      return updated.rows[0];
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async getDocumentResourceVersions(documentId: string, context: OwnershipContext): Promise<any[]> {
+    return this.query(
+      `SELECT v.*, u.name AS actor_name FROM document_resource_versions v
+       JOIN documents d ON d.id = v.document_id AND d.firm_id = v.firm_id
+       LEFT JOIN users u ON u.id = v.created_by_user_id
+       WHERE v.document_id = $1 AND v.firm_id = $2 ORDER BY v.version_number DESC`,
+      [documentId, context.firmId],
+    );
+  }
+
+  public async getLatestDocumentOriginal(documentId: string, context: OwnershipContext): Promise<any | null> {
+    const rows = await this.query(
+      `SELECT v.id, v.object_key, v.original_filename FROM document_versions v
+       JOIN documents d ON d.id = v.document_id AND d.firm_id = v.firm_id
+       WHERE v.document_id = $1 AND v.firm_id = $2 AND v.upload_state = 'Uploaded'
+       ORDER BY v.version_number DESC LIMIT 1`,
+      [documentId, context.firmId],
+    );
+    return rows[0] || null;
+  }
+
+  public async restoreDocumentResourceVersion(
+    documentId: string,
+    versionId: string,
+    context: OwnershipContext,
+  ): Promise<Document> {
+    await this.ensureSchema();
+    const client = await getPool().connect();
+    try {
+      await client.query("BEGIN");
+      const document = await client.query(
+        `SELECT * FROM documents WHERE id = $1 AND firm_id = $2
+           AND lifecycle_state <> 'deletion_pending' FOR UPDATE`,
+        [documentId, context.firmId],
+      );
+      if (!document.rows[0]) throw new Error("Document not found");
+      const version = await client.query(
+        `SELECT * FROM document_resource_versions
+         WHERE id = $1 AND document_id = $2 AND firm_id = $3`,
+        [versionId, documentId, context.firmId],
+      );
+      if (!version.rows[0]) throw new Error("Document version not found");
+      const next = await client.query(
+        `SELECT COALESCE(MAX(version_number), 0) + 1 AS value
+         FROM document_resource_versions WHERE document_id = $1`,
+        [documentId],
+      );
+      const updated = await client.query(
+        `UPDATE documents SET title = $1, extracted_text = $2, section = $3,
+           metadata = $4::jsonb, processing_state = 'Processing'
+         WHERE id = $5 AND firm_id = $6 RETURNING *`,
+        [version.rows[0].title, version.rows[0].extracted_text, version.rows[0].section,
+          JSON.stringify(version.rows[0].metadata || {}), documentId, context.firmId],
+      );
+      await client.query(`DELETE FROM document_chunks WHERE document_id = $1`, [documentId]);
+      await client.query(
+        `INSERT INTO document_resource_versions
+          (id, firm_id, document_id, version_number, title, extracted_text, section,
+           metadata, original_document_version_id, change_type, created_by_user_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, 'restored', $10)`,
+        [`doc_resource_version_${randomUUID()}`, context.firmId, documentId, next.rows[0].value,
+          version.rows[0].title, version.rows[0].extracted_text, version.rows[0].section,
+          JSON.stringify(version.rows[0].metadata || {}), version.rows[0].original_document_version_id,
+          context.userId],
+      );
+      await this.recordResourceAudit(client, context, "document", documentId,
+        document.rows[0].case_id, "version_restored", {
+          restoredFromVersionId: versionId,
+          newVersionNumber: next.rows[0].value,
+        });
+      await client.query("COMMIT");
+      return updated.rows[0];
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async reindexDocument(documentId: string, context: OwnershipContext): Promise<Document> {
+    const current = await this.getDocumentById(documentId, context, null)
+      || (await this.query(
+        `SELECT * FROM documents WHERE id = $1 AND firm_id = $2 AND case_id IS NOT NULL`,
+        [documentId, context.firmId],
+      ))[0];
+    if (!current) throw new Error("Document not found");
+    await this.query(
+      `UPDATE documents SET processing_state = 'Processing' WHERE id = $1 AND firm_id = $2`,
+      [documentId, context.firmId],
+    );
+    try {
+      const chunks = String(current.extracted_text || "").match(/[\s\S]{1,4000}/g) || [];
+      await this.query(`DELETE FROM document_chunks WHERE document_id = $1`, [documentId]);
+      for (let index = 0; index < chunks.length; index += 1) {
+        const embedding = await callModel("embedding", [], { textToEmbed: chunks[index] }) as number[];
+        await this.query(
+          `INSERT INTO document_chunks(id, document_id, chunk_text, embedding, chunk_index)
+           VALUES ($1, $2, $3, $4::vector, $5)`,
+          [`chunk_${documentId}_${index}`, documentId, chunks[index], `[${embedding.join(",")}]`, index],
+        );
+      }
+      const rows = await this.query(
+        `UPDATE documents SET processing_state = 'Ready'
+         WHERE id = $1 AND firm_id = $2 RETURNING *`,
+        [documentId, context.firmId],
+      );
+      return rows[0];
+    } catch (error) {
+      await this.query(
+        `UPDATE documents SET processing_state = 'Needs Attention'
+         WHERE id = $1 AND firm_id = $2`,
+        [documentId, context.firmId],
+      );
+      throw error;
+    }
+  }
+
+  public async bulkUpdateLibraryDocuments(
+    documentIds: string[],
+    input: { folderPath?: string; addTags?: unknown; lifecycleState?: "active" | "archived" },
+    context: OwnershipContext,
+  ): Promise<Document[]> {
+    const ids = Array.from(new Set(documentIds)).slice(0, 200);
+    if (!ids.length) return [];
+    const folder = input.folderPath === undefined ? null : normalizeFolderPath(input.folderPath);
+    const tags = normalizeTags(input.addTags);
+    return this.query(
+      `UPDATE documents SET
+         folder_path = COALESCE($1, folder_path),
+         tags = ARRAY(SELECT DISTINCT unnest(tags || $2::text[])),
+         lifecycle_state = COALESCE($3, lifecycle_state),
+         archived_at = CASE WHEN $3 = 'archived' THEN COALESCE(archived_at, NOW())
+           WHEN $3 = 'active' THEN NULL ELSE archived_at END,
+         archived_by_user_id = CASE WHEN $3 = 'archived' THEN $6
+           WHEN $3 = 'active' THEN NULL ELSE archived_by_user_id END
+       WHERE id = ANY($4::text[]) AND firm_id = $5 AND case_id IS NULL
+         AND lifecycle_state <> 'deletion_pending'
+       RETURNING *`,
+      [folder, tags, input.lifecycleState || null, ids, context.firmId, context.userId],
+    );
+  }
+
+  public async getWorkProductVersions(
+    draftId: string,
+    caseId: string,
+    context: OwnershipContext,
+  ): Promise<any[]> {
+    return this.query(
+      `SELECT v.*, u.name AS actor_name FROM work_product_versions v
+       JOIN cases c ON c.id = v.case_id
+       LEFT JOIN users u ON u.id = v.created_by_user_id
+       WHERE v.draft_id = $1 AND v.case_id = $2 AND v.firm_id = $3
+         AND c.firm_id = $3 ORDER BY v.version_number DESC`,
+      [draftId, caseId, context.firmId],
+    );
+  }
+
+  public async saveWorkProductVersion(
+    draftId: string,
+    caseId: string,
+    input: { title?: string; content: string; autosave?: boolean },
+    context: OwnershipContext,
+  ): Promise<Draft> {
+    await this.ensureSchema();
+    const client = await getPool().connect();
+    try {
+      await client.query("BEGIN");
+      const current = await client.query(
+        `SELECT d.* FROM drafts d JOIN cases c ON c.id = d.case_id
+         WHERE d.id = $1 AND d.case_id = $2 AND c.firm_id = $3
+           AND d.lifecycle_state = 'active' FOR UPDATE OF d`,
+        [draftId, caseId, context.firmId],
+      );
+      if (!current.rows[0]) throw new Error("Work Product not found");
+      const title = input.title?.trim() || current.rows[0].title;
+      const changedTitle = title !== current.rows[0].title;
+      if (title === current.rows[0].title && input.content === current.rows[0].content) {
+        await client.query("COMMIT");
+        return current.rows[0];
+      }
+      const next = await client.query(
+        `SELECT COALESCE(MAX(version_number), 0) + 1 AS value
+         FROM work_product_versions WHERE draft_id = $1`,
+        [draftId],
+      );
+      const updated = await client.query(
+        `UPDATE drafts SET title = $1, content = $2, updated_at = NOW(),
+           last_edited_by_user_id = $3 WHERE id = $4 RETURNING *`,
+        [title, input.content, context.userId, draftId],
+      );
+      await client.query(
+        `INSERT INTO work_product_versions
+          (id, firm_id, case_id, draft_id, version_number, title, content,
+           revision_lane, change_type, created_by_user_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        [`work_product_version_${randomUUID()}`, context.firmId, caseId, draftId,
+          next.rows[0].value, title, input.content, revisionLane(current.rows[0].revision_type),
+          input.autosave ? "autosave" : changedTitle ? "renamed" : "saved", context.userId],
+      );
+      await this.recordResourceAudit(client, context, "work_product", draftId, caseId,
+        input.autosave ? "autosaved" : changedTitle ? "renamed" : "saved",
+        { versionNumber: next.rows[0].value });
+      await client.query("COMMIT");
+      return updated.rows[0];
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async restoreWorkProductVersion(
+    draftId: string,
+    caseId: string,
+    versionId: string,
+    context: OwnershipContext,
+  ): Promise<Draft> {
+    await this.ensureSchema();
+    const client = await getPool().connect();
+    try {
+      await client.query("BEGIN");
+      const version = await client.query(
+        `SELECT v.* FROM work_product_versions v JOIN cases c ON c.id = v.case_id
+         WHERE v.id = $1 AND v.draft_id = $2 AND v.case_id = $3
+           AND v.firm_id = $4 AND c.firm_id = $4`,
+        [versionId, draftId, caseId, context.firmId],
+      );
+      if (!version.rows[0]) throw new Error("Work Product version not found");
+      await client.query(
+        `SELECT id FROM drafts WHERE id = $1 AND case_id = $2 FOR UPDATE`,
+        [draftId, caseId],
+      );
+      const next = await client.query(
+        `SELECT COALESCE(MAX(version_number), 0) + 1 AS value
+         FROM work_product_versions WHERE draft_id = $1`,
+        [draftId],
+      );
+      const updated = await client.query(
+        `UPDATE drafts SET title = $1, content = $2, updated_at = NOW(),
+           last_edited_by_user_id = $3
+         WHERE id = $4 AND case_id = $5 AND lifecycle_state <> 'deletion_pending'
+         RETURNING *`,
+        [version.rows[0].title, version.rows[0].content, context.userId, draftId, caseId],
+      );
+      if (!updated.rows[0]) throw new Error("Work Product not found");
+      await client.query(
+        `INSERT INTO work_product_versions
+          (id, firm_id, case_id, draft_id, version_number, title, content,
+           revision_lane, change_type, created_by_user_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'restored', $9)`,
+        [`work_product_version_${randomUUID()}`, context.firmId, caseId, draftId,
+          next.rows[0].value, version.rows[0].title, version.rows[0].content,
+          version.rows[0].revision_lane, context.userId],
+      );
+      await this.recordResourceAudit(client, context, "work_product", draftId, caseId, "version_restored", {
+        restoredFromVersionId: versionId,
+        newVersionNumber: next.rows[0].value,
+      });
+      await client.query("COMMIT");
+      return updated.rows[0];
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async setWorkProductLifecycle(
+    draftId: string,
+    caseId: string,
+    state: "active" | "archived",
+    context: OwnershipContext,
+  ): Promise<Draft> {
+    const rows = await this.query(
+      `UPDATE drafts d SET lifecycle_state = $1,
+         archived_at = CASE WHEN $1 = 'archived' THEN NOW() ELSE NULL END,
+         archived_by_user_id = CASE WHEN $1 = 'archived' THEN $5 ELSE NULL END,
+         updated_at = NOW()
+       WHERE d.id = $2 AND d.case_id = $3 AND d.lifecycle_state <> 'deletion_pending'
+         AND EXISTS (SELECT 1 FROM cases c WHERE c.id = d.case_id AND c.firm_id = $4)
+       RETURNING d.*`,
+      [state, draftId, caseId, context.firmId, context.userId],
+    );
+    if (!rows[0]) throw new Error("Work Product not found");
+    return rows[0];
+  }
+
+  public async getWorkProductDependencies(draftId: string, context: OwnershipContext): Promise<DependencySummary> {
+    const rows = await this.query(
+      `SELECT
+        (SELECT COUNT(*)::int FROM work_product_source_links WHERE draft_id = d.id) AS "workProductLinks",
+        (SELECT COUNT(*)::int FROM collaboration_request_documents WHERE draft_id = d.id) +
+          (SELECT COUNT(*)::int FROM client_response_attachments WHERE draft_id = d.id) AS requests,
+        (SELECT COUNT(*)::int FROM work_product_versions WHERE draft_id = d.id) AS versions,
+        (SELECT COUNT(*)::int FROM resource_audit_events
+          WHERE firm_id = $2 AND resource_type = 'work_product' AND resource_id = d.id) AS "auditReferences"
+       FROM drafts d JOIN cases c ON c.id = d.case_id
+       WHERE d.id = $1 AND c.firm_id = $2`,
+      [draftId, context.firmId],
+    );
+    if (!rows[0]) throw new Error("Work Product not found");
+    return rows[0];
+  }
+
+  public async addWorkProductAsMatterSource(
+    draftId: string,
+    caseId: string,
+    context: OwnershipContext,
+  ): Promise<Document> {
+    await this.ensureSchema();
+    const client = await getPool().connect();
+    try {
+      await client.query("BEGIN");
+      const draft = await client.query(
+        `SELECT d.* FROM drafts d JOIN cases c ON c.id = d.case_id
+         WHERE d.id = $1 AND d.case_id = $2 AND c.firm_id = $3
+           AND d.lifecycle_state = 'active'`,
+        [draftId, caseId, context.firmId],
+      );
+      if (!draft.rows[0]) throw new Error("Work Product not found");
+      const documentId = `doc_${randomUUID()}`;
+      const now = new Date().toISOString();
+      const document = await client.query(
+        `INSERT INTO documents
+          (id, firm_id, case_id, title, extracted_text, section, uploaded_at,
+           source_type, origin, processing_state, originating_draft_id)
+         VALUES ($1, $2, $3, $4, $5, 'Work Product', $6,
+           'Matter Upload', 'Work Product', 'Ready', $7) RETURNING *`,
+        [documentId, context.firmId, caseId, draft.rows[0].title,
+          draft.rows[0].content, now, draftId],
+      );
+      await client.query(
+        `INSERT INTO work_product_source_links
+          (id, firm_id, case_id, draft_id, document_id, created_by_user_id)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [`work_product_source_${randomUUID()}`, context.firmId, caseId, draftId,
+          documentId, context.userId],
+      );
+      await client.query(
+        `INSERT INTO document_resource_versions
+          (id, firm_id, document_id, version_number, title, extracted_text, section,
+           change_type, created_by_user_id)
+         VALUES ($1, $2, $3, 1, $4, $5, 'Work Product', 'created', $6)`,
+        [`doc_resource_version_${randomUUID()}`, context.firmId, documentId,
+          draft.rows[0].title, draft.rows[0].content, context.userId],
+      );
+      await this.recordResourceAudit(client, context, "work_product", draftId, caseId,
+        "added_as_matter_source", { documentId });
+      await client.query("COMMIT");
+      return document.rows[0];
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 }
 

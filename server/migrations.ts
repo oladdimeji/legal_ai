@@ -474,7 +474,7 @@ const migrations: Migration[] = [
           id TEXT PRIMARY KEY,
           firm_id TEXT NOT NULL REFERENCES firm(id) ON DELETE CASCADE,
           case_id TEXT REFERENCES cases(id) ON DELETE CASCADE,
-          created_by_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+          created_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
           upload_source TEXT NOT NULL,
           state TEXT NOT NULL DEFAULT 'Authorized',
           file_count INTEGER NOT NULL,
@@ -885,6 +885,207 @@ const migrations: Migration[] = [
         FROM cases c
         JOIN users u ON u.firm_id = c.firm_id
         ON CONFLICT (case_id, user_id) DO NOTHING
+      `);
+    },
+  },
+  {
+    version: 18,
+    name: "resource_lifecycle_versions_retention_and_deletion_queue",
+    async run(client) {
+      await client.query(`ALTER TABLE cases ADD COLUMN IF NOT EXISTS lifecycle_state TEXT NOT NULL DEFAULT 'active'`);
+      await client.query(`ALTER TABLE cases ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ`);
+      await client.query(`ALTER TABLE cases ADD COLUMN IF NOT EXISTS archived_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL`);
+      await client.query(`ALTER TABLE cases ADD COLUMN IF NOT EXISTS retention_state TEXT NOT NULL DEFAULT 'standard'`);
+      await client.query(`ALTER TABLE cases ADD COLUMN IF NOT EXISTS retention_until TIMESTAMPTZ`);
+      await client.query(`ALTER TABLE cases ADD COLUMN IF NOT EXISTS retention_reason TEXT`);
+      await client.query(`ALTER TABLE cases ADD COLUMN IF NOT EXISTS retention_updated_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL`);
+      await client.query(`
+        DO $$ BEGIN
+          ALTER TABLE cases ADD CONSTRAINT cases_lifecycle_state_check
+            CHECK (lifecycle_state IN ('active', 'archived', 'deletion_pending', 'deleted'));
+        EXCEPTION WHEN duplicate_object THEN NULL; END $$
+      `);
+      await client.query(`
+        DO $$ BEGIN
+          ALTER TABLE cases ADD CONSTRAINT cases_retention_state_check
+            CHECK (retention_state IN ('standard', 'held'));
+        EXCEPTION WHEN duplicate_object THEN NULL; END $$
+      `);
+
+      await client.query(`ALTER TABLE documents ADD COLUMN IF NOT EXISTS lifecycle_state TEXT NOT NULL DEFAULT 'active'`);
+      await client.query(`ALTER TABLE documents ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ`);
+      await client.query(`ALTER TABLE documents ADD COLUMN IF NOT EXISTS archived_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL`);
+      await client.query(`ALTER TABLE documents ADD COLUMN IF NOT EXISTS folder_path TEXT NOT NULL DEFAULT '/'`);
+      await client.query(`ALTER TABLE documents ADD COLUMN IF NOT EXISTS tags TEXT[] NOT NULL DEFAULT '{}'::text[]`);
+      await client.query(`ALTER TABLE documents ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb`);
+      await client.query(`ALTER TABLE documents ADD COLUMN IF NOT EXISTS originating_draft_id TEXT REFERENCES drafts(id) ON DELETE SET NULL`);
+      await client.query(`
+        DO $$ BEGIN
+          ALTER TABLE documents ADD CONSTRAINT documents_lifecycle_state_check
+            CHECK (lifecycle_state IN ('active', 'archived', 'deletion_pending'));
+        EXCEPTION WHEN duplicate_object THEN NULL; END $$
+      `);
+      await client.query(`CREATE INDEX IF NOT EXISTS documents_firm_lifecycle_idx ON documents(firm_id, case_id, lifecycle_state, uploaded_at DESC)`);
+      await client.query(`CREATE INDEX IF NOT EXISTS documents_firm_folder_idx ON documents(firm_id, folder_path) WHERE case_id IS NULL`);
+      await client.query(`CREATE INDEX IF NOT EXISTS documents_tags_gin_idx ON documents USING GIN(tags)`);
+
+      await client.query(`ALTER TABLE drafts ADD COLUMN IF NOT EXISTS lifecycle_state TEXT NOT NULL DEFAULT 'active'`);
+      await client.query(`ALTER TABLE drafts ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ`);
+      await client.query(`ALTER TABLE drafts ADD COLUMN IF NOT EXISTS archived_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL`);
+      await client.query(`ALTER TABLE drafts ADD COLUMN IF NOT EXISTS last_edited_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL`);
+      await client.query(`
+        DO $$ BEGIN
+          ALTER TABLE drafts ADD CONSTRAINT drafts_lifecycle_state_check
+            CHECK (lifecycle_state IN ('active', 'archived', 'deletion_pending'));
+        EXCEPTION WHEN duplicate_object THEN NULL; END $$
+      `);
+      await client.query(`CREATE INDEX IF NOT EXISTS drafts_case_lifecycle_idx ON drafts(case_id, lifecycle_state, updated_at DESC)`);
+
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS document_resource_versions (
+          id TEXT PRIMARY KEY,
+          firm_id TEXT NOT NULL REFERENCES firm(id) ON DELETE RESTRICT,
+          document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+          version_number INTEGER NOT NULL,
+          title TEXT NOT NULL,
+          extracted_text TEXT NOT NULL,
+          section TEXT NOT NULL,
+          metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+          original_document_version_id TEXT REFERENCES document_versions(id) ON DELETE SET NULL,
+          change_type TEXT NOT NULL,
+          created_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          UNIQUE(document_id, version_number),
+          CHECK (change_type IN ('created', 'replacement', 'metadata', 'restored'))
+        )
+      `);
+      await client.query(`CREATE INDEX IF NOT EXISTS document_resource_versions_scope_idx ON document_resource_versions(firm_id, document_id, version_number DESC)`);
+      await client.query(`
+        CREATE UNIQUE INDEX IF NOT EXISTS document_resource_versions_original_unique
+        ON document_resource_versions(original_document_version_id)
+        WHERE original_document_version_id IS NOT NULL
+      `);
+
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS work_product_versions (
+          id TEXT PRIMARY KEY,
+          firm_id TEXT NOT NULL REFERENCES firm(id) ON DELETE RESTRICT,
+          case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+          draft_id TEXT NOT NULL REFERENCES drafts(id) ON DELETE CASCADE,
+          version_number INTEGER NOT NULL,
+          title TEXT NOT NULL,
+          content TEXT NOT NULL,
+          revision_lane TEXT NOT NULL,
+          change_type TEXT NOT NULL,
+          created_by_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          UNIQUE(draft_id, version_number),
+          CHECK (revision_lane IN ('lawyer', 'client')),
+          CHECK (change_type IN ('created', 'autosave', 'saved', 'renamed', 'restored'))
+        )
+      `);
+      await client.query(`CREATE INDEX IF NOT EXISTS work_product_versions_scope_idx ON work_product_versions(firm_id, case_id, draft_id, version_number DESC)`);
+
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS work_product_source_links (
+          id TEXT PRIMARY KEY,
+          firm_id TEXT NOT NULL REFERENCES firm(id) ON DELETE RESTRICT,
+          case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+          draft_id TEXT NOT NULL REFERENCES drafts(id) ON DELETE RESTRICT,
+          document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE RESTRICT,
+          created_by_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          UNIQUE(draft_id, document_id)
+        )
+      `);
+
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS resource_audit_events (
+          id TEXT PRIMARY KEY,
+          firm_id TEXT NOT NULL REFERENCES firm(id) ON DELETE RESTRICT,
+          actor_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+          resource_type TEXT NOT NULL,
+          resource_id TEXT NOT NULL,
+          case_id TEXT,
+          action TEXT NOT NULL,
+          details JSONB NOT NULL DEFAULT '{}'::jsonb,
+          occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `);
+      await client.query(`CREATE INDEX IF NOT EXISTS resource_audit_events_scope_idx ON resource_audit_events(firm_id, case_id, resource_type, resource_id, occurred_at DESC)`);
+
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS permanent_deletion_requests (
+          id TEXT PRIMARY KEY,
+          firm_id TEXT NOT NULL REFERENCES firm(id) ON DELETE RESTRICT,
+          resource_type TEXT NOT NULL,
+          resource_id TEXT NOT NULL,
+          case_id TEXT,
+          requested_by_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+          confirmation_digest TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending',
+          not_before TIMESTAMPTZ NOT NULL,
+          dependency_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
+          attempt_count INTEGER NOT NULL DEFAULT 0,
+          safe_error_code TEXT,
+          requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          started_at TIMESTAMPTZ,
+          completed_at TIMESTAMPTZ,
+          CHECK (resource_type IN ('matter', 'document', 'work_product')),
+          CHECK (status IN ('pending', 'processing', 'blocked', 'completed', 'cancelled'))
+        )
+      `);
+      await client.query(`
+        CREATE UNIQUE INDEX IF NOT EXISTS permanent_deletion_requests_active_unique
+        ON permanent_deletion_requests(firm_id, resource_type, resource_id)
+        WHERE status IN ('pending', 'processing')
+      `);
+      await client.query(`CREATE INDEX IF NOT EXISTS permanent_deletion_requests_worker_idx ON permanent_deletion_requests(status, not_before)`);
+
+      // Immutable histories and audit rows remain append-only even when current
+      // content changes. Permanent-deletion processing explicitly removes version
+      // rows in the same transaction; audit references are intentionally strings.
+      for (const table of ["document_resource_versions", "work_product_versions", "resource_audit_events"]) {
+        await client.query(`
+          CREATE OR REPLACE FUNCTION prevent_${table}_mutation()
+          RETURNS trigger AS $$
+          BEGIN
+            RAISE EXCEPTION '${table} is append-only';
+          END;
+          $$ LANGUAGE plpgsql
+        `);
+        await client.query(`DROP TRIGGER IF EXISTS ${table}_immutable_update ON ${table}`);
+        await client.query(`
+          CREATE TRIGGER ${table}_immutable_update
+          BEFORE UPDATE ON ${table}
+          FOR EACH ROW EXECUTE FUNCTION prevent_${table}_mutation()
+        `);
+      }
+
+      // Backfill a first immutable version without rewriting current resources.
+      await client.query(`
+        INSERT INTO document_resource_versions
+          (id, firm_id, document_id, version_number, title, extracted_text, section,
+           metadata, change_type, created_by_user_id, created_at)
+        SELECT 'doc_resource_version_' || md5(d.id || ':1'), d.firm_id, d.id, 1,
+          d.title, d.extracted_text, d.section, d.metadata, 'created',
+          c.created_by_user_id, d.uploaded_at::timestamptz
+        FROM documents d
+        LEFT JOIN cases c ON c.id = d.case_id
+        ON CONFLICT (document_id, version_number) DO NOTHING
+      `);
+      await client.query(`
+        INSERT INTO work_product_versions
+          (id, firm_id, case_id, draft_id, version_number, title, content,
+           revision_lane, change_type, created_by_user_id, created_at)
+        SELECT 'work_product_version_' || md5(d.id || ':1'), c.firm_id, d.case_id, d.id, 1,
+          d.title, d.content,
+          CASE WHEN d.revision_type IN ('Client Revision', 'Client Response') THEN 'client' ELSE 'lawyer' END,
+          'created', COALESCE(d.last_edited_by_user_id, c.created_by_user_id),
+          d.created_at::timestamptz
+        FROM drafts d
+        JOIN cases c ON c.id = d.case_id
+        ON CONFLICT (draft_id, version_number) DO NOTHING
       `);
     },
   },

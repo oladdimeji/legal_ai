@@ -7,6 +7,7 @@ export interface PublicBrowserConfig {
     clientAccounts: boolean;
     firmTeams: boolean;
     privateStorage: boolean;
+    resourceLifecycle: boolean;
   };
 }
 
@@ -19,5 +20,6 @@ export const disabledPublicBrowserConfig: PublicBrowserConfig = {
     clientAccounts: false,
     firmTeams: false,
     privateStorage: false,
+    resourceLifecycle: false,
   },
 };

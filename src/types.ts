@@ -27,6 +27,11 @@ export interface Document {
     | "uploaded" | "scanning" | "extracting" | "needs_ocr"
     | "indexing" | "ready" | "failed" | "cancelled";
   link_origin?: "Manual" | "AI Suggested" | "Starting Input" | "Legacy Link" | null;
+  lifecycle_state?: "active" | "archived" | "deletion_pending";
+  archived_at?: string | null;
+  folder_path?: string;
+  tags?: string[];
+  metadata?: Record<string, unknown>;
 }
 
 export interface DocumentChunk {
@@ -53,6 +58,11 @@ export interface Case {
   objectives_suggested?: boolean;
   updated_at?: string;
   last_activity_at?: string;
+  lifecycle_state?: "active" | "archived" | "deletion_pending";
+  archived_at?: string | null;
+  retention_state?: "standard" | "held";
+  retention_until?: string | null;
+  retention_reason?: string | null;
 }
 
 export interface CaseDocument {
@@ -129,6 +139,22 @@ export interface Draft {
   origin?: string;
   parent_draft_id?: string | null;
   revision_type?: "Lawyer Original" | "Duplicate" | "Client Revision" | "Client Response";
+  lifecycle_state?: "active" | "archived" | "deletion_pending";
+  archived_at?: string | null;
+  last_edited_by_user_id?: string | null;
+}
+
+export interface ResourceVersion {
+  id: string;
+  version_number: number;
+  title: string;
+  content?: string;
+  extracted_text?: string;
+  revision_lane?: "lawyer" | "client";
+  change_type: string;
+  created_by_user_id: string | null;
+  actor_name?: string | null;
+  created_at: string;
 }
 
 export interface MatterIntelligenceRecord {
