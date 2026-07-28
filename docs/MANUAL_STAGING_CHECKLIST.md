@@ -1,5 +1,20 @@
 # Manual Staging Checklist
 
+## Firm memberships, invitations, and Matter assignments
+
+- Back up the staging database and deploy migration 017 with `FEATURE_FIRM_TEAMS=false`. Confirm the migration is additive and that every existing user has one active `firm_admin` membership plus preserved access to every pre-migration Matter in that user's firm.
+- Confirm password login, linked Google sign-in, sessions, Matters, Firm Library, Assistant, Matter Intelligence, Work Product, collaboration, and the legacy `/client/:token` portal continue working. Confirm legacy client tokens are not treated as firm memberships.
+- Create one staging user for each role: `firm_admin`, `lawyer`, `staff`, and `read_only`. Assign the non-admin users to Matter A but not Matter B.
+- Run the full role/action matrix through the browser and direct API calls. Confirm the administrator has firm-wide access; the lawyer can create Matters and manage assigned Matter content/client collaboration; staff can upload/edit assigned content but cannot permanently delete or manage client access, teams, or integrations; read-only can only view assigned content and use authorized downloads.
+- Substitute Matter, document, version, Work Product, thread, message, response, Drive import, and assignment IDs from Matter B, another firm, and an unassigned Matter. Confirm 403/404 responses disclose no names, metadata, links, content, or assignment existence.
+- Create a Matter as a lawyer and confirm `created_by_user_id` and an active creator assignment are committed together. Simulate an assignment-write failure and confirm the Matter insert rolls back.
+- Create invitations for each role and selected Matter assignments. Confirm only a hash is stored, the raw link is returned once, duplicate pending invitations are rejected, expired/revoked/replayed links fail, and acceptance activates exactly one membership and the intended assignments.
+- Suspend and reactivate each non-admin member. Confirm suspension immediately invalidates protected access without deleting data. Confirm an administrator cannot suspend themselves or the final active administrator.
+- Remove a lawyer who owns and is solely assigned to Matters. Select an active replacement and confirm creator ownership and active assignments transfer before the departing assignments are removed; all departing sessions are deleted. Confirm self-removal, final-admin removal, cross-firm replacement, and replacement with the departing member fail.
+- Review application logs, API errors, browser storage, and database rows for absence of invitation tokens, passwords, cookies, confidential Matter data, prompts, document content, extracted text, database URLs, and provider credentials.
+
+Keep `FEATURE_FIRM_TEAMS=false` until every firm-team staging item passes. Disabling the flag hides invitation/team controls while centralized membership and Matter-assignment authorization remains active.
+
 ## Google account linking, sign-in, and Drive
 
 - Back up the staging database and deploy migration 016 with `FEATURE_GOOGLE_DRIVE=false`; confirm existing password signup/login, Matters, Firm Library, Assistant, Matter Intelligence, Work Product, collaboration, and the legacy token Client Portal are unchanged.

@@ -1,5 +1,48 @@
 # Compact Upgrade Progress
 
+## V1 Completion Phase — Firm Memberships, Invitations, Matter Assignments, and Central Authorization
+
+Status: Complete in code; staging gate remains closed.
+
+Implemented:
+
+- Added active/suspended/removed firm memberships with `firm_admin`, `lawyer`, `staff`, and `read_only` roles; expiring hash-only invitations; pending invitation Matter assignments; active/removed Matter assignments; and optional Matter creator ownership.
+- Added one fail-closed route-to-action policy middleware for every authenticated API. Direct resource identifiers resolve through firm/user ownership before the role/assignment decision, and unknown protected actions are denied.
+- Made authenticated sessions require an active membership. Existing single-user firms are backfilled as active administrators, and legacy users retain current Matter access.
+- Made Matter creation and creator assignment one transaction. Added invitation acceptance, expiry, revocation, member activation/suspension, role changes, assignment replacement, and removal with transactional Matter ownership/assignment handoff plus session invalidation.
+- Added a default-hidden monochrome Settings team surface and `/join/:token` invitation acceptance route. No email provider or Gmail scope/control was added.
+
+Schema changes:
+
+- Migration 017 additively creates `firm_memberships`, `firm_invitations`, `firm_invitation_matter_assignments`, and `matter_assignments`, plus scoped uniqueness/status/expiry indexes.
+- Migration 017 additively adds nullable `cases.created_by_user_id`. It does not rename, drop, truncate, reset, or recreate existing production-style data.
+- Rollback compatibility is flag-based: disable `FEATURE_FIRM_TEAMS` to hide team/invitation controls. Retain migration 017 tables and membership/assignment rows because authenticated authorization depends on them; redeploying pre-phase code remains data-compatible because `users.firm_id` and existing routes/tables remain intact.
+
+Dependencies added:
+
+- None.
+
+Feature gate:
+
+- `FEATURE_FIRM_TEAMS=false` remains the exact gate until the firm-team staging checklist passes.
+- The flag controls invitation/team administration exposure. Central membership status and Matter-assignment authorization remains enforced after migration even while the flag is false.
+
+Verification:
+
+- Pre-change `npm ci`: passed; npm reported two existing high-severity advisories.
+- Pre-change `npm run verify`: passed, 115/115 active tests with the environment-gated GovInfo and Google Drive smokes skipped; the existing Vite large-chunk warning remained.
+- Behavioral tests cover the complete role/action matrix, suspension, assigned/unassigned Matters, fail-closed routes, direct-ID substitution, cross-firm not-found behavior, invitation expiry/revocation/acceptance rules, final-admin/self-removal protection, creator assignment, and removal handoff query boundaries.
+- Final `npm run lint`: passed.
+- Final `npm test`: passed, 120/120 active tests; the environment-gated GovInfo and Google Drive live smokes were skipped as designed.
+- Final `npm run build` and `npm run verify`: passed; the existing Vite large-chunk warning remains.
+- Docker build was not required for this authorization/membership phase.
+
+Known limitations:
+
+- Invitation delivery is manual in V1; the administrator copies the one-time link. Gmail sending remains deferred and unavailable.
+- Live PostgreSQL migration application, concurrent administrator lifecycle operations, session invalidation across deployed replicas, and full browser role walkthroughs require staging infrastructure.
+- Google Document AI OCR, CourtListener, and Gmail sending remain deferred and unavailable.
+
 ## V1 Completion Phase — Google Account Linking/Sign-In and Drive
 
 Status: Complete in code; staging gate remains closed.

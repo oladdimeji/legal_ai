@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
-import { Cloud, LogOut, Settings } from "lucide-react";
-import { User } from "../types";
+import { Cloud, Copy, LogOut, Settings, Users } from "lucide-react";
+import { Case, FirmMembership, FirmRole, User } from "../types";
 
 type GoogleConnectionStatus = {
   connected: boolean;
@@ -11,12 +11,18 @@ type GoogleConnectionStatus = {
 
 export default function SettingsView({
   user,
+  membership,
+  matters,
   onLogout,
   googleDriveEnabled = false,
+  firmTeamsEnabled = false,
 }: {
   user: User;
+  membership: FirmMembership;
+  matters: Case[];
   onLogout: () => void;
   googleDriveEnabled?: boolean;
+  firmTeamsEnabled?: boolean;
 }) {
   const [googleStatus, setGoogleStatus] = useState<GoogleConnectionStatus | null>(null);
   const [busy, setBusy] = useState(false);
@@ -87,6 +93,10 @@ export default function SettingsView({
           <button onClick={onLogout} className="flex items-center gap-2 rounded border border-zinc-300 px-4 py-2 text-[10px] font-mono font-bold uppercase hover:border-zinc-900"><LogOut className="h-4 w-4" />Log out</button>
         </div>
 
+        {firmTeamsEnabled && membership.role === "firm_admin" && (
+          <TeamSettings currentUser={user} matters={matters} />
+        )}
+
         {googleDriveEnabled && (
           <section className="space-y-4 rounded border border-zinc-200 p-6">
             <div className="flex items-start justify-between gap-4">
@@ -106,5 +116,135 @@ export default function SettingsView({
         )}
       </div>
     </div>
+  );
+}
+
+type TeamMember = {
+  id: string;
+  user_id: string;
+  name: string;
+  email: string;
+  role: FirmRole;
+  status: "active" | "suspended" | "removed";
+  matter_ids: string[];
+};
+
+type TeamInvitation = {
+  id: string;
+  email: string;
+  role: FirmRole;
+  status: string;
+  expires_at: string;
+};
+
+function TeamSettings({ currentUser, matters }: { currentUser: User; matters: Case[] }) {
+  const [members, setMembers] = useState<TeamMember[]>([]);
+  const [invitations, setInvitations] = useState<TeamInvitation[]>([]);
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState<FirmRole>("lawyer");
+  const [matterIds, setMatterIds] = useState<string[]>([]);
+  const [invitationUrl, setInvitationUrl] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    const response = await fetch("/api/team/members");
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Team could not be loaded.");
+    setMembers(data.members);
+    setInvitations(data.invitations);
+  };
+
+  useEffect(() => { void load().catch((loadError) => setError(loadError.message)); }, []);
+
+  const request = async (url: string, method: string, body?: unknown) => {
+    setBusy(true);
+    setError("");
+    try {
+      const response = await fetch(url, {
+        method,
+        headers: body ? { "Content-Type": "application/json" } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Team update failed.");
+      await load();
+      return data;
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Team update failed.");
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const invite = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const data = await request("/api/team/invitations", "POST", { email, role, matterIds });
+    if (data?.invitationUrl) {
+      setInvitationUrl(`${window.location.origin}${data.invitationUrl}`);
+      setEmail("");
+      setMatterIds([]);
+    }
+  };
+
+  const toggleAssignment = async (member: TeamMember, matterId: string) => {
+    const next = member.matter_ids.includes(matterId)
+      ? member.matter_ids.filter((id) => id !== matterId)
+      : [...member.matter_ids, matterId];
+    await request(`/api/team/members/${member.id}/assignments`, "PUT", { matterIds: next });
+  };
+
+  return (
+    <section className="space-y-5 rounded border border-zinc-200 p-6">
+      <div className="flex items-center gap-2"><Users className="h-4 w-4" /><h3 className="text-sm font-semibold uppercase">Firm team</h3></div>
+      <p className="text-xs leading-relaxed text-zinc-500">Invite firm members, set their role, and assign Matters. Invitation links are shown once for secure delivery outside Exepts.</p>
+      {error && <p role="alert" className="text-xs text-red-700">{error}</p>}
+
+      <form onSubmit={invite} className="space-y-3 border-t border-zinc-100 pt-4">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <input aria-label="Invite email" type="email" required value={email} onChange={(event) => setEmail(event.target.value)} placeholder="colleague@example.com" className="rounded border border-zinc-300 px-3 py-2 text-sm" />
+          <select aria-label="Invite role" value={role} onChange={(event) => setRole(event.target.value as FirmRole)} className="rounded border border-zinc-300 px-3 py-2 text-sm">
+            <option value="firm_admin">Firm admin</option>
+            <option value="lawyer">Lawyer</option>
+            <option value="staff">Staff</option>
+            <option value="read_only">Read only</option>
+          </select>
+        </div>
+        {role !== "firm_admin" && matters.length > 0 && (
+          <fieldset>
+            <legend className="text-[10px] font-mono font-bold uppercase text-zinc-500">Initial Matter assignments</legend>
+            <div className="mt-2 grid gap-2 sm:grid-cols-2">
+              {matters.map((matter) => <label key={matter.id} className="flex items-center gap-2 text-xs"><input type="checkbox" checked={matterIds.includes(matter.id)} onChange={() => setMatterIds((current) => current.includes(matter.id) ? current.filter((id) => id !== matter.id) : [...current, matter.id])} />{matter.name}</label>)}
+            </div>
+          </fieldset>
+        )}
+        <button disabled={busy} className="rounded bg-zinc-950 px-4 py-2 text-[10px] font-mono font-bold uppercase text-white disabled:opacity-50">Create invitation</button>
+      </form>
+
+      {invitationUrl && <div className="rounded border border-zinc-200 bg-zinc-50 p-3"><p className="break-all text-xs">{invitationUrl}</p><button type="button" onClick={() => void navigator.clipboard.writeText(invitationUrl)} className="mt-2 flex items-center gap-1 text-[10px] font-mono font-bold uppercase"><Copy className="h-3 w-3" />Copy link</button></div>}
+
+      <div className="space-y-3 border-t border-zinc-100 pt-4">
+        {members.map((member) => (
+          <article key={member.id} className="rounded border border-zinc-200 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div><p className="text-sm font-semibold">{member.name}</p><p className="text-xs text-zinc-500">{member.email} · {member.status}</p></div>
+              <div className="flex gap-2">
+                <select aria-label={`Role for ${member.name}`} value={member.role} disabled={busy || member.status === "removed"} onChange={(event) => void request(`/api/team/members/${member.id}/role`, "PUT", { role: event.target.value })} className="rounded border border-zinc-300 px-2 py-1 text-xs">
+                  <option value="firm_admin">Firm admin</option><option value="lawyer">Lawyer</option><option value="staff">Staff</option><option value="read_only">Read only</option>
+                </select>
+                {member.user_id !== currentUser.id && member.status !== "removed" && <>
+                  <button type="button" disabled={busy} onClick={() => void request(`/api/team/members/${member.id}/status`, "PUT", { status: member.status === "active" ? "suspended" : "active" })} className="rounded border border-zinc-300 px-2 py-1 text-[9px] font-mono font-bold uppercase">{member.status === "active" ? "Suspend" : "Activate"}</button>
+                  <button type="button" disabled={busy} onClick={() => confirm(`Remove ${member.name}? Their Matter ownership will transfer to you.`) && void request(`/api/team/members/${member.id}`, "DELETE", { reassignToUserId: currentUser.id })} className="rounded border border-zinc-300 px-2 py-1 text-[9px] font-mono font-bold uppercase">Remove</button>
+                </>}
+              </div>
+            </div>
+            {member.role !== "firm_admin" && member.status !== "removed" && <div className="mt-3 grid gap-2 sm:grid-cols-2">{matters.map((matter) => <label key={matter.id} className="flex items-center gap-2 text-xs"><input type="checkbox" checked={member.matter_ids.includes(matter.id)} onChange={() => void toggleAssignment(member, matter.id)} />{matter.name}</label>)}</div>}
+          </article>
+        ))}
+      </div>
+
+      {invitations.some((invitation) => invitation.status === "pending") && <div className="border-t border-zinc-100 pt-4"><p className="text-[10px] font-mono font-bold uppercase text-zinc-500">Pending invitations</p>{invitations.filter((invitation) => invitation.status === "pending").map((invitation) => <div key={invitation.id} className="mt-2 flex items-center justify-between gap-3 text-xs"><span>{invitation.email} · {invitation.role.replace("_", " ")}</span><button disabled={busy} onClick={() => void request(`/api/team/invitations/${invitation.id}`, "DELETE")} className="font-mono text-[9px] font-bold uppercase">Revoke</button></div>)}</div>}
+    </section>
   );
 }

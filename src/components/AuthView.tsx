@@ -1,10 +1,10 @@
 import React, { useState } from "react";
 import { Link } from "react-router-dom";
-import { Firm, User } from "../types";
+import { Firm, FirmMembership, User } from "../types";
 
 interface AuthViewProps {
   mode: "login" | "signup";
-  onAuthenticated: (account: { user: User; firm: Firm }) => void;
+  onAuthenticated: (account: { user: User; firm: Firm; membership: FirmMembership }) => void;
   googleDriveEnabled: boolean;
 }
 

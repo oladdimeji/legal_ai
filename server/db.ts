@@ -8,12 +8,26 @@ import {
   migrateLegacyOwnerFromEnvironment,
 } from "./legacyMigration.js";
 import { assertGoogleLinkAllowed } from "./googleAuthorization.js";
+import type {
+  AuthorizationAction,
+  AuthorizationPrincipal,
+  AuthorizationRoute,
+  FirmRole,
+  MemberStatus,
+} from "./authorization.js";
+import { assertMemberRemovalAllowed } from "./authorization.js";
 
 const { Pool } = pg;
 
 export interface OwnershipContext {
   userId: string;
   firmId: string;
+}
+
+export interface SessionAccount {
+  user: { id: string; firm_id: string; name: string; email: string };
+  firm: { id: string; name: string };
+  membership: { id: string; role: FirmRole; status: MemberStatus };
 }
 
 // Lazy initialization of Pool
@@ -278,6 +292,12 @@ class DatabaseService {
         [userId, firmId, name, email, passwordHash, now]
       );
       await client.query(
+        `INSERT INTO firm_memberships
+          (id, firm_id, user_id, role, status, activated_at, created_at, updated_at)
+         VALUES ($1, $2, $3, 'firm_admin', 'active', $4, $4, $4)`,
+        [`membership_${randomUUID()}`, firmId, userId, now]
+      );
+      await client.query(
         `INSERT INTO sessions (token_hash, user_id, created_at, expires_at, last_used_at)
          VALUES ($1, $2, $3, $4, $3)`,
         [tokenHash, userId, now, expiresAt]
@@ -303,9 +323,11 @@ class DatabaseService {
     password_hash: string;
   } | null> {
     const rows = await this.query(
-      `SELECT id, firm_id, name, email, password_hash
-       FROM users
-       WHERE LOWER(BTRIM(email)) = $1 AND password_hash IS NOT NULL`,
+      `SELECT u.id, u.firm_id, u.name, u.email, u.password_hash
+       FROM users u
+       JOIN firm_memberships fm
+         ON fm.user_id = u.id AND fm.firm_id = u.firm_id AND fm.status = 'active'
+       WHERE LOWER(BTRIM(u.email)) = $1 AND u.password_hash IS NOT NULL`,
       [email]
     );
     return rows[0] || null;
@@ -320,20 +342,20 @@ class DatabaseService {
     );
   }
 
-  public async getSessionAccount(tokenHash: string): Promise<{
-    user: { id: string; firm_id: string; name: string; email: string };
-    firm: { id: string; name: string };
-  } | null> {
+  public async getSessionAccount(tokenHash: string): Promise<SessionAccount | null> {
     const now = new Date().toISOString();
     const rows = await this.query(
       `UPDATE sessions s
        SET last_used_at = $2
        FROM users u
        JOIN firm f ON f.id = u.firm_id
+       JOIN firm_memberships fm
+         ON fm.user_id = u.id AND fm.firm_id = u.firm_id AND fm.status = 'active'
        WHERE s.token_hash = $1
          AND s.user_id = u.id
          AND s.expires_at > $2
-       RETURNING u.id, u.firm_id, u.name, u.email, f.name AS firm_name`,
+       RETURNING u.id, u.firm_id, u.name, u.email, f.name AS firm_name,
+         fm.id AS membership_id, fm.role, fm.status AS membership_status`,
       [tokenHash, now]
     );
     if (!rows[0]) return null;
@@ -345,6 +367,11 @@ class DatabaseService {
         email: rows[0].email,
       },
       firm: { id: rows[0].firm_id, name: rows[0].firm_name },
+      membership: {
+        id: rows[0].membership_id,
+        role: rows[0].role,
+        status: rows[0].membership_status,
+      },
     };
   }
 
@@ -352,18 +379,536 @@ class DatabaseService {
     await this.query("DELETE FROM sessions WHERE token_hash = $1", [tokenHash]);
   }
 
+  public async resolveAuthorization(input: {
+    principal: AuthorizationPrincipal;
+    route: AuthorizationRoute;
+  }): Promise<{ exists: boolean; matterId: string | null; assigned: boolean; action?: AuthorizationAction }> {
+    const { principal, route } = input;
+    let matterId = route.matterId || null;
+    let exists = true;
+
+    if (route.reference) {
+      const definitions: Record<AuthorizationRoute["reference"]["type"], string> = {
+        thread: `SELECT t.case_id FROM threads t
+          LEFT JOIN cases c ON c.id = t.case_id
+          WHERE t.id = $1 AND t.user_id = $2
+            AND (t.case_id IS NULL OR c.firm_id = $3)`,
+        message: `SELECT t.case_id FROM messages m
+          JOIN threads t ON t.id = m.thread_id
+          LEFT JOIN cases c ON c.id = t.case_id
+          WHERE m.id = $1 AND t.user_id = $2
+            AND (t.case_id IS NULL OR c.firm_id = $3)`,
+        draft: `SELECT d.case_id FROM drafts d
+          JOIN cases c ON c.id = d.case_id
+          WHERE d.id = $1 AND c.firm_id = $3`,
+        document: `SELECT CASE
+            WHEN $4::text IS NOT NULL AND d.case_id IS NULL THEN $4::text
+            ELSE d.case_id
+          END AS case_id
+          FROM documents d
+          WHERE d.id = $1 AND d.firm_id = $3
+            AND (
+              $4::text IS NULL OR d.case_id = $4::text OR (
+                d.case_id IS NULL AND EXISTS (
+                  SELECT 1 FROM case_documents cd
+                  JOIN cases c ON c.id = cd.case_id
+                  WHERE cd.case_id = $4::text AND cd.document_id = d.id AND c.firm_id = $3
+                )
+              )
+            )`,
+        version: `SELECT v.case_id FROM document_versions v
+          WHERE v.id = $1 AND v.firm_id = $3`,
+        drive_import: `SELECT i.case_id FROM drive_file_imports i
+          WHERE i.id = $1 AND i.firm_id = $3 AND i.user_id = $2`,
+        response: `SELECT cr.case_id FROM client_responses r
+          JOIN collaboration_requests cr ON cr.id = r.request_id
+          JOIN cases c ON c.id = cr.case_id
+          WHERE r.id = $1 AND c.firm_id = $3`,
+      };
+      const referenceParams = [
+        route.reference.id,
+        principal.userId,
+        principal.firmId,
+        ...(route.reference.type === "document" ? [route.matterId || null] : []),
+      ];
+      const rows = await this.query(definitions[route.reference.type], referenceParams);
+      exists = rows.length === 1;
+      const referencedMatterId = rows[0]?.case_id || null;
+      if (exists && matterId && referencedMatterId !== matterId) exists = false;
+      matterId = referencedMatterId;
+    } else if (matterId) {
+      const rows = await this.query(
+        "SELECT id FROM cases WHERE id = $1 AND firm_id = $2",
+        [matterId, principal.firmId]
+      );
+      exists = rows.length === 1;
+    }
+
+    const assignment = matterId && exists
+      ? await this.query(
+        `SELECT 1 FROM matter_assignments
+         WHERE firm_id = $1 AND case_id = $2 AND user_id = $3 AND status = 'active'`,
+        [principal.firmId, matterId, principal.userId]
+      )
+      : [];
+    let action: AuthorizationAction | undefined;
+    if (route.reference?.type === "document" || route.reference?.type === "version") {
+      if (matterId) {
+        if (route.action === "library.view" || route.action === "matter.download") {
+          action = route.action === "matter.download" ? "matter.download" : "matter.view";
+        } else if (route.action === "library.delete") {
+          action = "matter.content.delete";
+        } else if (route.action === "matter.content.write") {
+          action = "matter.content.write";
+        }
+      } else {
+        if (route.action === "matter.download") action = "library.view";
+        if (route.action === "matter.content.write") action = "library.write";
+      }
+    }
+    return {
+      exists,
+      matterId,
+      assigned: principal.role === "firm_admin" || assignment.length === 1,
+      action,
+    };
+  }
+
+  public async getTeam(context: OwnershipContext): Promise<{ members: any[]; invitations: any[] }> {
+    const [members, invitations] = await Promise.all([
+      this.query(
+        `SELECT fm.id, fm.user_id, u.name, u.email, fm.role, fm.status,
+           fm.activated_at, fm.suspended_at, fm.removed_at,
+           COALESCE(
+             JSONB_AGG(ma.case_id ORDER BY ma.case_id)
+               FILTER (WHERE ma.case_id IS NOT NULL AND ma.status = 'active'),
+             '[]'::jsonb
+           ) AS matter_ids
+         FROM firm_memberships fm
+         JOIN users u ON u.id = fm.user_id
+         LEFT JOIN matter_assignments ma
+           ON ma.firm_id = fm.firm_id AND ma.user_id = fm.user_id
+         WHERE fm.firm_id = $1
+         GROUP BY fm.id, u.id
+         ORDER BY fm.created_at`,
+        [context.firmId]
+      ),
+      this.query(
+        `UPDATE firm_invitations
+         SET status = 'expired', updated_at = NOW()
+         WHERE firm_id = $1 AND status = 'pending' AND expires_at <= NOW()
+         RETURNING id`,
+        [context.firmId]
+      ).then(() => this.query(
+        `SELECT id, email, role, status, expires_at, accepted_at, revoked_at, created_at
+         FROM firm_invitations WHERE firm_id = $1 ORDER BY created_at DESC`,
+        [context.firmId]
+      )),
+    ]);
+    return { members, invitations };
+  }
+
+  public async createFirmInvitation(input: {
+    context: OwnershipContext;
+    email: string;
+    role: FirmRole;
+    tokenHash: string;
+    expiresAt: string;
+    matterIds: string[];
+  }): Promise<any> {
+    await this.ensureSchema();
+    const client = await getPool().connect();
+    const id = `invitation_${randomUUID()}`;
+    try {
+      await client.query("BEGIN");
+      const duplicateMember = await client.query(
+        `SELECT 1 FROM firm_memberships fm JOIN users u ON u.id = fm.user_id
+         WHERE fm.firm_id = $1 AND LOWER(BTRIM(u.email)) = $2 AND fm.status <> 'removed'`,
+        [input.context.firmId, input.email]
+      );
+      if (duplicateMember.rowCount) throw new Error("This person is already a firm member");
+      const uniqueMatterIds = Array.from(new Set(input.matterIds));
+      if (uniqueMatterIds.length) {
+        const matters = await client.query(
+          "SELECT id FROM cases WHERE firm_id = $1 AND id = ANY($2::text[])",
+          [input.context.firmId, uniqueMatterIds]
+        );
+        if (matters.rowCount !== uniqueMatterIds.length) throw new Error("One or more Matter assignments are unavailable");
+      }
+      const rows = await client.query(
+        `INSERT INTO firm_invitations
+          (id, firm_id, email, normalized_email, role, token_hash, status,
+           invited_by_user_id, expires_at, created_at, updated_at)
+         VALUES ($1, $2, $3, $3, $4, $5, 'pending', $6, $7, NOW(), NOW())
+         RETURNING id, email, role, status, expires_at, created_at`,
+        [id, input.context.firmId, input.email, input.role, input.tokenHash,
+          input.context.userId, input.expiresAt]
+      );
+      for (const matterId of uniqueMatterIds) {
+        await client.query(
+          "INSERT INTO firm_invitation_matter_assignments(invitation_id, case_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+          [id, matterId]
+        );
+      }
+      await client.query("COMMIT");
+      return rows.rows[0];
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async getInvitationForAcceptance(tokenHash: string): Promise<any | null> {
+    await this.query(
+      `UPDATE firm_invitations SET status = 'expired', updated_at = NOW()
+       WHERE token_hash = $1 AND status = 'pending' AND expires_at <= NOW()`,
+      [tokenHash]
+    );
+    const rows = await this.query(
+      `SELECT fi.id, fi.firm_id, fi.email, fi.normalized_email, fi.role, fi.status,
+         fi.expires_at, f.name AS firm_name
+       FROM firm_invitations fi JOIN firm f ON f.id = fi.firm_id
+       WHERE fi.token_hash = $1`,
+      [tokenHash]
+    );
+    return rows[0] || null;
+  }
+
+  public async getInvitationUserCredential(normalizedEmail: string): Promise<any | null> {
+    const rows = await this.query(
+      `SELECT id, firm_id, name, email, password_hash FROM users
+       WHERE LOWER(BTRIM(email)) = $1`,
+      [normalizedEmail]
+    );
+    return rows[0] || null;
+  }
+
+  public async acceptFirmInvitation(input: {
+    tokenHash: string;
+    name: string;
+    passwordHash: string | null;
+    existingUserId: string | null;
+  }): Promise<{ userId: string; firmId: string }> {
+    await this.ensureSchema();
+    const client = await getPool().connect();
+    try {
+      await client.query("BEGIN");
+      const invitationResult = await client.query(
+        `SELECT * FROM firm_invitations
+         WHERE token_hash = $1 AND status = 'pending' AND expires_at > NOW()
+         FOR UPDATE`,
+        [input.tokenHash]
+      );
+      const invitation = invitationResult.rows[0];
+      if (!invitation) throw new Error("Invitation is unavailable or expired");
+      let userId = input.existingUserId;
+      if (userId) {
+        const existing = await client.query(
+          "SELECT id, firm_id FROM users WHERE id = $1 AND LOWER(BTRIM(email)) = $2",
+          [userId, invitation.normalized_email]
+        );
+        if (existing.rowCount !== 1 || existing.rows[0].firm_id !== invitation.firm_id) {
+          throw new Error("Existing accounts cannot be moved between firms");
+        }
+      } else {
+        if (!input.passwordHash || !input.name) throw new Error("Name and password are required");
+        userId = `user_${randomUUID()}`;
+        const now = new Date().toISOString();
+        await client.query(
+          `INSERT INTO users (id, firm_id, name, email, password_hash, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $6)`,
+          [userId, invitation.firm_id, input.name, invitation.normalized_email, input.passwordHash, now]
+        );
+      }
+      const membershipId = `membership_${randomUUID()}`;
+      await client.query(
+        `INSERT INTO firm_memberships
+          (id, firm_id, user_id, role, status, invited_by_user_id, activated_at, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, 'active', $5, NOW(), NOW(), NOW())
+         ON CONFLICT (firm_id, user_id) DO UPDATE SET
+           role = EXCLUDED.role, status = 'active', activated_at = NOW(),
+           suspended_at = NULL, removed_at = NULL, updated_at = NOW()`,
+        [membershipId, invitation.firm_id, userId, invitation.role, invitation.invited_by_user_id]
+      );
+      await client.query(
+        `INSERT INTO matter_assignments
+          (id, firm_id, case_id, user_id, status, assigned_by_user_id, assigned_at, updated_at)
+         SELECT 'assignment_' || md5(fima.case_id || ':' || $2), $3, fima.case_id, $2,
+           'active', $4, NOW(), NOW()
+         FROM firm_invitation_matter_assignments fima
+         WHERE fima.invitation_id = $1
+         ON CONFLICT (case_id, user_id) DO UPDATE SET
+           status = 'active', removed_at = NULL, assigned_by_user_id = EXCLUDED.assigned_by_user_id,
+           assigned_at = NOW(), updated_at = NOW()`,
+        [invitation.id, userId, invitation.firm_id, invitation.invited_by_user_id]
+      );
+      await client.query(
+        `UPDATE firm_invitations SET status = 'accepted', accepted_by_user_id = $2,
+           accepted_at = NOW(), updated_at = NOW()
+         WHERE id = $1`,
+        [invitation.id, userId]
+      );
+      await client.query("COMMIT");
+      return { userId, firmId: invitation.firm_id };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async setMemberStatus(input: {
+    context: OwnershipContext;
+    memberId: string;
+    status: "active" | "suspended";
+  }): Promise<any> {
+    await this.ensureSchema();
+    const client = await getPool().connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT id FROM firm WHERE id = $1 FOR UPDATE", [input.context.firmId]);
+      const member = await client.query(
+        `SELECT id, user_id, role, status FROM firm_memberships
+         WHERE id = $1 AND firm_id = $2 AND status <> 'removed' FOR UPDATE`,
+        [input.memberId, input.context.firmId]
+      );
+      if (member.rowCount !== 1) throw new Error("Firm member not found");
+      if (input.status === "suspended") {
+        if (member.rows[0].user_id === input.context.userId) {
+          throw new Error("Administrators cannot suspend themselves");
+        }
+        if (member.rows[0].role === "firm_admin") {
+          const admins = await client.query(
+            `SELECT COUNT(*)::int AS count FROM firm_memberships
+             WHERE firm_id = $1 AND role = 'firm_admin' AND status = 'active'`,
+            [input.context.firmId]
+          );
+          if (Number(admins.rows[0].count) <= 1) {
+            throw new Error("The final active firm administrator cannot be suspended");
+          }
+        }
+      }
+      const rows = await client.query(
+        `UPDATE firm_memberships SET status = $1,
+           activated_at = CASE WHEN $1 = 'active' THEN COALESCE(activated_at, NOW()) ELSE activated_at END,
+           suspended_at = CASE WHEN $1 = 'suspended' THEN NOW() ELSE NULL END,
+           updated_at = NOW()
+         WHERE id = $2 AND firm_id = $3
+         RETURNING id, user_id, role, status`,
+        [input.status, input.memberId, input.context.firmId]
+      );
+      await client.query("COMMIT");
+      return rows.rows[0];
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async setMemberRole(input: {
+    context: OwnershipContext;
+    memberId: string;
+    role: FirmRole;
+  }): Promise<any> {
+    const current = await this.query(
+      "SELECT user_id, role FROM firm_memberships WHERE id = $1 AND firm_id = $2 AND status <> 'removed'",
+      [input.memberId, input.context.firmId]
+    );
+    if (!current[0]) throw new Error("Firm member not found");
+    if (current[0].role === "firm_admin" && input.role !== "firm_admin") {
+      const admins = await this.query(
+        `SELECT COUNT(*)::int AS count FROM firm_memberships
+         WHERE firm_id = $1 AND role = 'firm_admin' AND status = 'active'`,
+        [input.context.firmId]
+      );
+      if (Number(admins[0]?.count || 0) <= 1) {
+        throw new Error("The final active firm administrator cannot be changed");
+      }
+    }
+    const rows = await this.query(
+      `UPDATE firm_memberships SET role = $1, updated_at = NOW()
+       WHERE id = $2 AND firm_id = $3 AND status <> 'removed'
+       RETURNING id, user_id, role, status`,
+      [input.role, input.memberId, input.context.firmId]
+    );
+    return rows[0];
+  }
+
+  public async revokeFirmInvitation(invitationId: string, context: OwnershipContext): Promise<boolean> {
+    const rows = await this.query(
+      `UPDATE firm_invitations SET status = 'revoked', revoked_at = NOW(), updated_at = NOW()
+       WHERE id = $1 AND firm_id = $2 AND status = 'pending'
+       RETURNING id`,
+      [invitationId, context.firmId]
+    );
+    return rows.length === 1;
+  }
+
+  public async replaceMatterAssignments(input: {
+    context: OwnershipContext;
+    memberId: string;
+    matterIds: string[];
+  }): Promise<string[]> {
+    await this.ensureSchema();
+    const client = await getPool().connect();
+    const unique = Array.from(new Set(input.matterIds));
+    try {
+      await client.query("BEGIN");
+      const member = await client.query(
+        "SELECT user_id FROM firm_memberships WHERE id = $1 AND firm_id = $2 AND status <> 'removed' FOR UPDATE",
+        [input.memberId, input.context.firmId]
+      );
+      if (member.rowCount !== 1) throw new Error("Firm member not found");
+      const matters = unique.length
+        ? await client.query("SELECT id FROM cases WHERE firm_id = $1 AND id = ANY($2::text[])", [input.context.firmId, unique])
+        : { rowCount: 0 };
+      if (matters.rowCount !== unique.length) throw new Error("One or more Matters are unavailable");
+      await client.query(
+        `UPDATE matter_assignments SET status = 'removed', removed_at = NOW(), updated_at = NOW()
+         WHERE firm_id = $1 AND user_id = $2 AND status = 'active'
+           AND NOT (case_id = ANY($3::text[]))`,
+        [input.context.firmId, member.rows[0].user_id, unique]
+      );
+      for (const caseId of unique) {
+        await client.query(
+          `INSERT INTO matter_assignments
+            (id, firm_id, case_id, user_id, status, assigned_by_user_id, assigned_at, updated_at)
+           VALUES ($1, $2, $3, $4, 'active', $5, NOW(), NOW())
+           ON CONFLICT (case_id, user_id) DO UPDATE SET
+             status = 'active', removed_at = NULL, assigned_by_user_id = EXCLUDED.assigned_by_user_id,
+             assigned_at = NOW(), updated_at = NOW()`,
+          [`assignment_${randomUUID()}`, input.context.firmId, caseId, member.rows[0].user_id, input.context.userId]
+        );
+      }
+      await client.query("COMMIT");
+      return unique;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async removeMember(input: {
+    context: OwnershipContext;
+    memberId: string;
+    reassignToUserId: string;
+  }): Promise<void> {
+    await this.ensureSchema();
+    const client = await getPool().connect();
+    try {
+      await client.query("BEGIN");
+      const member = await client.query(
+        `SELECT * FROM firm_memberships
+         WHERE id = $1 AND firm_id = $2 AND status <> 'removed' FOR UPDATE`,
+        [input.memberId, input.context.firmId]
+      );
+      if (member.rowCount !== 1) throw new Error("Firm member not found");
+      const replacement = await client.query(
+        `SELECT fm.user_id FROM firm_memberships fm
+         WHERE fm.firm_id = $1 AND fm.user_id = $2 AND fm.status = 'active'`,
+        [input.context.firmId, input.reassignToUserId]
+      );
+      const admins = await client.query(
+        `SELECT COUNT(*)::int AS count FROM firm_memberships
+         WHERE firm_id = $1 AND role = 'firm_admin' AND status = 'active'`,
+        [input.context.firmId]
+      );
+      assertMemberRemovalAllowed({
+        targetUserId: member.rows[0].user_id,
+        actingUserId: input.context.userId,
+        replacementUserId: input.reassignToUserId,
+        targetRole: member.rows[0].role,
+        activeAdminCount: Number(admins.rows[0].count),
+        replacementActive: replacement.rowCount === 1,
+      });
+      const ownedOrAssigned = await client.query(
+        `SELECT DISTINCT c.id FROM cases c
+         LEFT JOIN matter_assignments ma
+           ON ma.case_id = c.id AND ma.user_id = $2 AND ma.status = 'active'
+         WHERE c.firm_id = $1 AND (c.created_by_user_id = $2 OR ma.user_id IS NOT NULL)`,
+        [input.context.firmId, member.rows[0].user_id]
+      );
+      for (const matter of ownedOrAssigned.rows) {
+        await client.query(
+          `INSERT INTO matter_assignments
+            (id, firm_id, case_id, user_id, status, assigned_by_user_id, assigned_at, updated_at)
+           VALUES ($1, $2, $3, $4, 'active', $5, NOW(), NOW())
+           ON CONFLICT (case_id, user_id) DO UPDATE SET status = 'active', removed_at = NULL, updated_at = NOW()`,
+          [`assignment_${randomUUID()}`, input.context.firmId, matter.id,
+            input.reassignToUserId, input.context.userId]
+        );
+      }
+      await client.query(
+        `UPDATE cases SET created_by_user_id = $1
+         WHERE firm_id = $2 AND created_by_user_id = $3`,
+        [input.reassignToUserId, input.context.firmId, member.rows[0].user_id]
+      );
+      await client.query(
+        `UPDATE matter_assignments SET status = 'removed', removed_at = NOW(), updated_at = NOW()
+         WHERE firm_id = $1 AND user_id = $2 AND status = 'active'`,
+        [input.context.firmId, member.rows[0].user_id]
+      );
+      await client.query(
+        `UPDATE firm_memberships SET status = 'removed', removed_at = NOW(),
+           removed_by_user_id = $1, updated_at = NOW()
+         WHERE id = $2 AND firm_id = $3`,
+        [input.context.userId, input.memberId, input.context.firmId]
+      );
+      await client.query(
+        `DELETE FROM sessions WHERE user_id = $1`,
+        [member.rows[0].user_id]
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   public async getCases(context: OwnershipContext): Promise<Case[]> {
     return await this.query(
-      "SELECT * FROM cases WHERE firm_id = $1 ORDER BY COALESCE(last_activity_at, created_at) DESC",
-      [context.firmId]
+      `SELECT c.* FROM cases c
+       JOIN firm_memberships fm
+         ON fm.firm_id = c.firm_id AND fm.user_id = $2 AND fm.status = 'active'
+       WHERE c.firm_id = $1
+         AND (
+           fm.role = 'firm_admin'
+           OR EXISTS (
+             SELECT 1 FROM matter_assignments ma
+             WHERE ma.firm_id = c.firm_id AND ma.case_id = c.id
+               AND ma.user_id = $2 AND ma.status = 'active'
+           )
+         )
+       ORDER BY COALESCE(c.last_activity_at, c.created_at) DESC`,
+      [context.firmId, context.userId]
     );
   }
 
   public async getCaseById(id: string, context: OwnershipContext): Promise<Case | undefined> {
-    const rows = await this.query("SELECT * FROM cases WHERE id = $1 AND firm_id = $2", [
-      id,
-      context.firmId,
-    ]);
+    const rows = await this.query(
+      `SELECT c.* FROM cases c
+       JOIN firm_memberships fm
+         ON fm.firm_id = c.firm_id AND fm.user_id = $3 AND fm.status = 'active'
+       WHERE c.id = $1 AND c.firm_id = $2
+         AND (
+           fm.role = 'firm_admin'
+           OR EXISTS (
+             SELECT 1 FROM matter_assignments ma
+             WHERE ma.firm_id = c.firm_id AND ma.case_id = c.id
+               AND ma.user_id = $3 AND ma.status = 'active'
+           )
+         )`,
+      [id, context.firmId, context.userId]
+    );
     return rows[0];
   }
 
@@ -376,13 +921,36 @@ class DatabaseService {
     const caseId = `case_${randomUUID()}`;
     const createdAt = new Date().toISOString();
 
-    await this.query(
-      `INSERT INTO cases
-        (id, firm_id, name, description, created_at, status, client_name, client_email,
-         updated_at, last_activity_at)
-       VALUES ($1, $2, $3, $4, $5, 'Open', $6, $7, $5, $5)`,
-      [caseId, context.firmId, name, description, createdAt, details.clientName || null, details.clientEmail || null]
-    );
+    await this.ensureSchema();
+    const client = await getPool().connect();
+    try {
+      await client.query("BEGIN");
+      const inserted = await client.query(
+        `INSERT INTO cases
+          (id, firm_id, name, description, created_at, status, client_name, client_email,
+           updated_at, last_activity_at, created_by_user_id)
+         SELECT $1, fm.firm_id, $3, $4, $5, 'Open', $6, $7, $5, $5, fm.user_id
+         FROM firm_memberships fm
+         WHERE fm.firm_id = $2 AND fm.user_id = $8 AND fm.status = 'active'
+           AND fm.role IN ('firm_admin', 'lawyer')
+         RETURNING id`,
+        [caseId, context.firmId, name, description, createdAt, details.clientName || null,
+          details.clientEmail || null, context.userId]
+      );
+      if (inserted.rowCount !== 1) throw new Error("Matter creation is not authorized");
+      await client.query(
+        `INSERT INTO matter_assignments
+          (id, firm_id, case_id, user_id, status, assigned_by_user_id, assigned_at, updated_at)
+         VALUES ($1, $2, $3, $4, 'active', $4, $5, $5)`,
+        [`assignment_${randomUUID()}`, context.firmId, caseId, context.userId, createdAt]
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
 
     const newCase: Case = {
       id: caseId,
@@ -1223,6 +1791,17 @@ class DatabaseService {
        WHERE d.firm_id = $1
          AND d.is_generated_draft_duplicate = FALSE
          AND EXISTS (SELECT 1 FROM cases c WHERE c.id = $2 AND c.firm_id = $1)
+         AND EXISTS (
+           SELECT 1 FROM firm_memberships fm
+           WHERE fm.firm_id = $1 AND fm.user_id = $3 AND fm.status = 'active'
+             AND (
+               fm.role = 'firm_admin' OR EXISTS (
+                 SELECT 1 FROM matter_assignments ma
+                 WHERE ma.firm_id = $1 AND ma.case_id = $2
+                   AND ma.user_id = $3 AND ma.status = 'active'
+               )
+             )
+         )
          AND (
            d.case_id = $2 OR (
              d.case_id IS NULL AND EXISTS (
@@ -1232,7 +1811,7 @@ class DatabaseService {
            )
          )
        ORDER BY d.uploaded_at DESC`,
-      [context.firmId, caseId]
+      [context.firmId, caseId, context.userId]
     );
   }
 
@@ -1246,6 +1825,17 @@ class DatabaseService {
           `SELECT d.* FROM documents d
            WHERE d.id = $1 AND d.firm_id = $2 AND d.is_generated_draft_duplicate = FALSE
              AND EXISTS (SELECT 1 FROM cases c WHERE c.id = $3 AND c.firm_id = $2)
+             AND EXISTS (
+               SELECT 1 FROM firm_memberships fm
+               WHERE fm.firm_id = $2 AND fm.user_id = $4 AND fm.status = 'active'
+                 AND (
+                   fm.role = 'firm_admin' OR EXISTS (
+                     SELECT 1 FROM matter_assignments ma
+                     WHERE ma.firm_id = $2 AND ma.case_id = $3
+                       AND ma.user_id = $4 AND ma.status = 'active'
+                   )
+                 )
+             )
              AND (
                d.case_id = $3 OR (
                  d.case_id IS NULL AND EXISTS (
@@ -1254,7 +1844,7 @@ class DatabaseService {
                  )
                )
              )`,
-          [id, context.firmId, caseId]
+          [id, context.firmId, caseId, context.userId]
         )
       : await this.query(
           `SELECT * FROM documents
@@ -1568,10 +2158,20 @@ class DatabaseService {
        FROM document_versions v
        WHERE v.firm_id = $1 AND v.upload_state = 'Uploaded'
          AND (v.case_id IS NULL OR EXISTS (
-           SELECT 1 FROM cases c WHERE c.id = v.case_id AND c.firm_id = $1
+           SELECT 1 FROM cases c
+           JOIN firm_memberships fm
+             ON fm.firm_id = c.firm_id AND fm.user_id = $2 AND fm.status = 'active'
+           WHERE c.id = v.case_id AND c.firm_id = $1
+             AND (
+               fm.role = 'firm_admin' OR EXISTS (
+                 SELECT 1 FROM matter_assignments ma
+                 WHERE ma.firm_id = $1 AND ma.case_id = c.id
+                   AND ma.user_id = $2 AND ma.status = 'active'
+               )
+             )
          ))
        ORDER BY v.created_at DESC`,
-      [context.firmId],
+      [context.firmId, context.userId],
     );
   }
 
@@ -1586,7 +2186,17 @@ class DatabaseService {
        WHERE i.firm_id = $1 AND i.user_id = $2 AND i.case_id IS NOT DISTINCT FROM $3
          AND (
            i.case_id IS NULL OR EXISTS (
-             SELECT 1 FROM cases c WHERE c.id = i.case_id AND c.firm_id = $1
+             SELECT 1 FROM cases c
+             JOIN firm_memberships fm
+               ON fm.firm_id = c.firm_id AND fm.user_id = $2 AND fm.status = 'active'
+             WHERE c.id = i.case_id AND c.firm_id = $1
+               AND (
+                 fm.role = 'firm_admin' OR EXISTS (
+                   SELECT 1 FROM matter_assignments ma
+                   WHERE ma.firm_id = $1 AND ma.case_id = c.id
+                     AND ma.user_id = $2 AND ma.status = 'active'
+                 )
+               )
            )
          )
        ORDER BY i.updated_at DESC`,
@@ -1603,7 +2213,17 @@ class DatabaseService {
        WHERE i.id = $1 AND i.firm_id = $2 AND i.user_id = $3
          AND (
            i.case_id IS NULL OR EXISTS (
-             SELECT 1 FROM cases c WHERE c.id = i.case_id AND c.firm_id = $2
+             SELECT 1 FROM cases c
+             JOIN firm_memberships fm
+               ON fm.firm_id = c.firm_id AND fm.user_id = $3 AND fm.status = 'active'
+             WHERE c.id = i.case_id AND c.firm_id = $2
+               AND (
+                 fm.role = 'firm_admin' OR EXISTS (
+                   SELECT 1 FROM matter_assignments ma
+                   WHERE ma.firm_id = $2 AND ma.case_id = c.id
+                     AND ma.user_id = $3 AND ma.status = 'active'
+                 )
+               )
            )
          )`,
       [importId, context.firmId, context.userId],
@@ -2009,7 +2629,17 @@ class DatabaseService {
        WHERE t.user_id = $1
          AND (
            t.case_id IS NULL OR EXISTS (
-             SELECT 1 FROM cases c WHERE c.id = t.case_id AND c.firm_id = $2
+             SELECT 1 FROM cases c
+             JOIN firm_memberships fm
+               ON fm.firm_id = c.firm_id AND fm.user_id = $1 AND fm.status = 'active'
+             WHERE c.id = t.case_id AND c.firm_id = $2
+               AND (
+                 fm.role = 'firm_admin' OR EXISTS (
+                   SELECT 1 FROM matter_assignments ma
+                   WHERE ma.firm_id = $2 AND ma.case_id = c.id
+                     AND ma.user_id = $1 AND ma.status = 'active'
+                 )
+               )
            )
          )
        GROUP BY t.id
@@ -2024,7 +2654,17 @@ class DatabaseService {
        WHERE t.id = $1 AND t.user_id = $2
          AND (
            t.case_id IS NULL OR EXISTS (
-             SELECT 1 FROM cases c WHERE c.id = t.case_id AND c.firm_id = $3
+             SELECT 1 FROM cases c
+             JOIN firm_memberships fm
+               ON fm.firm_id = c.firm_id AND fm.user_id = $2 AND fm.status = 'active'
+             WHERE c.id = t.case_id AND c.firm_id = $3
+               AND (
+                 fm.role = 'firm_admin' OR EXISTS (
+                   SELECT 1 FROM matter_assignments ma
+                   WHERE ma.firm_id = $3 AND ma.case_id = c.id
+                     AND ma.user_id = $2 AND ma.status = 'active'
+                 )
+               )
            )
          )`,
       [id, context.userId, context.firmId]

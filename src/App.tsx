@@ -4,6 +4,7 @@ import AssistantView from "./components/AssistantView";
 import AuthView from "./components/AuthView";
 import ClientPortalView from "./components/ClientPortalView";
 import FirmLibraryView from "./components/FirmLibraryView";
+import FirmInvitationView from "./components/FirmInvitationView";
 import HistoryView from "./components/HistoryView";
 import ClientLayout from "./components/layouts/ClientLayout";
 import PublicLayout from "./components/layouts/PublicLayout";
@@ -14,9 +15,9 @@ import SettingsView from "./components/SettingsView";
 import Sidebar from "./components/Sidebar";
 import { EmptyState, ErrorState, LoadingState } from "./components/ui/States";
 import { disabledPublicBrowserConfig, type PublicBrowserConfig } from "./lib/publicConfig";
-import { Case, Firm, User } from "./types";
+import { Case, Firm, FirmMembership, User } from "./types";
 
-type Account = { user: User; firm: Firm };
+type Account = { user: User; firm: Firm; membership: FirmMembership };
 
 function ClientAccountUnavailable() {
   return <div className="mx-auto max-w-lg p-6 pt-20"><EmptyState title="Client accounts are not available yet" detail="Use the secure invitation link supplied by your lawyer. Existing invitation links continue to work." /></div>;
@@ -56,6 +57,9 @@ export default function App() {
       <Route index element={<PublicLandingPage />} />
       <Route path="login" element={account ? <Navigate to="/app" replace /> : <AuthView mode="login" onAuthenticated={setAccount} googleDriveEnabled={publicConfig.features.googleDrive} />} />
       <Route path="signup" element={account ? <Navigate to="/app" replace /> : <AuthView mode="signup" onAuthenticated={setAccount} googleDriveEnabled={false} />} />
+    </Route>
+    <Route path="join/:token" element={<PublicLayout />}>
+      <Route index element={<FirmInvitationView enabled={publicConfig.features.firmTeams} onAccepted={setAccount} />} />
     </Route>
 
     <Route path="app/*" element={account
@@ -108,7 +112,7 @@ function LawyerWorkspace({ account, cases, fetchCases, logout, featureFlags }: L
         <Route path="matters/:matterId" element={<MatterRoute cases={cases} onBack={() => navigate("/app/matters")} onMatterChange={(matter) => { setActiveCaseId(matter.id); void fetchCases(); }} initialDraftId={initialDraftId} clearDraft={() => setInitialDraftId(null)} googleDriveEnabled={featureFlags.googleDrive} />} />
         <Route path="library" element={<FirmLibraryView googleDriveEnabled={featureFlags.googleDrive} />} />
         <Route path="history" element={<HistoryView cases={cases} activeThreadId={activeThreadId} onSelectThread={(thread) => { setActiveCaseId(thread.case_id); setActiveThreadId(thread.id); navigate("/app"); }} />} />
-        <Route path="settings" element={<SettingsView user={account.user} onLogout={() => void logout().then(() => navigate("/login"))} googleDriveEnabled={featureFlags.googleDrive} />} />
+        <Route path="settings" element={<SettingsView user={account.user} membership={account.membership} matters={cases} onLogout={() => void logout().then(() => navigate("/login"))} googleDriveEnabled={featureFlags.googleDrive} firmTeamsEnabled={featureFlags.firmTeams} />} />
         <Route path="*" element={<Navigate to="/app" replace />} />
       </Routes>
     </main>

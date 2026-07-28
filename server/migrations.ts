@@ -776,6 +776,118 @@ const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 17,
+    name: "firm_memberships_invitations_and_matter_assignments",
+    async run(client) {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS firm_memberships (
+          id TEXT PRIMARY KEY,
+          firm_id TEXT NOT NULL REFERENCES firm(id) ON DELETE RESTRICT,
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+          role TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'active',
+          invited_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+          activated_at TIMESTAMPTZ,
+          suspended_at TIMESTAMPTZ,
+          removed_at TIMESTAMPTZ,
+          removed_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          UNIQUE (firm_id, user_id),
+          CHECK (role IN ('firm_admin', 'lawyer', 'staff', 'read_only')),
+          CHECK (status IN ('active', 'suspended', 'removed'))
+        )
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS firm_invitations (
+          id TEXT PRIMARY KEY,
+          firm_id TEXT NOT NULL REFERENCES firm(id) ON DELETE RESTRICT,
+          email TEXT NOT NULL,
+          normalized_email TEXT NOT NULL,
+          role TEXT NOT NULL,
+          token_hash TEXT NOT NULL UNIQUE,
+          status TEXT NOT NULL DEFAULT 'pending',
+          invited_by_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+          accepted_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+          expires_at TIMESTAMPTZ NOT NULL,
+          accepted_at TIMESTAMPTZ,
+          revoked_at TIMESTAMPTZ,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          CHECK (role IN ('firm_admin', 'lawyer', 'staff', 'read_only')),
+          CHECK (status IN ('pending', 'accepted', 'expired', 'revoked'))
+        )
+      `);
+      await client.query(`
+        CREATE UNIQUE INDEX IF NOT EXISTS firm_invitations_pending_email_unique
+        ON firm_invitations(firm_id, normalized_email)
+        WHERE status = 'pending'
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS firm_invitation_matter_assignments (
+          invitation_id TEXT NOT NULL REFERENCES firm_invitations(id) ON DELETE CASCADE,
+          case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+          PRIMARY KEY (invitation_id, case_id)
+        )
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS firm_invitations_expiry_idx
+        ON firm_invitations(status, expires_at)
+      `);
+      await client.query(`
+        ALTER TABLE cases
+        ADD COLUMN IF NOT EXISTS created_by_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS matter_assignments (
+          id TEXT PRIMARY KEY,
+          firm_id TEXT NOT NULL REFERENCES firm(id) ON DELETE RESTRICT,
+          case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+          status TEXT NOT NULL DEFAULT 'active',
+          assigned_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+          assigned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          removed_at TIMESTAMPTZ,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          UNIQUE (case_id, user_id),
+          CHECK (status IN ('active', 'removed'))
+        )
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS firm_memberships_user_status_idx
+        ON firm_memberships(user_id, firm_id, status)
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS matter_assignments_user_case_idx
+        ON matter_assignments(firm_id, user_id, status, case_id)
+      `);
+
+      // Existing users become active administrators of their current firm. This
+      // preserves every single-user workspace and does not infer a fallback user.
+      await client.query(`
+        INSERT INTO firm_memberships
+          (id, firm_id, user_id, role, status, activated_at, created_at, updated_at)
+        SELECT 'membership_' || md5(u.firm_id || ':' || u.id), u.firm_id, u.id,
+          'firm_admin', 'active', NOW(), NOW(), NOW()
+        FROM users u
+        WHERE u.firm_id IS NOT NULL
+        ON CONFLICT (firm_id, user_id) DO NOTHING
+      `);
+      // Preserve direct Matter access for every legacy firm user. Administrators
+      // already have firm-wide policy access; these rows also preserve ownership
+      // if a legacy member is later changed to an assignment-bound role.
+      await client.query(`
+        INSERT INTO matter_assignments
+          (id, firm_id, case_id, user_id, status, assigned_by_user_id, assigned_at, updated_at)
+        SELECT 'assignment_' || md5(c.id || ':' || u.id), c.firm_id, c.id, u.id,
+          'active', u.id, NOW(), NOW()
+        FROM cases c
+        JOIN users u ON u.firm_id = c.firm_id
+        ON CONFLICT (case_id, user_id) DO NOTHING
+      `);
+    },
+  },
 ];
 
 export async function runMigrations(pool: Pool): Promise<void> {

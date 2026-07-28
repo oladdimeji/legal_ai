@@ -87,6 +87,14 @@ export interface Citation {
   sourceMetadata?: Record<string, string | number | boolean | null>;
 }
 
+export type FirmRole = "firm_admin" | "lawyer" | "staff" | "read_only";
+
+export interface FirmMembership {
+  id: string;
+  role: FirmRole;
+  status: "active" | "suspended" | "removed";
+}
+
 export interface ResearchStep {
   subQuestion: string;
   retrievedContext: string;

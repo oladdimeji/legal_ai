@@ -6,7 +6,7 @@ import multer from "multer";
 import { createServer as createViteServer } from "vite";
 import { registerProductionFrontend } from "./server/frontend.js";
 import { db } from "./server/db.js";
-import type { OwnershipContext } from "./server/db.js";
+import type { OwnershipContext, SessionAccount } from "./server/db.js";
 import { callModel, MODEL_CONFIGS } from "./server/model.js";
 import { queryLegalSources } from "./server/connectors/legalSources.js";
 import { Document, Citation, Message, Draft, ResearchStep } from "./src/types.js";
@@ -52,6 +52,12 @@ import {
 } from "./server/providers/google.js";
 import { decryptProviderSecret, encryptProviderSecret } from "./server/providerTokens.js";
 import { isDriveImportAccessible } from "./server/googleAuthorization.js";
+import {
+  FIRM_ROLES,
+  createAuthorizationMiddleware,
+  invitationCanBeAccepted,
+  type FirmRole,
+} from "./server/authorization.js";
 
 const config = loadServerConfig();
 const isProduction = config.environment === "production";
@@ -101,10 +107,7 @@ function safeGoogleRedirect(mode: "link" | "signin", result: string): string {
 }
 
 interface AuthenticatedRequest extends Request {
-  auth?: {
-    user: { id: string; firm_id: string; name: string; email: string };
-    firm: { id: string; name: string };
-  };
+  auth?: SessionAccount;
 }
 
 function ownership(req: Request): OwnershipContext {
@@ -387,6 +390,61 @@ async function startServer() {
     res.setHeader("Set-Cookie", clearSessionCookie(isProduction));
     res.setHeader("Cache-Control", "no-store");
     return res.json({ success: true });
+  });
+
+  app.get("/api/team/invitations/:token", async (req, res) => {
+    if (!config.features.firmTeams) return res.status(404).json({ error: "Firm teams are not enabled." });
+    const invitation = await db.getInvitationForAcceptance(sha256(req.params.token));
+    if (!invitation || !invitationCanBeAccepted(invitation.status, invitation.expires_at)) {
+      return res.status(410).json({ error: "This invitation is unavailable or expired." });
+    }
+    res.setHeader("Cache-Control", "no-store");
+    return res.json({
+      email: invitation.email,
+      firmName: invitation.firm_name,
+      role: invitation.role,
+      expiresAt: invitation.expires_at,
+    });
+  });
+
+  app.post("/api/team/invitations/:token/accept", async (req, res) => {
+    if (!config.features.firmTeams) return res.status(404).json({ error: "Firm teams are not enabled." });
+    try {
+      const tokenHash = sha256(req.params.token);
+      const invitation = await db.getInvitationForAcceptance(tokenHash);
+      if (!invitation || !invitationCanBeAccepted(invitation.status, invitation.expires_at)) {
+        return res.status(410).json({ error: "This invitation is unavailable or expired." });
+      }
+      const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
+      const password = typeof req.body.password === "string" ? req.body.password : "";
+      if (password.length < 8) {
+        return res.status(400).json({ error: "A password of at least 8 characters is required." });
+      }
+      const existing = await db.getInvitationUserCredential(invitation.normalized_email);
+      if (existing && !(await verifyPassword(password, existing.password_hash || ""))) {
+        return res.status(401).json({ error: "The existing account password is incorrect." });
+      }
+      if (!existing && !name) return res.status(400).json({ error: "Name is required." });
+      const accepted = await db.acceptFirmInvitation({
+        tokenHash,
+        name,
+        passwordHash: existing ? null : await hashPassword(password),
+        existingUserId: existing?.id || null,
+      });
+      const { token, tokenHash: sessionTokenHash } = createSessionToken();
+      const expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString();
+      await db.createSession(accepted.userId, sessionTokenHash, expiresAt);
+      const account = await db.getSessionAccount(sessionTokenHash);
+      if (!account) throw new Error("Invitation activation could not create a session");
+      res.setHeader("Set-Cookie", sessionCookie(token, isProduction));
+      res.setHeader("Cache-Control", "no-store");
+      return res.status(201).json(account);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Invitation could not be accepted.";
+      const status = /expired|unavailable/i.test(message) ? 410
+        : /moved between firms/i.test(message) ? 409 : 400;
+      return res.status(status).json({ error: message });
+    }
   });
 
   const requireAuth = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
@@ -695,7 +753,7 @@ async function startServer() {
     }
   });
 
-  app.get("/api/auth/me", requireAuth, (req: AuthenticatedRequest, res) => {
+  app.get("/api/auth/me", requireAuth, createAuthorizationMiddleware(db), (req: AuthenticatedRequest, res) => {
     res.setHeader("Cache-Control", "no-store");
     return res.json(req.auth);
   });
@@ -862,6 +920,109 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
 
   // All remaining API routes require a server-validated session.
   app.use("/api", requireAuth);
+  app.use("/api", createAuthorizationMiddleware(db));
+
+  app.get("/api/team/members", async (req, res) => {
+    if (!config.features.firmTeams) return res.status(404).json({ error: "Firm teams are not enabled." });
+    res.setHeader("Cache-Control", "no-store");
+    return res.json(await db.getTeam(ownership(req)));
+  });
+
+  app.post("/api/team/invitations", async (req, res) => {
+    if (!config.features.firmTeams) return res.status(404).json({ error: "Firm teams are not enabled." });
+    try {
+      const email = typeof req.body.email === "string" ? req.body.email.trim().toLowerCase() : "";
+      const role = typeof req.body.role === "string" ? req.body.role as FirmRole : null;
+      const matterIds = parseStringArray(req.body.matterIds);
+      if (!email.includes("@") || !role || !FIRM_ROLES.includes(role)) {
+        return res.status(400).json({ error: "A valid email and firm role are required." });
+      }
+      const token = randomBytes(32).toString("base64url");
+      const invitation = await db.createFirmInvitation({
+        context: ownership(req),
+        email,
+        role,
+        tokenHash: sha256(token),
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+        matterIds,
+      });
+      return res.status(201).json({
+        ...invitation,
+        invitationUrl: `/join/${encodeURIComponent(token)}`,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Invitation could not be created.";
+      return res.status(/already|pending/i.test(message) ? 409 : 400).json({ error: message });
+    }
+  });
+
+  app.delete("/api/team/invitations/:invitationId", async (req, res) => {
+    if (!config.features.firmTeams) return res.status(404).json({ error: "Firm teams are not enabled." });
+    const revoked = await db.revokeFirmInvitation(req.params.invitationId, ownership(req));
+    return revoked ? res.json({ status: "revoked" }) : res.status(404).json({ error: "Pending invitation not found." });
+  });
+
+  app.put("/api/team/members/:memberId/role", async (req, res) => {
+    if (!config.features.firmTeams) return res.status(404).json({ error: "Firm teams are not enabled." });
+    const role = typeof req.body.role === "string" ? req.body.role as FirmRole : null;
+    if (!role || !FIRM_ROLES.includes(role)) return res.status(400).json({ error: "A valid firm role is required." });
+    try {
+      return res.json(await db.setMemberRole({
+        context: ownership(req),
+        memberId: req.params.memberId,
+        role,
+      }));
+    } catch (error) {
+      return res.status(409).json({ error: error instanceof Error ? error.message : "Role could not be updated." });
+    }
+  });
+
+  app.put("/api/team/members/:memberId/status", async (req, res) => {
+    if (!config.features.firmTeams) return res.status(404).json({ error: "Firm teams are not enabled." });
+    const status = req.body.status === "active" || req.body.status === "suspended" ? req.body.status : null;
+    if (!status) return res.status(400).json({ error: "Status must be active or suspended." });
+    try {
+      return res.json(await db.setMemberStatus({
+        context: ownership(req),
+        memberId: req.params.memberId,
+        status,
+      }));
+    } catch (error) {
+      return res.status(404).json({ error: error instanceof Error ? error.message : "Member status could not be updated." });
+    }
+  });
+
+  app.put("/api/team/members/:memberId/assignments", async (req, res) => {
+    if (!config.features.firmTeams) return res.status(404).json({ error: "Firm teams are not enabled." });
+    try {
+      const matterIds = parseStringArray(req.body.matterIds);
+      return res.json({
+        matterIds: await db.replaceMatterAssignments({
+          context: ownership(req),
+          memberId: req.params.memberId,
+          matterIds,
+        }),
+      });
+    } catch (error) {
+      return res.status(400).json({ error: error instanceof Error ? error.message : "Assignments could not be updated." });
+    }
+  });
+
+  app.delete("/api/team/members/:memberId", async (req, res) => {
+    if (!config.features.firmTeams) return res.status(404).json({ error: "Firm teams are not enabled." });
+    const reassignToUserId = typeof req.body.reassignToUserId === "string" ? req.body.reassignToUserId : "";
+    if (!reassignToUserId) return res.status(400).json({ error: "A replacement owner is required." });
+    try {
+      await db.removeMember({
+        context: ownership(req),
+        memberId: req.params.memberId,
+        reassignToUserId,
+      });
+      return res.json({ status: "removed" });
+    } catch (error) {
+      return res.status(409).json({ error: error instanceof Error ? error.message : "Member could not be removed." });
+    }
+  });
 
   app.post("/api/google/oauth/start", async (req, res) => {
     try {
