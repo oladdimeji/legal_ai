@@ -7,7 +7,8 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci
 
-COPY index.html metadata.json tsconfig.json vite.config.ts server.ts ./
+# COPY index.html metadata.json tsconfig.json vite.config.ts server.ts ./
+COPY index.html metadata.json tsconfig.json vite.config.ts server.ts worker.ts ./
 COPY server ./server
 COPY src ./src
 COPY scripts ./scripts
