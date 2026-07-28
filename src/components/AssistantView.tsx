@@ -645,7 +645,7 @@ export default function AssistantView({
               {featureFlags.courtListener && enableCourtListener && (
                 <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 bg-zinc-50 text-zinc-600 rounded-full text-xs font-mono border border-zinc-200 animate-fade-in">
                   <Library className="h-3 w-3 shrink-0 text-zinc-450" />
-                  <span>CourtListener</span>
+                  <span className="sr-only">Deferred legal source</span>
                   <button type="button" onClick={() => setEnableCourtListener(false)} className="hover:text-zinc-900 font-bold ml-1 text-[10px] focus:outline-none cursor-pointer">✕</button>
                 </span>
               )}
@@ -737,7 +737,7 @@ export default function AssistantView({
                     <div>
                       <span className="text-[10px] font-mono uppercase text-zinc-400 font-bold block mb-2 tracking-wider">Legal Data Grounding</span>
                       <div className="space-y-2">
-                        {featureFlags.courtListener && <button
+                        <button
                           type="button"
                           onClick={() => setEnableWebSearch(!enableWebSearch)}
                           className={`w-full flex items-center justify-between px-3 py-2 text-xs rounded-md border transition-all cursor-pointer ${
@@ -753,43 +753,26 @@ export default function AssistantView({
                           <div className={`w-4 h-4 rounded border flex items-center justify-center ${enableWebSearch ? "bg-amber-600 border-amber-600 text-white" : "border-zinc-300 bg-white"}`}>
                             {enableWebSearch && <Check className="h-3 w-3" />}
                           </div>
-                        </button>}
+                        </button>
 
                         {featureFlags.govInfo && <button
-                          type="button"
-                          onClick={() => setEnableCourtListener(!enableCourtListener)}
-                          className={`w-full flex items-center justify-between px-3 py-2 text-xs rounded-md border transition-all cursor-pointer ${
-                            enableCourtListener
-                              ? "bg-blue-50 text-blue-900 border-blue-200 font-semibold"
-                              : "bg-white text-zinc-700 border-zinc-200 hover:bg-zinc-50"
-                          }`}
-                        >
-                          <div className="flex items-center gap-2.5">
-                            <Library className="h-4 w-4 text-blue-600 shrink-0" />
-                            <span>CourtListener Case Law</span>
-                          </div>
-                          <div className={`w-4 h-4 rounded border flex items-center justify-center ${enableCourtListener ? "bg-blue-600 border-blue-600 text-white" : "border-zinc-300 bg-white"}`}>
-                            {enableCourtListener && <Check className="h-3 w-3" />}
-                          </div>
-                        </button>}
-
-                        <button
                           type="button"
                           onClick={() => setEnableGovInfo(!enableGovInfo)}
                           className={`w-full flex items-center justify-between px-3 py-2 text-xs rounded-md border transition-all cursor-pointer ${
                             enableGovInfo
-                              ? "bg-purple-50 text-purple-900 border-purple-200 font-semibold"
+                              ? "bg-zinc-100 text-zinc-950 border-zinc-300 font-semibold"
                               : "bg-white text-zinc-700 border-zinc-200 hover:bg-zinc-50"
                           }`}
                         >
                           <div className="flex items-center gap-2.5">
-                            <FileText className="h-4 w-4 text-purple-600 shrink-0" />
-                            <span>GovInfo Legislative Library</span>
+                            <FileText className="h-4 w-4 text-zinc-700 shrink-0" />
+                            <span>GovInfo</span>
                           </div>
-                          <div className={`w-4 h-4 rounded border flex items-center justify-center ${enableGovInfo ? "bg-purple-600 border-purple-600 text-white" : "border-zinc-300 bg-white"}`}>
+                          <div className={`w-4 h-4 rounded border flex items-center justify-center ${enableGovInfo ? "bg-zinc-900 border-zinc-900 text-white" : "border-zinc-300 bg-white"}`}>
                             {enableGovInfo && <Check className="h-3 w-3" />}
                           </div>
-                        </button>
+                        </button>}
+
                       </div>
                     </div>
 
@@ -881,21 +864,7 @@ export default function AssistantView({
             {enableWebSearch && <Check className="h-3.5 w-3.5 ml-0.5 text-amber-700" />}
           </button>
 
-          <button
-            type="button"
-            onClick={() => setEnableCourtListener(!enableCourtListener)}
-            className={`flex items-center gap-2 px-3.5 py-2 rounded-full border text-xs font-semibold transition-all cursor-pointer ${
-              enableCourtListener
-                ? "bg-blue-50 text-blue-900 border-blue-300 shadow-sm"
-                : "bg-white text-zinc-600 border-zinc-200 hover:bg-zinc-50 hover:border-zinc-300"
-            }`}
-          >
-            <Library className="h-4 w-4 text-blue-600" />
-            <span>CourtListener</span>
-            {enableCourtListener && <Check className="h-3.5 w-3.5 ml-0.5 text-blue-700" />}
-          </button>
-
-          <button
+          {featureFlags.govInfo && <button
             type="button"
             onClick={() => setEnableGovInfo(!enableGovInfo)}
             className={`flex items-center gap-2 px-3.5 py-2 rounded-full border text-xs font-semibold transition-all cursor-pointer ${
@@ -907,7 +876,7 @@ export default function AssistantView({
             <FileText className="h-4 w-4 text-purple-600" />
             <span>GovInfo Library</span>
             {enableGovInfo && <Check className="h-3.5 w-3.5 ml-0.5 text-purple-700" />}
-          </button>
+          </button>}
         </div>
       </div>
     );
@@ -978,6 +947,25 @@ export default function AssistantView({
                 <ExternalLink className="h-3.5 w-3.5 shrink-0" />
               </a>
             </div>
+          )}
+
+          {citationPanelSource.provider === "govinfo" && (
+            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 border-t border-zinc-200 pt-4 text-xs">
+              <dt className="font-mono uppercase text-zinc-400">Provider</dt>
+              <dd>GovInfo</dd>
+              <dt className="font-mono uppercase text-zinc-400">Published</dt>
+              <dd>{citationPanelSource.publicationDate || "Not provided"}</dd>
+              <dt className="font-mono uppercase text-zinc-400">Retrieved</dt>
+              <dd>{citationPanelSource.retrievalDate ? new Date(citationPanelSource.retrievalDate).toLocaleString() : "Not provided"}</dd>
+              {Object.entries(citationPanelSource.sourceMetadata || {}).map(([key, value]) =>
+                value === null || value === "" ? null : (
+                  <React.Fragment key={key}>
+                    <dt className="font-mono uppercase text-zinc-400">{key}</dt>
+                    <dd className="break-words">{String(value)}</dd>
+                  </React.Fragment>
+                )
+              )}
+            </dl>
           )}
 
           <div className="pt-4 border-t border-zinc-200">
@@ -1073,6 +1061,12 @@ export default function AssistantView({
                           {/* Multi-step Deep Research Steps Panel */}
                           {m.steps && m.steps.length > 0 && (
                             <CollapsibleSteps steps={m.steps} />
+                          )}
+
+                          {(m.metadata?.providerStatuses as { govInfo?: string } | undefined)?.govInfo === "unavailable" && (
+                            <p className="mb-3 rounded border border-zinc-300 bg-zinc-50 px-3 py-2 text-xs text-zinc-700">
+                              GovInfo was temporarily unavailable. No GovInfo authority was added to this response.
+                            </p>
                           )}
 
                           {/* Body Text */}

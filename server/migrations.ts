@@ -579,6 +579,80 @@ const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 15,
+    name: "govinfo_research_traceability",
+    async run(client) {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS retrieved_legal_sources (
+          id TEXT PRIMARY KEY,
+          provider TEXT NOT NULL,
+          provider_source_id TEXT NOT NULL,
+          title TEXT NOT NULL,
+          canonical_url TEXT NOT NULL,
+          publication_date TEXT,
+          retrieved_at TIMESTAMPTZ NOT NULL,
+          content TEXT NOT NULL,
+          content_hash TEXT NOT NULL,
+          metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+          UNIQUE (provider, provider_source_id, content_hash)
+        )
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS research_runs (
+          id TEXT PRIMARY KEY,
+          firm_id TEXT NOT NULL REFERENCES firm(id) ON DELETE RESTRICT,
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+          thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE RESTRICT,
+          case_id TEXT REFERENCES cases(id) ON DELETE RESTRICT,
+          provider TEXT NOT NULL,
+          normalized_query TEXT NOT NULL,
+          status TEXT NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          completed_at TIMESTAMPTZ
+        )
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS research_run_sources (
+          id TEXT PRIMARY KEY,
+          research_run_id TEXT NOT NULL REFERENCES research_runs(id) ON DELETE RESTRICT,
+          retrieved_source_id TEXT NOT NULL REFERENCES retrieved_legal_sources(id) ON DELETE RESTRICT,
+          title_snapshot TEXT NOT NULL,
+          canonical_url_snapshot TEXT NOT NULL,
+          publication_date_snapshot TEXT,
+          retrieved_at_snapshot TIMESTAMPTZ NOT NULL,
+          supporting_passage TEXT NOT NULL,
+          metadata_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
+          attached_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          UNIQUE (research_run_id, retrieved_source_id, supporting_passage)
+        )
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS research_runs_firm_user_thread_idx
+        ON research_runs(firm_id, user_id, thread_id, created_at DESC)
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS research_run_sources_run_idx
+        ON research_run_sources(research_run_id, attached_at)
+      `);
+      await client.query(`
+        CREATE OR REPLACE FUNCTION reject_research_trace_mutation()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          RAISE EXCEPTION 'Research trace rows are immutable';
+        END
+        $$
+      `);
+      for (const table of ["research_runs", "research_run_sources"]) {
+        await client.query(`DROP TRIGGER IF EXISTS ${table}_immutable_update_delete ON ${table}`);
+        await client.query(`
+          CREATE TRIGGER ${table}_immutable_update_delete
+          BEFORE UPDATE OR DELETE ON ${table}
+          FOR EACH ROW EXECUTE FUNCTION reject_research_trace_mutation()
+        `);
+      }
+    },
+  },
 ];
 
 export async function runMigrations(pool: Pool): Promise<void> {

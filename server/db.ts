@@ -1,5 +1,5 @@
 import pg from "pg";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Document, DocumentChunk, Case, Thread, Message, Draft, Citation } from "../src/types.js";
 import { callModel } from "./model.js";
 import { runMigrations } from "./migrations.js";
@@ -1574,6 +1574,102 @@ class DatabaseService {
       steps: typeof m.steps === "string" ? JSON.parse(m.steps) : m.steps,
       metadata: typeof m.metadata === "string" ? JSON.parse(m.metadata) : m.metadata
     }));
+  }
+
+  public async storeGovInfoResearchRun(
+    threadId: string,
+    normalizedQuery: string,
+    status: "ok" | "empty" | "unavailable",
+    sources: Citation[],
+    context: OwnershipContext,
+    existingRunId?: string
+  ): Promise<{ runId: string; citations: Citation[] }> {
+    const client = await getPool().connect();
+    const runId = existingRunId || `research_${randomUUID()}`;
+    const createdAt = new Date().toISOString();
+    try {
+      await client.query("BEGIN");
+      const insertedRun = existingRunId
+        ? await client.query(
+          `SELECT r.id
+           FROM research_runs r
+           JOIN threads t ON t.id = r.thread_id
+           LEFT JOIN cases c ON c.id = r.case_id
+           WHERE r.id = $1 AND r.firm_id = $2 AND r.user_id = $3 AND r.thread_id = $4
+             AND t.user_id = $3 AND (r.case_id IS NULL OR c.firm_id = $2)`,
+          [runId, context.firmId, context.userId, threadId]
+        )
+        : await client.query(
+          `INSERT INTO research_runs
+          (id, firm_id, user_id, thread_id, case_id, provider, normalized_query, status, created_at, completed_at)
+         SELECT $1, $2, $3, t.id, t.case_id, 'govinfo', $4, $5, $6, $6
+         FROM threads t
+         LEFT JOIN cases c ON c.id = t.case_id
+         WHERE t.id = $7 AND t.user_id = $3
+           AND (t.case_id IS NULL OR c.firm_id = $2)
+         RETURNING id`,
+          [runId, context.firmId, context.userId, normalizedQuery, status, createdAt, threadId]
+        );
+      if (insertedRun.rowCount !== 1) throw new Error("Research run scope is not authorized.");
+
+      const attached: Citation[] = [];
+      for (const source of sources) {
+        if (
+          source.provider !== "govinfo" ||
+          !source.providerSourceId ||
+          !source.url ||
+          !source.textSnippet.trim()
+        ) continue;
+        const contentHash = createHash("sha256").update(source.textSnippet).digest("hex");
+        const sourceId = `govinfo_${contentHash}`;
+        const retrievedAt = source.retrievalDate || createdAt;
+        await client.query(
+          `INSERT INTO retrieved_legal_sources
+            (id, provider, provider_source_id, title, canonical_url, publication_date, retrieved_at,
+             content, content_hash, metadata)
+           VALUES ($1, 'govinfo', $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+           ON CONFLICT (id) DO NOTHING`,
+          [
+            sourceId,
+            source.providerSourceId,
+            source.title,
+            source.url,
+            source.publicationDate || null,
+            retrievedAt,
+            source.textSnippet,
+            contentHash,
+            JSON.stringify(source.sourceMetadata || {}),
+          ]
+        );
+        const runSourceId = `run_source_${randomUUID()}`;
+        await client.query(
+          `INSERT INTO research_run_sources
+            (id, research_run_id, retrieved_source_id, title_snapshot, canonical_url_snapshot,
+             publication_date_snapshot, retrieved_at_snapshot, supporting_passage, metadata_snapshot)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+           ON CONFLICT (research_run_id, retrieved_source_id, supporting_passage) DO NOTHING`,
+          [
+            runSourceId,
+            runId,
+            sourceId,
+            source.title,
+            source.url,
+            source.publicationDate || null,
+            retrievedAt,
+            source.textSnippet,
+            JSON.stringify(source.sourceMetadata || {}),
+          ]
+        );
+        attached.push({ ...source, researchRunId: runId, textSnippet: source.textSnippet });
+      }
+      await client.query("COMMIT");
+      return { runId, citations: attached };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   public async getRecentMessages(

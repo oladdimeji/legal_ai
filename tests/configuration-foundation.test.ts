@@ -41,17 +41,13 @@ test("missing provider configuration fails only when its feature is enabled", ()
   );
 });
 
-test("deferred and not-yet-live legal source features cannot be enabled", () => {
+test("deferred V1 features cannot be enabled while GovInfo can be staged", () => {
   const key = Buffer.alloc(32, 7).toString("base64");
-  assert.throws(
-    () =>
-      loadServerConfig({
-        NODE_ENV: "test",
-        FEATURE_GOVINFO: "true",
-        GOVINFO_API_KEY: "test-key",
-      }),
-    /FEATURE_GOVINFO is deferred/
-  );
+  assert.equal(loadServerConfig({
+    NODE_ENV: "test",
+    FEATURE_GOVINFO: "true",
+    GOVINFO_API_KEY: "test-key",
+  }).features.govInfo, true);
   for (const flag of ["FEATURE_COURTLISTENER", "FEATURE_GMAIL_SEND", "FEATURE_OCR"]) {
     assert.throws(
       () => loadServerConfig({ NODE_ENV: "test", [flag]: "true", APP_ENCRYPTION_KEY_BASE64: key }),
@@ -80,7 +76,7 @@ test("forged source selections do not call adapters while server flags are false
     { courtListener: true, govInfo: true },
     { courtListener: adapter, govInfo: adapter }
   );
-  assert.deepEqual(result, { courtListener: [], govInfo: [] });
+  assert.deepEqual(result, { courtListener: [], govInfo: [], govInfoStatus: "empty" });
   assert.equal(calls, 0);
 });
 
@@ -126,7 +122,6 @@ test("configuration errors do not echo credentials and deferred controls are con
     readFile("src/components/AssistantView.tsx", "utf8"),
     readFile("server.ts", "utf8"),
   ]);
-  assert.match(assistant, /featureFlags\.courtListener && <button/);
   assert.match(assistant, /featureFlags\.govInfo && <button/);
   assert.match(server, /app\.get\("\/api\/health\/live"/);
   assert.match(server, /app\.get\("\/api\/health\/ready"/);

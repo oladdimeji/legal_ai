@@ -1170,7 +1170,7 @@ Query: "${content}"`;
         if (!Array.isArray(subQuestions)) {
           subQuestions = [];
         }
-        console.log(`[Classifier] Needs Deep Research: ${needsDeepResearch}. Reason: ${classificationReason}. Sub-questions count: ${subQuestions.length}`);
+        console.log(`[Classifier] Deep research=${needsDeepResearch}; sub-question count=${subQuestions.length}.`);
       } catch (err) {
         console.error("Combined classification and split pass failed:", err);
         if (forceDeepResearch !== true) {
@@ -1185,6 +1185,8 @@ Query: "${content}"`;
       // Initialize lists for unified citations
       const citations: Citation[] = [];
       const citationIdMap = new Map<string, Citation>();
+      let govInfoStatus: "not_requested" | "ok" | "empty" | "unavailable" = "not_requested";
+      let currentGovInfoRunId: string | undefined;
 
       // Internal citation counters
       let citationIdx = 1;
@@ -1213,13 +1215,13 @@ Query: "${content}"`;
 
       // 2. Perform Retrieval & Model Synthesis
       if (needsDeepResearch) {
-        console.log(`[Deep Research] Commencing multi-step research loop for: "${content}"...`);
+        console.log("[Deep Research] Commencing multi-step research loop.");
         researchSteps = [];
 
         // Step B: Loop over each sub-question
         for (let i = 0; i < subQuestions.length; i++) {
           const subQ = subQuestions[i];
-          console.log(`[Deep Research] Processing sub-question: "${subQ}"`);
+          console.log(`[Deep Research] Processing sub-question ${i + 1} of ${subQuestions.length}.`);
 
           // Introduce a delay before processing each sub-question to avoid rate limit spikes
           if (i > 0) {
@@ -1240,7 +1242,27 @@ Query: "${content}"`;
             }
           );
           const clResults = legalSourceResults.courtListener;
-          const giResults = legalSourceResults.govInfo;
+          govInfoStatus =
+            legalSourceResults.govInfoStatus === "unavailable"
+              ? "unavailable"
+              : legalSourceResults.govInfoStatus === "ok"
+                ? "ok"
+                : govInfoStatus === "not_requested"
+                  ? "empty"
+                  : govInfoStatus;
+          let giResults = legalSourceResults.govInfo;
+          if (config.features.govInfo && enableGovInfo === true) {
+            const storedRun = await db.storeGovInfoResearchRun(
+              threadId,
+              subQ.replace(/\s+/g, " ").trim().slice(0, 500),
+              legalSourceResults.govInfoStatus,
+              giResults,
+              requestOwnership,
+              currentGovInfoRunId
+            );
+            currentGovInfoRunId = storedRun.runId;
+            giResults = storedRun.citations;
+          }
 
           // Register retrieved context to citations
           const stepCitations: string[] = [];
@@ -1277,7 +1299,13 @@ Query: "${content}"`;
               title: r.title,
               url: r.url,
               textSnippet: r.textSnippet,
-              sourceName: r.sourceName
+              sourceName: r.sourceName,
+              provider: r.provider,
+              providerSourceId: r.providerSourceId,
+              publicationDate: r.publicationDate,
+              retrievalDate: r.retrievalDate,
+              researchRunId: r.researchRunId,
+              sourceMetadata: r.sourceMetadata,
             });
             stepCitations.push(`[${cit.id}] ${cit.title} (${cit.sourceName})`);
           });
@@ -1387,7 +1415,7 @@ ${citationInstSearch}`;
 
       } else {
         // STANDARD RESEARCH FLOW (Single shot lookup)
-        console.log(`[Standard Research] Performing single-shot legal lookup for: "${content}"...`);
+        console.log("[Standard Research] Performing single-shot legal lookup.");
 
         // Perform parallel lookups
         const [allLocalChunks, legalSourceResults] = await Promise.all([
@@ -1402,7 +1430,20 @@ ${citationInstSearch}`;
           ),
         ]);
         const clResults = legalSourceResults.courtListener;
-        const giResults = legalSourceResults.govInfo;
+        govInfoStatus = legalSourceResults.govInfoStatus;
+        let giResults = legalSourceResults.govInfo;
+        if (config.features.govInfo && enableGovInfo === true) {
+          const storedRun = await db.storeGovInfoResearchRun(
+            threadId,
+            content.replace(/\s+/g, " ").trim().slice(0, 500),
+            legalSourceResults.govInfoStatus,
+            giResults,
+            requestOwnership,
+            currentGovInfoRunId
+          );
+          currentGovInfoRunId = storedRun.runId;
+          giResults = storedRun.citations;
+        }
 
         const localChunks = allLocalChunks.filter(c => c.similarity >= SIMILARITY_THRESHOLD);
 
@@ -1437,7 +1478,13 @@ ${citationInstSearch}`;
             title: r.title,
             url: r.url,
             textSnippet: r.textSnippet,
-            sourceName: r.sourceName
+            sourceName: r.sourceName,
+            provider: r.provider,
+            providerSourceId: r.providerSourceId,
+            publicationDate: r.publicationDate,
+            retrievalDate: r.retrievalDate,
+            researchRunId: r.researchRunId,
+            sourceMetadata: r.sourceMetadata,
           });
         });
 
@@ -1530,7 +1577,7 @@ ${citationInstSearch}`;
         requestOwnership,
         citations,
         researchSteps,
-        { suggestions }
+        { suggestions, providerStatuses: { govInfo: govInfoStatus } }
       );
 
       res.status(201).json({

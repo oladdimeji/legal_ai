@@ -6,13 +6,25 @@
 - Confirm existing signup, login, Matters, Firm Library, Assistant, Matter Intelligence, Work Product, collaboration, and legacy token Client Portal workflows.
 - Confirm `GET /api/health`, `GET /api/health/live`, and `GET /api/health/ready` return successful non-secret status payloads.
 - Inspect `GET /api/config` while signed out and confirm it contains only the seven allow-listed browser flags and no credentials, URLs, tokens, cookies, or provider details.
-- Open Assistant Research sources and confirm CourtListener and GovInfo controls are absent.
-- Submit a direct authenticated Assistant request containing `enableCourtListener: true` and `enableGovInfo: true`; confirm no connector citation or canned authority is returned.
+- Open Assistant Research sources and confirm CourtListener controls are absent while GovInfo remains absent with its flag false.
+- Submit a direct authenticated Assistant request containing `enableCourtListener: true`; confirm no CourtListener citation or canned authority is returned.
 - Start a staging process with each deferred flag set to `true` in isolation and confirm startup fails with a flag-name-only message that contains no secret.
 - Start with unused provider credentials absent and all related flags false; confirm startup and existing workflows are unchanged.
 - Review application logs and error responses for absence of document content, prompts, credentials, tokens, cookies, database URLs, and confidential client data.
 
-Do not enable `FEATURE_GOVINFO`. Its live connector, environment-gated smoke test, and staging approval belong to the named GovInfo implementation phase.
+## Live GovInfo retrieval
+
+- Back up the staging database and keep `FEATURE_GOVINFO=false` for the first deployment so migration 015 can be reviewed.
+- Set `GOVINFO_API_KEY` and `GOVINFO_BASE_URL=https://api.govinfo.gov`; confirm neither appears in `/api/config`, logs, errors, or browser bundles.
+- Run `GOVINFO_LIVE_SMOKE=true npm test` in the staging test process and confirm the live smoke test retrieves a canonical GovInfo source with material text.
+- Enable `FEATURE_GOVINFO=true` in staging. Confirm the GovInfo control appears and CourtListener remains absent.
+- Confirm every displayed GovInfo citation shows provider, publication date when available, retrieval date, canonical link, metadata, and an exact stored passage.
+- Inspect `research_runs`, `research_run_sources`, and `retrieved_legal_sources`; confirm each run is scoped to the authenticated firm, user, thread, and optional Matter.
+- Attempt cross-firm, cross-user, cross-thread, and cross-Matter access and confirm no metadata or passage is returned.
+- Simulate timeout, 429, 503, malformed response, missing content, and outage. Confirm bounded retries and no invented authority; the UI explicitly reports provider unavailability.
+- Attempt to update or delete run/source rows and confirm immutable-trace triggers reject the mutation.
+
+Keep `FEATURE_GOVINFO=false` until every GovInfo staging item passes. Keep `FEATURE_COURTLISTENER=false`; CourtListener is deferred and hidden.
 
 ## Public, lawyer, and client routing shell
 

@@ -1,5 +1,44 @@
 # Compact Upgrade Progress
 
+## V1 Completion Phase — Live GovInfo Traceability and Citation Validation
+
+Status: Complete in code; staging gate remains closed.
+
+Implemented:
+
+- Replaced the empty GovInfo adapter with official search plus package/granule summary and text retrieval, normalized filters, bounded pagination, timeouts, retry/429 handling, cache TTL, and honest empty/outage results.
+- Added normalized retrieved sources and immutable, authenticated firm/user/thread/Matter-scoped research runs with exact supporting-passage snapshots.
+- Limited GovInfo citations to sources attached to the current request run and preserved provider/source identifiers, publication/retrieval dates, canonical links, and available metadata.
+- Added an explicit GovInfo outage notice and removed visible CourtListener controls. CourtListener remains rejected by configuration.
+
+Schema changes:
+
+- Migration 015 additively creates `retrieved_legal_sources`, `research_runs`, and `research_run_sources`, indexes scoped run lookup, and adds update/delete rejection triggers for run trace rows.
+- No existing rows or tables are renamed, reset, truncated, or deleted.
+
+Dependencies added:
+
+- None. The connector uses the Node 22 Fetch API and existing PostgreSQL driver.
+
+Feature gate:
+
+- `FEATURE_GOVINFO=false` remains the exact gate until the GovInfo staging checklist passes.
+- `FEATURE_COURTLISTENER=false` remains disabled and hidden.
+
+Verification:
+
+- Pre-change `npm ci`: passed; npm reported two existing high-severity advisories.
+- Pre-change `npm run verify`: passed, 103/103 tests, with the existing Vite large-chunk warning.
+- Final `npm run lint`: passed.
+- Final `npm test`: passed, 107/107 active tests; the environment-gated live GovInfo smoke test was skipped as designed without staging credentials.
+- Final `npm run build` and `npm run verify`: passed; the existing Vite large-chunk warning remains.
+- Docker build was not required for this connector phase.
+
+Known limitations:
+
+- GovInfo source availability and metadata vary by collection; results without retrievable official text are omitted.
+- CourtListener, OCR, and Gmail sending remain deferred.
+
 ## V1 Completion Phase — Durable Async Ingestion, Worker, and ClamAV
 
 Status: Complete in code; staging gate remains closed.

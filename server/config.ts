@@ -51,7 +51,6 @@ export interface PublicBrowserConfig {
 }
 
 const deferredFlags = [
-  "FEATURE_GOVINFO",
   "FEATURE_COURTLISTENER",
   "FEATURE_GMAIL_SEND",
   "FEATURE_OCR",

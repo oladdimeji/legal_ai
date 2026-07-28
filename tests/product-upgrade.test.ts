@@ -212,8 +212,8 @@ test("Phase 10 removes misleading editor and attachment controls", async () => {
     readFile("src/components/DraftEditorView.tsx", "utf8"),
   ]);
   assert.doesNotMatch(assistant, /Add from Google Drive|Drive cloud OAuth picker|handleAttachMockFile|handleLocalFileUpload|Add from Workspace/);
-  assert.match(assistant, /CourtListener Case Law/);
-  assert.match(assistant, /GovInfo Legislative Library/);
+  assert.doesNotMatch(assistant, /CourtListener Case Law/);
+  assert.match(assistant, />GovInfo</);
   assert.doesNotMatch(assistant, /\(Simulated\)/);
   assert.doesNotMatch(editor, /Format Painter|Show Edits|version-selector|V3 \(Current Work Product\)/);
 });
@@ -245,7 +245,7 @@ test("Phase 11 Assistant uses bounded history and persists dynamic follow-ups", 
   assert.match(database, /getRecentMessages/);
   assert.match(server, /Prior conversation for resolving follow-up references only/);
   assert.match(server, /generateFollowUpSuggestions/);
-  assert.match(server, /\{ suggestions \}/);
+  assert.match(server, /\{ suggestions, providerStatuses:/);
   assert.match(migrations, /version: 10/);
   assert.match(migrations, /assistant_message_metadata/);
   assert.match(types, /metadata\?:/);

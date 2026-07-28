@@ -79,6 +79,12 @@ export interface Citation {
   url?: string;
   textSnippet: string;
   sourceName: string; // e.g., "Internal Document", "CourtListener", "Google Search"
+  provider?: "govinfo";
+  providerSourceId?: string;
+  publicationDate?: string;
+  retrievalDate?: string;
+  researchRunId?: string;
+  sourceMetadata?: Record<string, string | number | boolean | null>;
 }
 
 export interface ResearchStep {
