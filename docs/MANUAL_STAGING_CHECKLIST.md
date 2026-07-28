@@ -152,3 +152,29 @@ Keep `FEATURE_PRIVATE_STORAGE=false` until every staging item above passes. The 
 - Review web, worker, pg-boss, and ClamAV logs for absence of file bytes, extracted text, prompts, credentials, tokens, checksums, cookies, database URLs, and client data.
 
 Keep `FEATURE_ASYNC_INGESTION=false` until this checklist passes.
+## Manager Preview release
+
+- Record the release SHA, take a verified staging backup, and confirm preservation branch `archive/batch1-before-manager-preview` remains at the pre-release SHA.
+- Run `npm ci`, `npm run verify`, and `npm run verify:manager-preview`. Treat the Google and Brevo live checks as skipped—not passed—unless their explicit staging flags and dedicated test accounts are supplied.
+- Review migration 019 before startup. Confirm it contains only `CREATE ... IF NOT EXISTS`, indexes, and `ADD COLUMN IF NOT EXISTS`; verify it does not drop, truncate, rename, recreate, or reseed existing data.
+- Start `docker compose up -d` with `FEATURE_ASYNC_INGESTION=false`. Confirm `docker compose config --services` lists only `web`, readiness succeeds, and no worker or ClamAV container/restart loop exists.
+- Keep Drive import, durable client uploads, OCR, CourtListener, Gmail sending, and Sentry/observability integrations false. Confirm their controls are absent.
+- Re-run lawyer signup/password login, session restoration/logout, Matter list/create/open, Matter Sources, Firm Library, Assistant General and Matter contexts, Matter Intelligence, Work Product edit/export, collaboration, and nested refreshes.
+- Confirm General Assistant context cannot retrieve Matter records. Substitute cross-firm and unassigned Matter, document, draft, response, conversation, and notification IDs and confirm no metadata or content is disclosed.
+- Enable Account and Export in staging without private storage, pg-boss, worker, or ClamAV. Link, refresh, disconnect, revoke, linked-only sign in, and export representative Work Product/Matter Intelligence. Confirm password login remains available.
+- Inspect Google consent: only `openid`, `email`, `profile`, and `drive.file`. Test provider-subject conflicts and matching-email/unlinked-account conflicts without account merging.
+- Create invitations for two contacts in Matter A and one contact in Matter B. Confirm the email/link is presented through exactly one intended channel, raw tokens are absent from database rows/logs, and duplicate pending invitations are rejected.
+- Accept, verify, create credentials, log out, and log in again from `/client/login` without the invitation URL. Replay accepted, expired, and revoked invitation URLs and confirm denial.
+- Request verification resend and password reset. Confirm unknown-account responses are indistinguishable, reset/verification links expire, replay fails, and a password reset revokes existing client sessions.
+- Confirm the dashboard shows every active explicitly assigned Matter and no other Matter. Suspend, restore, and remove access and confirm immediate suspended/removed states without deleting prior Work Product.
+- Use two contacts on one Matter. Confirm each contact can view shared lawyer content but cannot see the other contact's private response, comment, revision, activity, notification, or session.
+- Exercise shared documents/downloads, lawyer requests, client text responses, comments, and private revisions. Confirm no new client-account file upload or Google Drive import control appears.
+- Confirm the lawyer notification bell updates for invitation acceptance, responses, comments, and revisions; test deep links, mark read, mark all read, and preferences.
+- List client sessions, revoke another session, and confirm it immediately receives 401 without exposing raw or stored token hashes.
+- Send mocked Brevo invitation, verification, reset, security, and notification templates. Confirm safe substitutions and delivery metadata. Then run `BREVO_LIVE_SMOKE=true` with a dedicated `BREVO_SMOKE_RECIPIENT`; keep production email disabled until it succeeds.
+- Inspect browser cookies for separate lawyer/client sessions, `HttpOnly`, `Secure` in HTTPS staging, and appropriate SameSite. Attempt missing/foreign Origin and CSRF values and confirm 403.
+- Exercise progressive rate limits for client login, invitation acceptance, verification, and password reset. Confirm bounded request bodies, safe filenames on retained legacy uploads, and redacted errors.
+- Open a valid legacy `/client/:token` portal and exercise its existing shared content, responses, comments, revisions, and bounded synchronous uploads. Confirm an invalid token fails and client-account changes did not reinterpret legacy tokens.
+- Review application and provider logs for absence of document bodies, prompts, passwords, invitation/verification/reset tokens, cookies, OAuth tokens, database URLs, email bodies, or client data.
+
+Do not proceed to durable ingestion or final hardening from this checklist.

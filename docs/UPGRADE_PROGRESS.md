@@ -1068,3 +1068,48 @@ Known limitations:
 
 - A live container `/api/health` request was not run because no disposable database was used for this deployment pass; application startup automatically connects to the database and runs pending migrations.
 - The existing Vite large-chunk warning remains. Bundle optimization was explicitly outside this pass.
+
+## Manager Preview client accounts, collaboration, notifications, and release gate
+
+Status: Implementation complete; production activation remains gated by live Google and Brevo staging smokes.
+
+Implemented:
+
+- Added additive migration 019 for client users, explicit Matter-client memberships, hashed/revocable/expiring invitation, email-verification and password-reset tokens, separate hashed client sessions, notifications/preferences, email delivery attempts, client activity, account comments, and client ownership/visibility columns on existing responses and drafts.
+- Added invitation creation/acceptance/revocation, credential creation, verification/resend, later password login, uniform password-reset requests, single-use reset, logout, session listing/revocation, and Matter access suspend/restore/removal.
+- Added `/client/login`, `/client/dashboard`, `/client/invitations/:token`, verification, and reset routes with direct-refresh support while retaining the legacy `/client/:token` portal.
+- Added an explicit-membership dashboard for multiple Matters and contacts. It exposes only active authorized shared Work Product, requests, contact-private responses/comments/revisions/activity, notifications, and safe downloads.
+- Added visible lawyer notifications, unread counts, deep links, read/all-read actions, basic preferences, and assigned-lawyer/firm-admin recipient scoping.
+- Added Brevo-only templates and delivery metadata for invitations, verification, resets, security notices, lawyer requests/document sharing, and relevant client activity. Email bodies and raw tokens are not stored in delivery records or logs.
+- Added strict Origin and CSRF validation for sensitive client-account writes, separate secure client cookies, expiring/revocable sessions, progressive rate limits, centralized bounded validators, a 512 KB JSON ceiling, safe download filenames, and coded/redacted client errors.
+- Kept client durable uploads disabled and added no new ingestion path. Existing legacy synchronous portal behavior remains available under its existing limits.
+- Reordered production frontend registration after all API routes, correcting a nested production-route shadowing defect without changing API contracts.
+- Added a mocked Chromium journey covering lawyer login/Matter/Google/export, invitation, verification, later client login, shared content, response/comment/revision, session revocation, password-reset replay/expiry, contact isolation, access suspension/removal, lawyer notification, invitation replay, and valid/invalid legacy portal access.
+- Added `npm run verify:manager-preview` for lint, behavioral tests, build, production nested-route smoke, browser journey, Compose web-only validation, and explicit live-smoke skip reporting.
+
+Schema changes:
+
+- Migration 019 is additive and non-destructive. No existing table is dropped, truncated, renamed, recreated, or reset.
+- Existing legacy portal tokens and existing firms, users, Matters, documents, Work Product, conversations, collaboration data, and immutable Work Product history remain compatible.
+
+Dependencies:
+
+- Added `@playwright/test` as a development dependency for the required real-browser release journey.
+
+Verification:
+
+- `npm ci`: passed before editing; two existing high-severity npm audit findings were reported.
+- `npm run lint`: passed.
+- `npm test`: passed with 136 active tests and 3 explicitly skipped live-provider tests.
+- `npm run build`: passed with the existing Vite large-chunk warning.
+- `npm run test:browser`: passed, 1 Chromium release journey.
+- `npm run smoke:production-routes`: passed for public, lawyer, client-account, invitation, dashboard, and legacy nested routes.
+- `npm run verify:compose-web`: passed; default topology is `web`, ingestion profile retains `web`, `worker`, and `clamav`.
+
+Activation gates and limitations:
+
+- Live Google Drive staging smoke is not run without dedicated staging credentials and remains a required gate before Account/Export production flags are enabled.
+- Real Brevo staging smoke is not run without dedicated staging credentials/recipient and remains a required gate before `FEATURE_TRANSACTIONAL_EMAIL=true`.
+- No disposable production-style PostgreSQL instance or live staging dataset was supplied, so migration execution and the full manual lawyer workflow checklist still require staging confirmation.
+- `npm audit` reports one upstream high-severity React Router advisory twice (direct `react-router-dom` and transitive `react-router`) for RSC Action handling. Exepts uses browser routing and does not enable React Server Components or React Router server Actions, so the affected path is not reachable in this release. The registry has no patched release newer than the pinned `7.18.1`; downgrading exposes several older high-severity advisories. Reassess and upgrade when a patched compatible release is published.
+- Worker, ClamAV, Drive import, durable client uploads, OCR, CourtListener, Gmail sending, Sentry, and full final-launch hardening were not activated.

@@ -126,6 +126,64 @@ email, never removes password login, and never requests or sends Gmail.
 
 Link Google from Settings before using the login-page Google option. Drive Picker is available in Firm Library and Matter Sources. Imported records retain Drive identity, link, modification/revision/checksum metadata, private-version identity, and lifecycle state. Work Product and Matter Intelligence export as DOCX files through `drive.file`. Run the environment-gated staging smoke with `GOOGLE_DRIVE_LIVE_SMOKE=true npm test` only after providing a dedicated `GOOGLE_DRIVE_SMOKE_REFRESH_TOKEN` and `GOOGLE_DRIVE_SMOKE_FILE_ID`; these are excluded from normal CI.
 
+### Manager Preview client accounts
+
+Migration 019 adds client users, explicit Matter memberships, hashed one-time
+invitation/verification/reset records, separately hashed client sessions,
+notifications/preferences, safe email-delivery metadata, activity, and
+account-scoped comments. It is additive: the legacy `/client/:token` records and
+routes are unchanged.
+
+Client account routes are `/client/login`, `/client/dashboard`, and
+`/client/invitations/:token`. An invitation creates access only after the
+invited contact authenticates or creates credentials; a matching email alone
+never grants access. A verified client can later use the normal login page,
+list/revoke sessions, and see only active explicit Matter memberships. Shared
+Work Product, requests, text responses, private comments, and client revisions
+work without the document worker. New client-account upload controls and Drive
+import are absent in this release.
+
+Brevo is the only transactional provider. To stage it, set
+`TRANSACTIONAL_EMAIL_PROVIDER=brevo`, `BREVO_API_KEY`,
+`BREVO_SENDER_EMAIL`, `APP_BASE_URL`, and
+`FEATURE_TRANSACTIONAL_EMAIL=true`. Delivery records contain a recipient hash,
+template key, provider message ID, status, attempt count, failure category, and
+timestamps—not message bodies. Run the dedicated live staging smoke with
+`BREVO_LIVE_SMOKE=true BREVO_SMOKE_RECIPIENT=<staging-address> npm test`.
+Keep the email flag false until that succeeds. When email is disabled, an
+authorized lawyer may copy an invitation URL exactly once only if
+`CLIENT_INTERNAL_PREVIEW_LINKS=true`; verification and reset tokens are never
+returned through that preview path.
+
+Recommended Manager Preview staging values after migrations and the manual
+checklist pass:
+
+```dotenv
+FEATURE_ASYNC_INGESTION=false
+FEATURE_GOOGLE_ACCOUNT=true
+FEATURE_GOOGLE_DRIVE_EXPORT=true
+FEATURE_GOOGLE_DRIVE_IMPORT=false
+FEATURE_CLIENT_ACCOUNTS=true
+FEATURE_CLIENT_DASHBOARD=true
+FEATURE_CLIENT_NOTIFICATIONS=true
+FEATURE_CLIENT_DURABLE_UPLOADS=false
+FEATURE_TRANSACTIONAL_EMAIL=false
+FEATURE_COURTLISTENER=false
+FEATURE_OCR=false
+FEATURE_GMAIL_SEND=false
+```
+
+Use `FEATURE_TRANSACTIONAL_EMAIL=true` only after the real Brevo staging smoke.
+Run the complete local/CI release gate with:
+
+```bash
+npm run verify
+npm run verify:manager-preview
+```
+
+The Manager Preview command reports live Google and Brevo checks as skipped
+when their explicit smoke flags are false.
+
 GovInfo retrieval uses official search, package, and granule endpoints with bounded retries, timeouts, pagination, and a short server cache. Each request writes an immutable firm/user/thread-scoped research run and exact supporting passages before those sources may be cited. Run the environment-gated staging smoke test with `GOVINFO_LIVE_SMOKE=true npm test`; it is skipped in normal CI.
 
 Private originals are gated by `FEATURE_PRIVATE_STORAGE=false`. Staging activation requires `OBJECT_STORAGE_PROVIDER=supabase`, `SUPABASE_URL`, the server-only `SUPABASE_SECRET_KEY`, and a private `STORAGE_BUCKET`. The server creates narrow two-hour signed upload tokens; browsers send 6 MB resumable TUS chunks directly to Supabase Storage. The service key is never returned by an API or included in Vite code.

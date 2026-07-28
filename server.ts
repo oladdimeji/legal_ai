@@ -59,6 +59,12 @@ import {
   invitationCanBeAccepted,
   type FirmRole,
 } from "./server/authorization.js";
+import { clientRepository } from "./server/clientRepository.js";
+import { registerLawyerClientRoutes, registerPublicClientRoutes } from "./server/clientRoutes.js";
+import {
+  BrevoTransactionalEmail,
+  DisabledTransactionalEmail,
+} from "./server/transactionalEmail.js";
 
 const config = loadServerConfig();
 const isProduction = config.environment === "production";
@@ -81,6 +87,14 @@ const google = (
       redirectUri: config.providers.google.oauthRedirectUri!,
     })
   : null;
+const transactionalEmail = config.features.transactionalEmail
+  ? new BrevoTransactionalEmail({
+      apiKey: config.providers.transactionalEmail.apiKey!,
+      senderEmail: config.providers.transactionalEmail.senderEmail!,
+      senderName: config.providers.transactionalEmail.senderName || "Exepts",
+      apiBaseUrl: config.providers.transactionalEmail.apiBaseUrl,
+    }, clientRepository)
+  : new DisabledTransactionalEmail();
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const SIMILARITY_THRESHOLD = 0.65;
@@ -298,7 +312,8 @@ ${input.startingContent.slice(0, 20000)}`;
 
 async function startServer() {
   const app = express();
-  app.use(express.json());
+  app.disable("x-powered-by");
+  app.use(express.json({ limit: "512kb", strict: true }));
 
   app.get("/api/health/live", (_req, res) => {
     res.json({ status: "ok" });
@@ -395,6 +410,12 @@ async function startServer() {
     res.setHeader("Set-Cookie", clearSessionCookie(isProduction));
     res.setHeader("Cache-Control", "no-store");
     return res.json({ success: true });
+  });
+
+  registerPublicClientRoutes(app, {
+    config,
+    repository: clientRepository,
+    email: transactionalEmail,
   });
 
   app.get("/api/team/invitations/:token", async (req, res) => {
@@ -935,6 +956,13 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
   // All remaining API routes require a server-validated session.
   app.use("/api", requireAuth);
   app.use("/api", createAuthorizationMiddleware(db));
+
+  registerLawyerClientRoutes(app, {
+    config,
+    repository: clientRepository,
+    email: transactionalEmail,
+    ownership,
+  });
 
   app.get("/api/team/members", async (req, res) => {
     if (!config.features.firmTeams) return res.status(404).json({ error: "Firm teams are not enabled." });
@@ -1816,9 +1844,35 @@ ${sourceText}`;
       const instruction = typeof req.body.instruction === "string" ? req.body.instruction.trim() : "";
       const draftIds: string[] = Array.isArray(req.body.draftIds)
         ? req.body.draftIds.filter((id: unknown): id is string => typeof id === "string") : [];
-      return res.status(201).json(
-        await db.createCollaborationRequest(req.params.caseId, type, instruction, draftIds, ownership(req))
+      const context = ownership(req);
+      const request = await db.createCollaborationRequest(
+        req.params.caseId, type, instruction, draftIds, context
       );
+      if (config.features.clientNotifications) {
+        const recipients = await clientRepository.notifyMatterClients({
+          context,
+          caseId: req.params.caseId,
+          type: "lawyer_request",
+          title: "Your lawyer sent a new request",
+        });
+        if (config.features.transactionalEmail) {
+          await Promise.all(recipients.map((recipient) => transactionalEmail.send({
+            firmId: context.firmId,
+            clientUserId: recipient.id,
+            toEmail: recipient.email,
+            toName: recipient.name,
+            templateKey: "client_notification",
+            values: {
+              recipientName: recipient.name,
+              subject: "New lawyer request in Exepts",
+              heading: "Your lawyer sent a new request",
+              message: "Open the authorized Matter in your client dashboard to respond.",
+              actionUrl: `${config.appBaseUrl}/client/dashboard?matter=${encodeURIComponent(req.params.caseId)}`,
+            },
+          })));
+        }
+      }
+      return res.status(201).json(request);
     } catch (err: any) {
       const status = /invalid|select at least/i.test(err.message) ? 400 : ownedErrorStatus(err);
       return res.status(status).json({ error: err.message });
@@ -2735,7 +2789,32 @@ INSTRUCTIONS:
       if (!caseId || typeof req.body.shared !== "boolean") {
         return res.status(400).json({ error: "Matter context and sharing state are required" });
       }
-      const draft = await db.setDraftSharing(req.params.id, caseId, req.body.shared, ownership(req));
+      const context = ownership(req);
+      const draft = await db.setDraftSharing(req.params.id, caseId, req.body.shared, context);
+      if (req.body.shared && config.features.clientNotifications) {
+        const recipients = await clientRepository.notifyMatterClients({
+          context,
+          caseId,
+          type: "document_shared",
+          title: "Your lawyer shared Work Product",
+        });
+        if (config.features.transactionalEmail) {
+          await Promise.all(recipients.map((recipient) => transactionalEmail.send({
+            firmId: context.firmId,
+            clientUserId: recipient.id,
+            toEmail: recipient.email,
+            toName: recipient.name,
+            templateKey: "client_notification",
+            values: {
+              recipientName: recipient.name,
+              subject: "Work Product shared in Exepts",
+              heading: "Your lawyer shared Work Product",
+              message: "The shared document is available in your authorized Matter.",
+              actionUrl: `${config.appBaseUrl}/client/dashboard?matter=${encodeURIComponent(caseId)}`,
+            },
+          })));
+        }
+      }
       return res.json({ ...draft, content: cleanWorkProductContent(draft.content) });
     } catch (err: any) {
       return res.status(ownedErrorStatus(err)).json({ error: err.message });
@@ -2804,23 +2883,6 @@ INSTRUCTIONS:
     } catch (err: any) {
       return res.status(ownedErrorStatus(err)).json({ error: err.message });
     }
-  });
-
-  // --- VITE MIDDLEWARE SETUP ---
-
-  if (!isProduction) {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa"
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), "dist");
-    registerProductionFrontend(app, distPath);
-  }
-
-  app.listen(config.port, "0.0.0.0", () => {
-    console.log(`Server running on port ${config.port}`);
   });
 
   app.get("/api/drafts/:id/versions", async (req, res) => {
@@ -2894,6 +2956,23 @@ INSTRUCTIONS:
   app.post("/api/drafts/:id/permanent-deletion/cancel", async (req, res) => {
     if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
     return res.json(await db.cancelPermanentDeletion("work_product", req.params.id, ownership(req)));
+  });
+
+  // --- VITE MIDDLEWARE SETUP ---
+
+  if (!isProduction) {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: "spa"
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distPath = path.join(process.cwd(), "dist");
+    registerProductionFrontend(app, distPath);
+  }
+
+  app.listen(config.port, "0.0.0.0", () => {
+    console.log(`Server running on port ${config.port}`);
   });
 }
 

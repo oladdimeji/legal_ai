@@ -17,6 +17,7 @@ export default function MatterWorkspaceView({
   onClearInitialDraftId,
   googleDriveExportEnabled,
   googleDriveImportEnabled,
+  clientAccountsEnabled,
   resourceLifecycleEnabled,
 }: {
   matterId: string;
@@ -26,6 +27,7 @@ export default function MatterWorkspaceView({
   onClearInitialDraftId: () => void;
   googleDriveExportEnabled: boolean;
   googleDriveImportEnabled: boolean;
+  clientAccountsEnabled: boolean;
   resourceLifecycleEnabled: boolean;
 }) {
   const [matter, setMatter] = useState<Case | null>(null);
@@ -116,7 +118,7 @@ export default function MatterWorkspaceView({
           />
         )}
         {tab === "Collaboration" && (
-          <MatterCollaboration matter={matter} onUnreadChange={setUnread} onOpenWorkProduct={openWorkProduct} />
+          <MatterCollaboration matter={matter} onUnreadChange={setUnread} onOpenWorkProduct={openWorkProduct} clientAccountsEnabled={clientAccountsEnabled} />
         )}
       </main>
     </div>

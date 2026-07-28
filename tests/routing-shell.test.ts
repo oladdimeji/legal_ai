@@ -13,7 +13,7 @@ import { APP_ROUTES } from "../src/lib/appRoutes.js";
 const routeTree = [
   { path: "/", children: [{ index: true }, { path: "login" }, { path: "signup" }] },
   { path: "/app", children: [{ index: true }, { path: "assistant" }, { path: "matters" }, { path: "matters/:matterId" }, { path: "library" }, { path: "history" }, { path: "settings" }] },
-  { path: "/client", children: [{ path: "login" }, { path: "dashboard" }, { path: "invitations/:token" }, { path: ":token" }] },
+  { path: "/client", children: [{ path: "login" }, { path: "dashboard" }, { path: "invitations/:token" }, { path: "verify/:token" }, { path: "reset-password/:token" }, { path: ":token" }] },
 ];
 
 test("public, lawyer, client-account, invitation, and legacy portal paths match distinct routes", () => {
@@ -35,7 +35,7 @@ test("production frontend serves index.html for nested route refreshes", async (
   try {
     const address = server.address();
     assert.ok(address && typeof address === "object");
-    for (const route of ["/app/matters/matter-1", "/client/invitations/invite-1", "/client/legacy-token"]) {
+    for (const route of ["/app/matters/matter-1", "/client/invitations/invite-1", "/client/verify/verify-1", "/client/reset-password/reset-1", "/client/dashboard", "/client/legacy-token"]) {
       const body = await new Promise<string>((resolve, reject) => {
         http.get({ hostname: "127.0.0.1", port: address.port, path: route }, (response) => {
           let value = "";

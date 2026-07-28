@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { ChevronDown, Clipboard, FileText, Link, Send, UserPlus, XCircle } from "lucide-react";
 import { Case, ClientAccess, CollaborationRequest, Draft } from "../types";
+import { secureFetch } from "../lib/secureFetch";
 
 interface SharedDraft extends Draft { client_comments?: Array<{ id: string; content: string; created_at: string }>; }
 interface Data { matter: Case; access: ClientAccess | null; shared: SharedDraft[]; requests: CollaborationRequest[]; unread: number; }
@@ -10,10 +11,12 @@ export default function MatterCollaboration({
   matter,
   onUnreadChange,
   onOpenWorkProduct,
+  clientAccountsEnabled = false,
 }: {
   matter: Case;
   onUnreadChange: (count: number) => void;
   onOpenWorkProduct: (draftId: string) => void;
+  clientAccountsEnabled?: boolean;
 }) {
   const [data, setData] = useState<Data | null>(null);
   const [name, setName] = useState(matter.client_name || "");
@@ -137,12 +140,14 @@ export default function MatterCollaboration({
 
   if (!data.access) {
     return (
-      <div className="mx-auto flex min-h-[55vh] max-w-xl items-center justify-center">
+      <div className="mx-auto max-w-3xl space-y-8">
+        {clientAccountsEnabled && <MatterClientAccounts matterId={matter.id} />}
+        <div className="flex min-h-[45vh] items-center justify-center border-t pt-8">
         <form onSubmit={saveClient} className="w-full space-y-4 text-center">
           <UserPlus className="mx-auto h-8 w-8 text-zinc-300" />
           <div>
             <h3 className="text-sm font-semibold uppercase">Invite Client Collaborator</h3>
-            <p className="mt-2 text-xs text-zinc-500">Create one secure portal collaborator for this Matter.</p>
+            <p className="mt-2 text-xs text-zinc-500">Create one legacy token-portal collaborator for compatibility.</p>
           </div>
           <input value={name} onChange={(e) => setName(e.target.value)} className="w-full rounded border px-3 py-2 text-sm" placeholder="Client name" />
           <input value={email} onChange={(e) => setEmail(e.target.value)} className="w-full rounded border px-3 py-2 text-sm" placeholder="Client email" />
@@ -150,12 +155,14 @@ export default function MatterCollaboration({
             {busy === "creating" ? "Creating..." : busy === "invite" ? "Generating invite..." : "Create Collaborator & Invite"}
           </button>
         </form>
+        </div>
       </div>
     );
   }
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
+      {clientAccountsEnabled && <MatterClientAccounts matterId={matter.id} />}
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h3 className="text-sm font-semibold uppercase">{data.access.client_name}</h3>
@@ -228,4 +235,83 @@ export default function MatterCollaboration({
       </section>
     </div>
   );
+}
+
+type ClientAccountAccess = {
+  memberships: Array<{ id: string; name: string; email: string; status: "active" | "suspended" | "removed" }>;
+  invitations: Array<{ id: string; client_name: string; email: string; status: string; expires_at: string }>;
+};
+
+function MatterClientAccounts({ matterId }: { matterId: string }) {
+  const [data, setData] = useState<ClientAccountAccess>({ memberships: [], invitations: [] });
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [invitationUrl, setInvitationUrl] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const load = async () => {
+    const response = await fetch(`/api/cases/${matterId}/client-accounts`, { cache: "no-store" });
+    if (response.ok) setData(await response.json());
+  };
+  useEffect(() => { void load(); }, [matterId]);
+  const invite = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    setInvitationUrl("");
+    try {
+      const response = await secureFetch(`/api/cases/${matterId}/client-accounts/invitations`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, email }),
+      });
+      const next = await response.json();
+      if (!response.ok) throw new Error(next.error || "Invitation could not be created.");
+      if (next.invitationUrl) setInvitationUrl(next.invitationUrl);
+      if (next.delivery === "failed") {
+        setError("The invitation was created, but transactional email was not delivered. Revoke it before creating a replacement.");
+      }
+      setName("");
+      setEmail("");
+      await load();
+    } catch (inviteError) {
+      setError(inviteError instanceof Error ? inviteError.message : "Invitation could not be created.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const changeStatus = async (
+    membershipId: string,
+    status: "active" | "suspended" | "removed",
+  ) => {
+    if (status === "removed" && !confirm("Remove this client's Matter access?")) return;
+    await secureFetch(
+      `/api/cases/${matterId}/client-accounts/memberships/${membershipId}/status`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      },
+    );
+    await load();
+  };
+  const revokeInvitation = async (invitationId: string) => {
+    await secureFetch(
+      `/api/cases/${matterId}/client-accounts/invitations/${invitationId}`,
+      { method: "DELETE" },
+    );
+    await load();
+  };
+  return <section className="space-y-4 rounded border border-zinc-200 p-5">
+    <div><h3 className="text-sm font-semibold uppercase">Client accounts</h3><p className="mt-1 text-xs text-zinc-500">Invite multiple contacts. Each contact receives only explicit active membership in this Matter.</p></div>
+    <form onSubmit={invite} className="grid gap-3 sm:grid-cols-[1fr_1fr_auto]">
+      <input required value={name} onChange={(event) => setName(event.target.value)} placeholder="Client name" className="rounded border px-3 py-2 text-xs" />
+      <input required type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="client@example.com" className="rounded border px-3 py-2 text-xs" />
+      <button disabled={busy} className="rounded bg-zinc-950 px-4 py-2 text-[9px] font-mono font-bold uppercase text-white disabled:opacity-50">{busy ? "Inviting..." : "Invite client"}</button>
+    </form>
+    {error && <p role="alert" className="text-xs text-red-700">{error}</p>}
+    {invitationUrl && <div className="rounded border bg-zinc-50 p-3"><p className="text-[10px] font-mono font-bold uppercase">Internal preview — one-time invitation link</p><p className="mt-1 break-all text-xs">{invitationUrl}</p><button onClick={() => void navigator.clipboard.writeText(invitationUrl)} className="mt-2 text-[9px] font-mono font-bold uppercase">Copy link</button></div>}
+    {data.memberships.map((membership) => <div key={membership.id} className="flex flex-wrap items-center justify-between gap-3 rounded bg-zinc-50 p-3"><div><p className="text-xs font-semibold">{membership.name}</p><p className="text-[10px] text-zinc-500">{membership.email} · {membership.status}</p></div><div className="flex gap-2">{membership.status === "active" ? <button onClick={() => void changeStatus(membership.id, "suspended")} className="rounded border bg-white px-2 py-1 text-[9px] font-mono uppercase">Suspend</button> : membership.status === "suspended" ? <button onClick={() => void changeStatus(membership.id, "active")} className="rounded border bg-white px-2 py-1 text-[9px] font-mono uppercase">Restore</button> : null}{membership.status !== "removed" && <button onClick={() => void changeStatus(membership.id, "removed")} className="rounded border bg-white px-2 py-1 text-[9px] font-mono uppercase">Remove</button>}</div></div>)}
+    {data.invitations.filter((invitation) => invitation.status === "pending").map((invitation) => <div key={invitation.id} className="flex items-center justify-between gap-3 text-xs text-zinc-500"><p>Pending: {invitation.client_name} · {invitation.email}</p><button onClick={() => void revokeInvitation(invitation.id)} className="rounded border bg-white px-2 py-1 text-[9px] font-mono uppercase">Revoke</button></div>)}
+  </section>;
 }
