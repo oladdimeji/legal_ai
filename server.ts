@@ -3,6 +3,7 @@ import type { NextFunction, Request, Response } from "express";
 import path from "path";
 import multer from "multer";
 import { createServer as createViteServer } from "vite";
+import { registerProductionFrontend } from "./server/frontend.js";
 import { db } from "./server/db.js";
 import type { OwnershipContext } from "./server/db.js";
 import { callModel, MODEL_CONFIGS } from "./server/model.js";
@@ -1609,10 +1610,7 @@ INSTRUCTIONS:
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
-    app.get("*", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
-    });
+    registerProductionFrontend(app, distPath);
   }
 
   app.listen(config.port, "0.0.0.0", () => {

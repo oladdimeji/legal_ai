@@ -150,8 +150,8 @@ test("Phase 9 portal token routes precede and remain separate from lawyer sessio
   ]);
   assert.ok(server.indexOf('app.get("/api/portal/:token"') < server.indexOf('app.use("/api", requireAuth)'));
   assert.match(server, /portalTokenHash = \(token: string\) => hashSessionToken/);
-  assert.match(app, /window\.location\.pathname\.startsWith\("\/client\/"\)/);
-  assert.match(app, /<ClientPortalView token=\{portalToken\}/);
+  assert.match(app, /<Route path="client\/:token" element=\{<LegacyPortalRoute \/>/);
+  assert.match(app, /<ClientPortalView token=\{token\}/);
 });
 
 test("Phase 9 portal SQL allow-lists shared, requested, revision, and client-submission content", async () => {

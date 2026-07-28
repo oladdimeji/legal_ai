@@ -26,6 +26,15 @@ npm run dev
 
 The default address is `http://localhost:3000`.
 
+## Application routes
+
+- `/` is the public Exepts landing page; `/login` and `/signup` are dedicated authentication routes.
+- `/app` is the authenticated lawyer workspace. Its core surfaces and individual Matters have nested browser routes that support direct refresh after authentication.
+- `/client/login`, `/client/dashboard`, and `/client/invitations/:token` reserve the client-account route family behind `FEATURE_CLIENT_ACCOUNTS`.
+- `/client/:token` remains the active legacy token Client Portal until the client-account migration is completed.
+
+Production serving returns the built `index.html` for non-API route refreshes. Reverse proxies must forward these application paths to Exepts rather than returning their own 404 page.
+
 ## Verification and production startup
 
 ```bash
@@ -79,7 +88,7 @@ Run `npm start` under a service manager. Place a reverse proxy in front of the a
 
 The canonical variables are documented in `.env.example`. `GEMINI_API_KEY` and `SUPABASE_DB_URL` are required by existing model and database workflows. Leave `LEGACY_OWNER_USER_ID`, `LEGACY_OWNER_FIRM_ID`, and `LEGACY_OWNER_INITIAL_PASSWORD` empty unless performing the existing explicit prototype-owner migration; when that migration is needed, all three must be supplied together.
 
-Every new feature flag defaults to `false`. Provider-specific configuration is validated only when its corresponding feature is enabled. `FEATURE_GOVINFO`, `FEATURE_COURTLISTENER`, `FEATURE_GMAIL_SEND`, and `FEATURE_OCR` must remain false in this phase. Google Drive uses its own `FEATURE_GOOGLE_DRIVE` flag and, when implemented and enabled in its named phase, requires server-side OAuth settings plus `APP_ENCRYPTION_KEY_BASE64`; no Gmail scope is requested.
+Every new feature flag defaults to `false`. Provider-specific configuration is validated only when its corresponding feature is enabled. `FEATURE_CLIENT_ACCOUNTS=false` keeps reserved client-account routes inactive while legacy token links continue working. `FEATURE_GOVINFO`, `FEATURE_COURTLISTENER`, `FEATURE_GMAIL_SEND`, and `FEATURE_OCR` must remain false in this phase. Google Drive uses its own `FEATURE_GOOGLE_DRIVE` flag and, when implemented and enabled in its named phase, requires server-side OAuth settings plus `APP_ENCRYPTION_KEY_BASE64`; no Gmail scope is requested.
 
 See [the manual staging checklist](docs/MANUAL_STAGING_CHECKLIST.md) before changing any flag.
 

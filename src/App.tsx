@@ -1,179 +1,126 @@
-import React, { useState, useEffect } from "react";
-import Sidebar from "./components/Sidebar";
+import React, { useEffect, useState } from "react";
+import { Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
 import AssistantView from "./components/AssistantView";
-import FirmLibraryView from "./components/FirmLibraryView";
-import MattersView from "./components/MattersView";
-import SettingsView from "./components/SettingsView";
-import MatterWorkspaceView from "./components/MatterWorkspaceView";
-import HistoryView from "./components/HistoryView";
 import AuthView from "./components/AuthView";
-import { Case, Firm, User } from "./types";
 import ClientPortalView from "./components/ClientPortalView";
-import {
-  disabledPublicBrowserConfig,
-  type PublicBrowserConfig,
-} from "./lib/publicConfig";
+import FirmLibraryView from "./components/FirmLibraryView";
+import HistoryView from "./components/HistoryView";
+import ClientLayout from "./components/layouts/ClientLayout";
+import PublicLayout from "./components/layouts/PublicLayout";
+import MatterWorkspaceView from "./components/MatterWorkspaceView";
+import MattersView from "./components/MattersView";
+import PublicLandingPage from "./components/PublicLandingPage";
+import SettingsView from "./components/SettingsView";
+import Sidebar from "./components/Sidebar";
+import { EmptyState, ErrorState, LoadingState } from "./components/ui/States";
+import { disabledPublicBrowserConfig, type PublicBrowserConfig } from "./lib/publicConfig";
+import { Case, Firm, User } from "./types";
+
+type Account = { user: User; firm: Firm };
+
+function ClientAccountUnavailable() {
+  return <div className="mx-auto max-w-lg p-6 pt-20"><EmptyState title="Client accounts are not available yet" detail="Use the secure invitation link supplied by your lawyer. Existing invitation links continue to work." /></div>;
+}
 
 export default function App() {
-  const portalToken = window.location.pathname.startsWith("/client/")
-    ? decodeURIComponent(window.location.pathname.slice("/client/".length)) : null;
-  const [activeTab, setActiveTab] = useState<string>("assistant");
   const [cases, setCases] = useState<Case[]>([]);
-  const [activeCaseId, setActiveCaseId] = useState<string | null>(null);
-  const [account, setAccount] = useState<{ user: User; firm: Firm } | null>(null);
+  const [account, setAccount] = useState<Account | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
-  const [publicConfig, setPublicConfig] = useState<PublicBrowserConfig>(
-    disabledPublicBrowserConfig
-  );
-
-  // Carries a draft reference when auto-generating and navigating
-  const [initialDraftId, setInitialDraftId] = useState<string | null>(null);
-
-  // Dynamic state for active thread in assistant
-  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
-
-  // Dynamic collapsible sidebar state
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [publicConfig, setPublicConfig] = useState<PublicBrowserConfig>(disabledPublicBrowserConfig);
 
   useEffect(() => {
-    fetch("/api/config")
-      .then((response) => response.ok ? response.json() : Promise.reject(new Error("Unavailable")))
-      .then((value: PublicBrowserConfig) => setPublicConfig(value))
-      .catch(() => setPublicConfig(disabledPublicBrowserConfig));
+    fetch("/api/config").then((response) => response.ok ? response.json() : Promise.reject()).then(setPublicConfig).catch(() => setPublicConfig(disabledPublicBrowserConfig));
+    fetch("/api/auth/me").then(async (response) => {
+      if (response.ok) setAccount(await response.json());
+    }).catch(() => undefined).finally(() => setAuthLoading(false));
   }, []);
 
-  useEffect(() => {
-    if (portalToken) { setAuthLoading(false); return; }
-    const loadSession = async () => {
-      try {
-        const res = await fetch("/api/auth/me");
-        if (res.ok) setAccount(await res.json());
-      } catch (err) {
-        console.error("Error loading session:", err);
-      } finally {
-        setAuthLoading(false);
-      }
-    };
-    loadSession();
-  }, [portalToken]);
+  const fetchCases = async () => {
+    const response = await fetch("/api/cases");
+    if (response.ok) setCases(await response.json());
+  };
 
   useEffect(() => {
-    if (account) fetchCases();
+    if (account) void fetchCases();
     else setCases([]);
   }, [account]);
 
-  const fetchCases = async () => {
-    try {
-      const res = await fetch("/api/cases");
-      const data = await res.json();
-      setCases(data);
-    } catch (err) {
-      console.error("Error fetching cases list:", err);
-    }
+  const logout = async () => {
+    try { await fetch("/api/auth/logout", { method: "POST" }); } finally { setAccount(null); setCases([]); }
   };
 
-  const handleOpenMatter = (matterId: string) => {
-    setActiveCaseId(matterId);
-    setActiveThreadId(null);
-    setActiveTab("matter");
-  };
+  if (authLoading) return <div className="min-h-screen bg-white"><LoadingState label="Loading secure workspace…" /></div>;
 
-  const handleMatterChange = (matter: Case) => {
-    setCases((current) => current.map((item) => item.id === matter.id ? matter : item));
-  };
+  return <Routes>
+    <Route element={<PublicLayout />}>
+      <Route index element={<PublicLandingPage />} />
+      <Route path="login" element={account ? <Navigate to="/app" replace /> : <AuthView mode="login" onAuthenticated={setAccount} />} />
+      <Route path="signup" element={account ? <Navigate to="/app" replace /> : <AuthView mode="signup" onAuthenticated={setAccount} />} />
+    </Route>
 
-  const handleNavigateToDrafts = (draftId: string) => {
-    setInitialDraftId(draftId);
-    setActiveTab("matter");
-  };
+    <Route path="app/*" element={account
+      ? <LawyerWorkspace account={account} cases={cases} fetchCases={fetchCases} logout={logout} featureFlags={publicConfig.features} />
+      : <Navigate to="/login" replace />} />
 
-  const handleClearInitialDraftId = () => {
-    setInitialDraftId(null);
-  };
+    <Route path="client" element={<ClientLayout />}>
+      <Route path="login" element={<ClientAccountUnavailable />} />
+      <Route path="dashboard" element={<ClientAccountUnavailable />} />
+      <Route path="invitations/:token" element={publicConfig.features.clientAccounts ? <ClientAccountUnavailable /> : <ClientAccountUnavailable />} />
+    </Route>
+    <Route path="client/:token" element={<LegacyPortalRoute />} />
+    <Route path="*" element={<div className="mx-auto max-w-lg p-8 pt-24"><ErrorState title="Page not found" detail="The requested page does not exist or has moved." /></div>} />
+  </Routes>;
+}
 
-  const handleStartNewThread = () => {
-    setActiveThreadId(null);
-    setActiveTab("assistant");
-    setIsSidebarCollapsed(false); // Restore sidebar when starting a completely fresh chat
-  };
+function LegacyPortalRoute() {
+  const { token } = useParams();
+  return token ? <ClientPortalView token={token} /> : <Navigate to="/client/login" replace />;
+}
 
-  const handleLogout = async () => {
-    try {
-      await fetch("/api/auth/logout", { method: "POST" });
-    } finally {
-      setAccount(null);
-      setActiveCaseId(null);
-      setActiveThreadId(null);
-      setInitialDraftId(null);
-      setActiveTab("assistant");
-    }
-  };
+interface LawyerWorkspaceProps {
+  account: Account;
+  cases: Case[];
+  fetchCases: () => Promise<void>;
+  logout: () => Promise<void>;
+  featureFlags: PublicBrowserConfig["features"];
+}
 
-  if (portalToken) return <ClientPortalView token={portalToken} />;
+function LawyerWorkspace({ account, cases, fetchCases, logout, featureFlags }: LawyerWorkspaceProps) {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const [activeCaseId, setActiveCaseId] = useState<string | null>(null);
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+  const [initialDraftId, setInitialDraftId] = useState<string | null>(null);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
 
-  if (authLoading) {
-    return (
-      <div className="h-screen w-screen bg-white flex items-center justify-center text-xs font-mono uppercase text-zinc-500">
-        Loading secure workspace...
-      </div>
-    );
-  }
+  const activeTab = location.pathname.includes("/matters/") ? "matter" : location.pathname.split("/")[2] || "assistant";
+  const goTo = (tab: string) => navigate(tab === "assistant" ? "/app" : `/app/${tab}`);
+  const startAssistant = () => { setActiveThreadId(null); setIsSidebarCollapsed(false); navigate("/app"); };
 
-  if (!account) {
-    return <AuthView onAuthenticated={setAccount} />;
-  }
+  return <div className="flex h-screen w-screen overflow-hidden bg-white font-sans text-zinc-900">
+    <a href="#lawyer-content" className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:bg-white focus:p-3">Skip to workspace</a>
+    <Sidebar activeTab={activeTab} setActiveTab={goTo} firmName={account.firm.name} userName={account.user.name} userEmail={account.user.email} onLogout={() => void logout().then(() => navigate("/login"))} isCollapsed={isSidebarCollapsed} setIsCollapsed={setIsSidebarCollapsed} onStartNewThread={startAssistant} />
+    <main id="lawyer-content" className="flex h-full min-w-0 flex-1 flex-col overflow-hidden">
+      <Routes>
+        <Route index element={<AssistantView cases={cases} activeCaseId={activeCaseId} setActiveCaseId={setActiveCaseId} activeThreadId={activeThreadId} setActiveThreadId={setActiveThreadId} onMessagesChange={() => undefined} onNavigateToDrafts={(draftId) => { setInitialDraftId(draftId); if (activeCaseId) navigate(`/app/matters/${activeCaseId}`); }} featureFlags={featureFlags} />} />
+        <Route path="assistant" element={<Navigate to="/app" replace />} />
+        <Route path="matters" element={<MattersView matters={cases} onRefresh={fetchCases} onOpenMatter={(matterId) => { setActiveCaseId(matterId); setActiveThreadId(null); navigate(`/app/matters/${matterId}`); }} />} />
+        <Route path="matters/:matterId" element={<MatterRoute cases={cases} onBack={() => navigate("/app/matters")} onMatterChange={(matter) => { setActiveCaseId(matter.id); void fetchCases(); }} initialDraftId={initialDraftId} clearDraft={() => setInitialDraftId(null)} />} />
+        <Route path="library" element={<FirmLibraryView />} />
+        <Route path="history" element={<HistoryView cases={cases} activeThreadId={activeThreadId} onSelectThread={(thread) => { setActiveCaseId(thread.case_id); setActiveThreadId(thread.id); navigate("/app"); }} />} />
+        <Route path="settings" element={<SettingsView user={account.user} onLogout={() => void logout().then(() => navigate("/login"))} />} />
+        <Route path="*" element={<Navigate to="/app" replace />} />
+      </Routes>
+    </main>
+    <Outlet />
+  </div>;
+}
 
-  return (
-    <div className="flex h-screen w-screen overflow-hidden bg-white text-zinc-900 font-sans">
-      
-      {/* Sidebar Navigation */}
-      <Sidebar 
-        activeTab={activeTab} 
-        setActiveTab={setActiveTab} 
-        firmName={account.firm.name}
-        userName={account.user.name}
-        userEmail={account.user.email}
-        onLogout={handleLogout}
-        isCollapsed={isSidebarCollapsed}
-        setIsCollapsed={setIsSidebarCollapsed}
-        onStartNewThread={handleStartNewThread}
-      />
-
-      {/* Main View Area */}
-      <main className="flex-1 h-full overflow-hidden flex flex-col">
-        {activeTab === "assistant" && (
-          <AssistantView 
-            cases={cases}
-            activeCaseId={activeCaseId}
-            setActiveCaseId={setActiveCaseId}
-            activeThreadId={activeThreadId}
-            setActiveThreadId={setActiveThreadId}
-            onMessagesChange={() => undefined}
-            onNavigateToDrafts={handleNavigateToDrafts}
-            featureFlags={publicConfig.features}
-          />
-        )}
-
-        {activeTab === "matters" && <MattersView matters={cases} onRefresh={fetchCases} onOpenMatter={handleOpenMatter} />}
-
-        {activeTab === "library" && <FirmLibraryView />}
-
-        {activeTab === "matter" && activeCaseId && <MatterWorkspaceView matterId={activeCaseId} onBack={() => setActiveTab("matters")} onMatterChange={handleMatterChange} initialDraftId={initialDraftId} onClearInitialDraftId={handleClearInitialDraftId} />}
-
-        {activeTab === "history" && (
-          <HistoryView 
-            cases={cases}
-            activeThreadId={activeThreadId}
-            onSelectThread={(thread) => {
-              setActiveCaseId(thread.case_id);
-              setActiveThreadId(thread.id);
-              setActiveTab("assistant");
-            }}
-          />
-        )}
-
-        {activeTab === "settings" && <SettingsView user={account.user} onLogout={handleLogout} />}
-      </main>
-    </div>
-  );
+function MatterRoute({ cases, onBack, onMatterChange, initialDraftId, clearDraft }: { cases: Case[]; onBack: () => void; onMatterChange: (matter: Case) => void; initialDraftId: string | null; clearDraft: () => void }) {
+  const { matterId } = useParams();
+  useEffect(() => {
+    if (matterId && cases.some((matter) => matter.id === matterId)) return;
+  }, [cases, matterId]);
+  if (!matterId) return <ErrorState title="Matter unavailable" />;
+  return <MatterWorkspaceView matterId={matterId} onBack={onBack} onMatterChange={onMatterChange} initialDraftId={initialDraftId} onClearInitialDraftId={clearDraft} />;
 }

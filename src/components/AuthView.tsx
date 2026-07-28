@@ -1,12 +1,13 @@
 import React, { useState } from "react";
+import { Link } from "react-router-dom";
 import { Firm, User } from "../types";
 
 interface AuthViewProps {
+  mode: "login" | "signup";
   onAuthenticated: (account: { user: User; firm: Firm }) => void;
 }
 
-export default function AuthView({ onAuthenticated }: AuthViewProps) {
-  const [mode, setMode] = useState<"login" | "signup">("login");
+export default function AuthView({ mode, onAuthenticated }: AuthViewProps) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -33,14 +34,8 @@ export default function AuthView({ onAuthenticated }: AuthViewProps) {
     }
   };
 
-  const switchMode = (nextMode: "login" | "signup") => {
-    setMode(nextMode);
-    setError("");
-    setPassword("");
-  };
-
   return (
-    <div className="min-h-screen w-full bg-white text-zinc-900 flex items-center justify-center p-6">
+    <div className="w-full bg-white text-zinc-900 flex items-center justify-center p-6 py-16">
       <div className="w-full max-w-md border border-zinc-200 rounded-lg bg-white shadow-sm overflow-hidden">
         <div className="px-8 py-7 border-b border-zinc-200 bg-zinc-50">
           <div>
@@ -113,13 +108,12 @@ export default function AuthView({ onAuthenticated }: AuthViewProps) {
             {submitting ? "Please wait..." : mode === "login" ? "Log in" : "Sign up"}
           </button>
 
-          <button
-            type="button"
-            onClick={() => switchMode(mode === "login" ? "signup" : "login")}
+          <Link
+            to={mode === "login" ? "/signup" : "/login"}
             className="w-full text-xs text-zinc-600 hover:text-zinc-950 underline underline-offset-4"
           >
             {mode === "login" ? "Need an account? Sign up" : "Already have an account? Log in"}
-          </button>
+          </Link>
         </form>
       </div>
     </div>

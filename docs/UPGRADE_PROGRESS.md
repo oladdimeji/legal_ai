@@ -1,5 +1,48 @@
 # Compact Upgrade Progress
 
+## V1 Completion Phase — Public/Application/Client Routing and Accessible UI Shell
+
+Status: Complete.
+
+Implemented:
+
+- Added React Router incrementally with public, authenticated lawyer, reserved client-account/invitation, and legacy token route families.
+- Added separate public, lawyer, and client layouts plus a responsive monochrome Exepts landing page.
+- Preserved the existing Assistant, Matters, Firm Library, Matter Intelligence, Work Product, collaboration, History, Settings, authentication, and legacy Client Portal workflow components.
+- Kept `/client/:token` independent of the default-false client-account gate.
+- Added reusable accessible loading, empty, and error states, skip links, landmarks, active navigation semantics, and narrow-screen navigation behavior.
+- Extracted the production SPA fallback into a testable helper so nested route refreshes return the built application.
+
+Schema changes:
+
+- None. No migration or stored-data operation was required.
+
+Dependencies added:
+
+- `react-router-dom` 7.18.1 for browser routing and nested route matching.
+
+Verification:
+
+- Pre-change `npm ci`: passed; 0 vulnerabilities.
+- Pre-change `npm run verify`: passed with 89/89 tests and the existing Vite large-chunk warning.
+- Behavioral coverage includes route precedence/matching, real HTTP deep-refresh fallback, and rendered shell accessibility landmarks/skip links.
+- Final `npm run lint`: passed.
+- Final `npm test`: passed, 92/92 tests.
+- Final `npm run build`: passed with the existing large-chunk warning.
+- Final `npm run verify`: passed.
+- Docker build: not required for this routing/UI-shell phase.
+
+Feature gate:
+
+- `FEATURE_CLIENT_ACCOUNTS=false` remains the exact gate until client-account staging and migration pass. Reserved account routes remain inactive; legacy token access is unchanged.
+
+Known limitations:
+
+- Client account authentication and dashboards are route reservations only and remain intentionally unavailable.
+- Google account linking/Drive, GovInfo, OCR, CourtListener, Gmail sending, storage workers, and other deferred phases are not implemented here.
+- The existing large frontend chunk warning remains; workflow code-splitting was outside this controlled routing phase.
+- npm currently reports two high-severity React Router advisories affecting published 7.x ranges. Version 7.18.1 is browser-only here (no React Router framework actions, SSR, RSC, or server actions); upgrading remains required when a non-vulnerable compatible release is published.
+
 ## V1 Completion Phase — Central Configuration and Safe Provider Foundations
 
 Status: Complete.

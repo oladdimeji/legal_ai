@@ -1,0 +1,16 @@
+export const APP_ROUTES = {
+  home: "/",
+  login: "/login",
+  signup: "/signup",
+  lawyer: "/app",
+  assistant: "/app/assistant",
+  matters: "/app/matters",
+  matter: "/app/matters/:matterId",
+  library: "/app/library",
+  history: "/app/history",
+  settings: "/app/settings",
+  clientLogin: "/client/login",
+  clientDashboard: "/client/dashboard",
+  clientInvitation: "/client/invitations/:token",
+  legacyClientPortal: "/client/:token",
+} as const;

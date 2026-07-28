@@ -37,8 +37,8 @@ export default function Sidebar({
   return (
     <div 
       id="sidebar-container"
-      className={`bg-white text-zinc-900 border-r border-zinc-200 flex flex-col h-full shrink-0 transition-all duration-300 ${
-        collapsedActual ? "w-16" : "w-64"
+      className={`bg-white text-zinc-900 border-r border-zinc-200 flex w-16 flex-col h-full shrink-0 transition-all duration-300 ${
+        collapsedActual ? "sm:w-16" : "sm:w-64"
       }`}
     >
       {/* Brand Header */}
@@ -54,7 +54,7 @@ export default function Sidebar({
         {collapsedActual ? (
           <span className="font-sans text-sm font-semibold text-zinc-900" aria-hidden="true">E</span>
         ) : (
-          <div className="min-w-0 flex-1">
+          <div className="hidden min-w-0 flex-1 sm:block">
             <h1 className="font-sans font-semibold text-sm tracking-tight text-zinc-900 uppercase truncate">Exepts</h1>
             <p className="text-[10px] font-mono text-zinc-500 truncate">{firmName || "Sterling & Croft LLP"}</p>
           </div>
@@ -78,6 +78,7 @@ export default function Sidebar({
                 }
               }}
               title={collapsedActual ? item.label : undefined}
+              aria-current={isActive ? "page" : undefined}
               className={`w-full flex items-center ${
                 collapsedActual ? "justify-center px-2 py-3" : "gap-3 px-4 py-3"
               } rounded-md text-xs font-medium tracking-wide transition-all uppercase duration-150 ${
@@ -87,7 +88,7 @@ export default function Sidebar({
               }`}
             >
               <Icon className="h-4 w-4 shrink-0" />
-              {!collapsedActual && <span className="truncate">{item.label}</span>}
+              {!collapsedActual && <span className="hidden truncate sm:block">{item.label}</span>}
             </button>
           );
         })}
@@ -100,7 +101,7 @@ export default function Sidebar({
             {userName ? userName.charAt(0).toUpperCase() : "U"}
           </div>
           {!collapsedActual && (
-            <div className="min-w-0 flex-1">
+            <div className="hidden min-w-0 flex-1 sm:block">
               <p className="text-xs font-semibold text-zinc-900 truncate">{userName || "Counsel"}</p>
               <p className="text-[9px] font-mono text-zinc-500 truncate">{userEmail}</p>
             </div>
