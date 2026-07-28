@@ -1,5 +1,48 @@
 # Compact Upgrade Progress
 
+## V1 Completion Phase — Central Configuration and Safe Provider Foundations
+
+Status: Complete.
+
+Implemented:
+
+- Added one typed server configuration module with strict boolean/port/environment validation and conditional provider requirements.
+- Added independent default-false flags for public landing, async ingestion, GovInfo, CourtListener, Google Drive, Gmail send, OCR, client accounts, and firm teams.
+- Kept GovInfo, CourtListener, Gmail send, and OCR unavailable in this phase; attempted activation fails safely at startup.
+- Removed every canned CourtListener and GovInfo result. Disabled adapters return no authority, and Assistant requests are independently gated on server flags.
+- Added typed boundaries for object storage, jobs, malware scanning, GovInfo, Google Drive, transactional email, and observability without implementing deferred providers.
+- Added an explicit allow-listed `/api/config` browser payload and conditional Assistant controls.
+- Added `/api/health/live` and `/api/health/ready` foundations while retaining `/api/health`.
+
+Schema changes:
+
+- None. No migration or stored-data operation was required.
+
+Dependencies added:
+
+- None.
+
+Verification:
+
+- Pre-change `npm ci`: passed; 0 vulnerabilities.
+- Pre-change `npm run verify`: passed with 82/82 tests and the existing Vite large-chunk warning.
+- Phase tests cover default/independent flags, conditional configuration validation, deferred activation, empty adapters, forged source selections, public configuration allow-listing, credential-safe errors, conditional controls, and health routes.
+- Final `npm run lint`: passed.
+- Final `npm test`: passed, 89/89 tests.
+- Final `npm run build`: passed with the existing Vite large-chunk warning.
+- Final `npm run verify`: passed.
+- Docker build: not required for this configuration-foundation phase; the Docker configuration regression test passed.
+
+Feature gate:
+
+- `FEATURE_GOVINFO=false` remains the exact live-connector staging gate.
+
+Known limitations:
+
+- GovInfo has no live implementation in this phase.
+- CourtListener, Gmail sending, and OCR remain intentionally deferred.
+- Health foundations currently check application/database readiness only; detailed provider checks belong to phases that activate those providers.
+
 ## Preparation baseline
 
 - Date: 2026-07-21

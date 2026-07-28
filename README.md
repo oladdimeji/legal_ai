@@ -38,7 +38,14 @@ npm start
 
 `npm run verify` runs the type/lint check, automated tests, and production build. `npm start` serves the already-built application and forces `NODE_ENV=production` even when it was not exported by the operator.
 
-At startup, Exepts connects to the external database, acquires the existing migration advisory lock, and applies any pending repository migrations before serving routes. Startup does not seed demo data unless `SEED_DEMO_DATA=true`; keep it false in normal and production environments. The health endpoint is `GET /api/health`.
+At startup, Exepts validates centralized server configuration, connects to the external database, acquires the existing migration advisory lock, and applies any pending repository migrations before serving routes. Startup does not seed demo data unless `SEED_DEMO_DATA=true`; keep it false in normal and production environments.
+
+Health endpoints:
+
+- `GET /api/health/live` is the liveness foundation.
+- `GET /api/health/ready` reports readiness with non-secret check names and states.
+- `GET /api/health` remains as the backward-compatible deployment health endpoint.
+- `GET /api/config` returns only an explicit allow-list of browser-safe feature flags.
 
 ## Docker Compose deployment
 
@@ -70,7 +77,11 @@ Run `npm start` under a service manager. Place a reverse proxy in front of the a
 
 ## Environment
 
-The canonical variables are documented in `.env.example`. `GEMINI_API_KEY` and `SUPABASE_DB_URL` are required. Leave `LEGACY_OWNER_USER_ID`, `LEGACY_OWNER_FIRM_ID`, and `LEGACY_OWNER_INITIAL_PASSWORD` empty unless performing the existing explicit prototype-owner migration; when that migration is needed, all three must be supplied together.
+The canonical variables are documented in `.env.example`. `GEMINI_API_KEY` and `SUPABASE_DB_URL` are required by existing model and database workflows. Leave `LEGACY_OWNER_USER_ID`, `LEGACY_OWNER_FIRM_ID`, and `LEGACY_OWNER_INITIAL_PASSWORD` empty unless performing the existing explicit prototype-owner migration; when that migration is needed, all three must be supplied together.
+
+Every new feature flag defaults to `false`. Provider-specific configuration is validated only when its corresponding feature is enabled. `FEATURE_GOVINFO`, `FEATURE_COURTLISTENER`, `FEATURE_GMAIL_SEND`, and `FEATURE_OCR` must remain false in this phase. Google Drive uses its own `FEATURE_GOOGLE_DRIVE` flag and, when implemented and enabled in its named phase, requires server-side OAuth settings plus `APP_ENCRYPTION_KEY_BASE64`; no Gmail scope is requested.
+
+See [the manual staging checklist](docs/MANUAL_STAGING_CHECKLIST.md) before changing any flag.
 
 ## Troubleshooting
 

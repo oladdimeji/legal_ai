@@ -13,6 +13,7 @@ import { Case, Thread, Message, Citation, ResearchStep } from "../types";
 import FormattedMarkdown from "./FormattedMarkdown";
 import { browserFileIdentity, MAX_SELECTED_FILES } from "../hooks/useCumulativeFileSelection";
 import { assistantCitationsToDisplayText } from "../lib/assistantCitations";
+import type { PublicBrowserConfig } from "../lib/publicConfig";
 
 type TemporaryFile = {
   id: string;
@@ -32,6 +33,7 @@ interface AssistantViewProps {
   setActiveThreadId: (id: string | null) => void;
   onMessagesChange: (count: number) => void;
   onNavigateToDrafts: (draftId: string) => void;
+  featureFlags: PublicBrowserConfig["features"];
 }
 
 const STOP_WORDS = new Set([
@@ -132,7 +134,8 @@ export default function AssistantView({
   activeThreadId,
   setActiveThreadId,
   onMessagesChange,
-  onNavigateToDrafts
+  onNavigateToDrafts,
+  featureFlags
 }: AssistantViewProps) {
   const [threads, setThreads] = useState<Thread[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -639,14 +642,14 @@ export default function AssistantView({
                   <button type="button" onClick={() => setEnableWebSearch(false)} className="hover:text-zinc-900 font-bold ml-1 text-[10px] focus:outline-none cursor-pointer">✕</button>
                 </span>
               )}
-              {enableCourtListener && (
+              {featureFlags.courtListener && enableCourtListener && (
                 <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 bg-zinc-50 text-zinc-600 rounded-full text-xs font-mono border border-zinc-200 animate-fade-in">
                   <Library className="h-3 w-3 shrink-0 text-zinc-450" />
                   <span>CourtListener</span>
                   <button type="button" onClick={() => setEnableCourtListener(false)} className="hover:text-zinc-900 font-bold ml-1 text-[10px] focus:outline-none cursor-pointer">✕</button>
                 </span>
               )}
-              {enableGovInfo && (
+              {featureFlags.govInfo && enableGovInfo && (
                 <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 bg-zinc-50 text-zinc-600 rounded-full text-xs font-mono border border-zinc-200 animate-fade-in">
                   <FileText className="h-3 w-3 shrink-0 text-zinc-450" />
                   <span>GovInfo</span>
@@ -734,7 +737,7 @@ export default function AssistantView({
                     <div>
                       <span className="text-[10px] font-mono uppercase text-zinc-400 font-bold block mb-2 tracking-wider">Legal Data Grounding</span>
                       <div className="space-y-2">
-                        <button
+                        {featureFlags.courtListener && <button
                           type="button"
                           onClick={() => setEnableWebSearch(!enableWebSearch)}
                           className={`w-full flex items-center justify-between px-3 py-2 text-xs rounded-md border transition-all cursor-pointer ${
@@ -750,9 +753,9 @@ export default function AssistantView({
                           <div className={`w-4 h-4 rounded border flex items-center justify-center ${enableWebSearch ? "bg-amber-600 border-amber-600 text-white" : "border-zinc-300 bg-white"}`}>
                             {enableWebSearch && <Check className="h-3 w-3" />}
                           </div>
-                        </button>
+                        </button>}
 
-                        <button
+                        {featureFlags.govInfo && <button
                           type="button"
                           onClick={() => setEnableCourtListener(!enableCourtListener)}
                           className={`w-full flex items-center justify-between px-3 py-2 text-xs rounded-md border transition-all cursor-pointer ${
@@ -768,7 +771,7 @@ export default function AssistantView({
                           <div className={`w-4 h-4 rounded border flex items-center justify-center ${enableCourtListener ? "bg-blue-600 border-blue-600 text-white" : "border-zinc-300 bg-white"}`}>
                             {enableCourtListener && <Check className="h-3 w-3" />}
                           </div>
-                        </button>
+                        </button>}
 
                         <button
                           type="button"

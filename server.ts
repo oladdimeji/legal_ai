@@ -6,14 +6,14 @@ import { createServer as createViteServer } from "vite";
 import { db } from "./server/db.js";
 import type { OwnershipContext } from "./server/db.js";
 import { callModel, MODEL_CONFIGS } from "./server/model.js";
-import { CourtListenerAdapter } from "./server/connectors/courtlistener.js";
-import { GovInfoAdapter } from "./server/connectors/govinfo.js";
+import { queryLegalSources } from "./server/connectors/legalSources.js";
 import { Document, Citation, Message, Draft, ResearchStep } from "./src/types.js";
 import { Packer } from "docx";
 import { extractUploads, MAX_FILE_COUNT, MAX_FILE_SIZE_BYTES } from "./server/fileExtraction.js";
 import { markdownToDocxDocument } from "./server/docxMarkdown.js";
 import { cleanMatterIntelligenceContent } from "./server/matterIntelligenceContent.js";
 import { cleanClientAssistantContent, cleanGeneratedBoilerplate } from "./server/generatedContentCleanup.js";
+import { loadServerConfig, toPublicBrowserConfig } from "./server/config.js";
 import { canonicalizeAssistantCitations, rewriteGoogleGroundingCitations, stripInternalCitationsForWorkProduct } from "./src/lib/assistantCitations.js";
 import {
   SESSION_COOKIE_NAME,
@@ -27,8 +27,8 @@ import {
   verifyPassword,
 } from "./server/auth.js";
 
-const isProduction = process.env.NODE_ENV === "production";
-const PORT = Number(process.env.PORT) || 3000;
+const config = loadServerConfig();
+const isProduction = config.environment === "production";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const SIMILARITY_THRESHOLD = 0.65;
@@ -229,6 +229,14 @@ async function startServer() {
   const app = express();
   app.use(express.json());
 
+  app.get("/api/health/live", (_req, res) => {
+    res.json({ status: "ok" });
+  });
+
+  app.get("/api/config", (_req, res) => {
+    res.json(toPublicBrowserConfig(config));
+  });
+
   // Migrations and legacy ownership validation must succeed before any route is served.
   try {
     await db.initialize();
@@ -242,9 +250,16 @@ async function startServer() {
 
   // --- API ROUTES ---
 
-  // Health check
-  app.get("/api/health", (req, res) => {
-    res.json({ status: "ok", time: new Date().toISOString() });
+  // Backward-compatible health route plus an explicit readiness route.
+  app.get("/api/health", (_req, res) => {
+    res.json({ status: "ok" });
+  });
+
+  app.get("/api/health/ready", (_req, res) => {
+    if (!db.isReady()) {
+      return res.status(503).json({ status: "not_ready", checks: { database: "unavailable" } });
+    }
+    return res.json({ status: "ready", checks: { database: "ready" } });
   });
 
   app.post("/api/auth/signup", async (req, res) => {
@@ -1056,8 +1071,16 @@ Query: "${content}"`;
           const localChunks = allLocalChunks.filter(c => c.similarity >= SIMILARITY_THRESHOLD);
           
           // Connectors Query
-          const clResults = enableCourtListener ? await CourtListenerAdapter.query(subQ) : [];
-          const giResults = enableGovInfo ? await GovInfoAdapter.query(subQ) : [];
+          const legalSourceResults = await queryLegalSources(
+            subQ,
+            config.features,
+            {
+              courtListener: enableCourtListener === true,
+              govInfo: enableGovInfo === true,
+            }
+          );
+          const clResults = legalSourceResults.courtListener;
+          const giResults = legalSourceResults.govInfo;
 
           // Register retrieved context to citations
           const stepCitations: string[] = [];
@@ -1207,11 +1230,19 @@ ${citationInstSearch}`;
         console.log(`[Standard Research] Performing single-shot legal lookup for: "${content}"...`);
 
         // Perform parallel lookups
-        const [allLocalChunks, clResults, giResults] = await Promise.all([
+        const [allLocalChunks, legalSourceResults] = await Promise.all([
           db.vectorSearch(retrievalQuery.slice(0, 4000), scope, requestOwnership, 3),
-          enableCourtListener ? CourtListenerAdapter.query(content) : Promise.resolve([]),
-          enableGovInfo ? GovInfoAdapter.query(content) : Promise.resolve([])
+          queryLegalSources(
+            content,
+            config.features,
+            {
+              courtListener: enableCourtListener === true,
+              govInfo: enableGovInfo === true,
+            }
+          ),
         ]);
+        const clResults = legalSourceResults.courtListener;
+        const giResults = legalSourceResults.govInfo;
 
         const localChunks = allLocalChunks.filter(c => c.similarity >= SIMILARITY_THRESHOLD);
 
@@ -1584,9 +1615,13 @@ INSTRUCTIONS:
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+  app.listen(config.port, "0.0.0.0", () => {
+    console.log(`Server running on port ${config.port}`);
   });
 }
 
-startServer();
+startServer().catch((error) => {
+  const message = error instanceof Error ? error.message : "Unknown startup error";
+  console.error("Server startup failed:", message);
+  process.exitCode = 1;
+});

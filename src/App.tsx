@@ -9,6 +9,10 @@ import HistoryView from "./components/HistoryView";
 import AuthView from "./components/AuthView";
 import { Case, Firm, User } from "./types";
 import ClientPortalView from "./components/ClientPortalView";
+import {
+  disabledPublicBrowserConfig,
+  type PublicBrowserConfig,
+} from "./lib/publicConfig";
 
 export default function App() {
   const portalToken = window.location.pathname.startsWith("/client/")
@@ -18,6 +22,9 @@ export default function App() {
   const [activeCaseId, setActiveCaseId] = useState<string | null>(null);
   const [account, setAccount] = useState<{ user: User; firm: Firm } | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [publicConfig, setPublicConfig] = useState<PublicBrowserConfig>(
+    disabledPublicBrowserConfig
+  );
 
   // Carries a draft reference when auto-generating and navigating
   const [initialDraftId, setInitialDraftId] = useState<string | null>(null);
@@ -27,6 +34,13 @@ export default function App() {
 
   // Dynamic collapsible sidebar state
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/config")
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error("Unavailable")))
+      .then((value: PublicBrowserConfig) => setPublicConfig(value))
+      .catch(() => setPublicConfig(disabledPublicBrowserConfig));
+  }, []);
 
   useEffect(() => {
     if (portalToken) { setAuthLoading(false); return; }
@@ -136,6 +150,7 @@ export default function App() {
             setActiveThreadId={setActiveThreadId}
             onMessagesChange={() => undefined}
             onNavigateToDrafts={handleNavigateToDrafts}
+            featureFlags={publicConfig.features}
           />
         )}
 

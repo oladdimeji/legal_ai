@@ -108,6 +108,10 @@ class DatabaseService {
     await this.ensureSchema();
   }
 
+  public isReady(): boolean {
+    return this.isSchemaInitialized;
+  }
+
   public async migrateLegacyOwner(): Promise<void> {
     await this.ensureSchema();
     await migrateLegacyOwnerFromEnvironment(getPool());
