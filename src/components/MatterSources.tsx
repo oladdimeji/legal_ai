@@ -6,7 +6,7 @@ import { useCumulativeFileSelection } from "../hooks/useCumulativeFileSelection"
 import { PRIVATE_UPLOAD_MAX_FILES, uploadPrivateFiles } from "../lib/durableUploads";
 import GoogleDrivePanel from "./GoogleDrivePanel";
 
-export default function MatterSources({ matterId, googleDriveEnabled = false, resourceLifecycleEnabled = false }: { matterId: string; googleDriveEnabled?: boolean; resourceLifecycleEnabled?: boolean }) {
+export default function MatterSources({ matterId, googleDriveImportEnabled = false, resourceLifecycleEnabled = false }: { matterId: string; googleDriveImportEnabled?: boolean; resourceLifecycleEnabled?: boolean }) {
   const [sources, setSources] = useState<Document[]>([]);
   const [library, setLibrary] = useState<Document[]>([]);
   const [query, setQuery] = useState("");
@@ -156,7 +156,7 @@ export default function MatterSources({ matterId, googleDriveEnabled = false, re
           <form onSubmit={add} className="w-full max-w-lg space-y-4 rounded border bg-white p-6">
             <h3 className="text-sm font-semibold uppercase">Add Matter Source</h3>
             <div className="flex gap-2">
-              {(["note", "upload", "library", ...(googleDriveEnabled ? ["drive" as const] : [])] as const).map((item) => (
+              {(["note", "upload", "library", ...(googleDriveImportEnabled ? ["drive" as const] : [])] as const).map((item) => (
                 <button type="button" key={item} onClick={() => { setType(item); setError(""); }} className={`rounded border px-3 py-2 text-[9px] font-mono uppercase ${type === item ? "bg-zinc-900 text-white" : ""}`}>{item === "library" ? "Firm Library" : item}</button>
               ))}
             </div>

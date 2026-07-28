@@ -104,11 +104,25 @@ Run `npm start` under a service manager. Place a reverse proxy in front of the a
 
 The canonical variables are documented in `.env.example`. `GEMINI_API_KEY` and `SUPABASE_DB_URL` are required by existing model and database workflows. Leave `LEGACY_OWNER_USER_ID`, `LEGACY_OWNER_FIRM_ID`, and `LEGACY_OWNER_INITIAL_PASSWORD` empty unless performing the existing explicit prototype-owner migration; when that migration is needed, all three must be supplied together.
 
-Every new feature flag defaults to `false`. Provider-specific configuration is validated only when its corresponding feature is enabled. `FEATURE_CLIENT_ACCOUNTS=false` keeps reserved client-account routes inactive while legacy token links continue working. GovInfo is the only live V1 legal-source connector: staging requires `GOVINFO_API_KEY`, the official `GOVINFO_BASE_URL`, and `FEATURE_GOVINFO=true`. Keep `FEATURE_GOVINFO=false` until its staging checklist passes. `FEATURE_COURTLISTENER`, `FEATURE_GMAIL_SEND`, and `FEATURE_OCR` remain false and unavailable. Google Drive uses its own `FEATURE_GOOGLE_DRIVE` flag and, when implemented and enabled in its named phase, requires server-side OAuth settings plus `APP_ENCRYPTION_KEY_BASE64`; no Gmail scope is requested.
+Every new feature flag defaults to `false`. Provider-specific configuration is validated only when its corresponding feature is enabled. `FEATURE_CLIENT_ACCOUNTS=false` keeps reserved client-account routes inactive while legacy token links continue working. GovInfo is the only live V1 legal-source connector: staging requires `GOVINFO_API_KEY`, the official `GOVINFO_BASE_URL`, and `FEATURE_GOVINFO=true`. Keep `FEATURE_GOVINFO=false` until its staging checklist passes. `FEATURE_COURTLISTENER`, `FEATURE_GMAIL_SEND`, and `FEATURE_OCR` remain false and unavailable.
 
 Firm membership and Matter-assignment authorization is enforced centrally for authenticated APIs. Existing users are migrated to active `firm_admin` memberships and retain existing Matter access. New Matter creators are assigned automatically. `firm_admin` has firm-wide access; `lawyer`, `staff`, and `read_only` access is restricted to assigned Matters with progressively narrower write/delete/client/team/integration permissions. Suspended and removed memberships cannot create sessions or use existing sessions. Keep `FEATURE_FIRM_TEAMS=false` until migration 017 and the role/assignment staging matrix pass; the flag controls invitation and team-management UI/APIs, not the underlying authorization boundary.
 
-Google linking/sign-in and Drive are gated by `FEATURE_GOOGLE_DRIVE=false`. Enabling the gate also requires the already-staged private-storage and async-ingestion features because every selected PDF, DOCX, TXT, or exported Google Doc is copied into Exepts private storage before the worker scans, extracts, and indexes it. Configure an exact environment-specific OAuth callback, a browser key restricted to the deployed origins and Google Picker API, and the numeric Cloud project number. The server requests only `openid`, `email`, `profile`, and `https://www.googleapis.com/auth/drive.file`; it never merges accounts based on email, never removes password login, and never sends Gmail.
+Google capabilities use independent server gates. `FEATURE_GOOGLE_ACCOUNT`
+enables linking, linked-only sign-in, status/refresh, disconnect, and revocation.
+`FEATURE_GOOGLE_DRIVE_EXPORT` enables Work Product and Matter Intelligence
+exports and requires the account gate, but does not require private storage,
+pg-boss, worker, or ClamAV. `FEATURE_GOOGLE_DRIVE_IMPORT` is the only gate for
+Picker/import/refresh/re-import and remains false for Manager Preview; if staged
+later, it still requires the existing private-storage and async-ingestion
+topology. The legacy `FEATURE_GOOGLE_DRIVE=true` value remains compatible by
+enabling Account and Export only; it never enables Import.
+
+Configure an exact environment-specific OAuth callback and a canonical
+`APP_ENCRYPTION_KEY_BASE64`. Picker API key and project values are required only
+for Drive import. The server requests exactly `openid`, `email`, `profile`, and
+`https://www.googleapis.com/auth/drive.file`; it never merges accounts based on
+email, never removes password login, and never requests or sends Gmail.
 
 Link Google from Settings before using the login-page Google option. Drive Picker is available in Firm Library and Matter Sources. Imported records retain Drive identity, link, modification/revision/checksum metadata, private-version identity, and lifecycle state. Work Product and Matter Intelligence export as DOCX files through `drive.file`. Run the environment-gated staging smoke with `GOOGLE_DRIVE_LIVE_SMOKE=true npm test` only after providing a dedicated `GOOGLE_DRIVE_SMOKE_REFRESH_TOKEN` and `GOOGLE_DRIVE_SMOKE_FILE_ID`; these are excluded from normal CI.
 

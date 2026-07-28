@@ -5,7 +5,9 @@ export interface FeatureFlags {
   asyncIngestion: boolean;
   govInfo: boolean;
   courtListener: boolean;
-  googleDrive: boolean;
+  googleAccount: boolean;
+  googleDriveExport: boolean;
+  googleDriveImport: boolean;
   gmailSend: boolean;
   ocr: boolean;
   clientAccounts: boolean;
@@ -47,7 +49,7 @@ export interface ServerConfig {
 export interface PublicBrowserConfig {
   features: Pick<
     FeatureFlags,
-    "publicLanding" | "govInfo" | "courtListener" | "googleDrive" | "clientAccounts" | "firmTeams" | "privateStorage" | "resourceLifecycle"
+    "publicLanding" | "govInfo" | "courtListener" | "googleAccount" | "googleDriveExport" | "googleDriveImport" | "clientAccounts" | "firmTeams" | "privateStorage" | "resourceLifecycle"
   >;
 }
 
@@ -91,12 +93,17 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
     throw new Error("PORT must be an integer between 1 and 65535.");
   }
 
+  // Backward compatibility: the legacy all-in-one flag may activate account
+  // linking/sign-in and Drive export, but it must never activate Drive import.
+  const legacyGoogleDrive = parseBoolean(env, "FEATURE_GOOGLE_DRIVE");
   const features: FeatureFlags = {
     publicLanding: parseBoolean(env, "FEATURE_PUBLIC_LANDING"),
     asyncIngestion: parseBoolean(env, "FEATURE_ASYNC_INGESTION"),
     govInfo: parseBoolean(env, "FEATURE_GOVINFO"),
     courtListener: parseBoolean(env, "FEATURE_COURTLISTENER"),
-    googleDrive: parseBoolean(env, "FEATURE_GOOGLE_DRIVE"),
+    googleAccount: parseBoolean(env, "FEATURE_GOOGLE_ACCOUNT") || legacyGoogleDrive,
+    googleDriveExport: parseBoolean(env, "FEATURE_GOOGLE_DRIVE_EXPORT") || legacyGoogleDrive,
+    googleDriveImport: parseBoolean(env, "FEATURE_GOOGLE_DRIVE_IMPORT"),
     gmailSend: parseBoolean(env, "FEATURE_GMAIL_SEND"),
     ocr: parseBoolean(env, "FEATURE_OCR"),
     clientAccounts: parseBoolean(env, "FEATURE_CLIENT_ACCOUNTS"),
@@ -133,25 +140,34 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
     throw new Error("FEATURE_ASYNC_INGESTION requires MALWARE_SCANNER_PROVIDER=clamav.");
   }
   requireWhen(features.govInfo, env, ["GOVINFO_API_KEY"]);
-  requireWhen(features.googleDrive, env, [
+  requireWhen(
+    features.googleAccount || features.googleDriveExport || features.googleDriveImport,
+    env,
+    [
     "GOOGLE_CLIENT_ID",
     "GOOGLE_CLIENT_SECRET",
     "GOOGLE_OAUTH_REDIRECT_URI",
+    "APP_ENCRYPTION_KEY_BASE64",
+    ],
+  );
+  requireWhen(features.googleDriveImport, env, [
     "GOOGLE_PICKER_API_KEY",
     "GOOGLE_CLOUD_PROJECT_ID",
     "GOOGLE_CLOUD_PROJECT_NUMBER",
-    "APP_ENCRYPTION_KEY_BASE64",
   ]);
-  if (features.googleDrive && !features.privateStorage) {
-    throw new Error("FEATURE_GOOGLE_DRIVE requires FEATURE_PRIVATE_STORAGE=true.");
+  if ((features.googleDriveExport || features.googleDriveImport) && !features.googleAccount) {
+    throw new Error("Google Drive capabilities require FEATURE_GOOGLE_ACCOUNT=true.");
   }
-  if (features.googleDrive && !features.asyncIngestion) {
-    throw new Error("FEATURE_GOOGLE_DRIVE requires FEATURE_ASYNC_INGESTION=true.");
+  if (features.googleDriveImport && !features.privateStorage) {
+    throw new Error("FEATURE_GOOGLE_DRIVE_IMPORT requires FEATURE_PRIVATE_STORAGE=true.");
+  }
+  if (features.googleDriveImport && !features.asyncIngestion) {
+    throw new Error("FEATURE_GOOGLE_DRIVE_IMPORT requires FEATURE_ASYNC_INGESTION=true.");
   }
   if (features.resourceLifecycle && !features.asyncIngestion) {
     throw new Error("FEATURE_RESOURCE_LIFECYCLE requires FEATURE_ASYNC_INGESTION=true.");
   }
-  if (features.googleDrive && !/^\d+$/.test(env.GOOGLE_CLOUD_PROJECT_NUMBER || "")) {
+  if (features.googleDriveImport && !/^\d+$/.test(env.GOOGLE_CLOUD_PROJECT_NUMBER || "")) {
     throw new Error("GOOGLE_CLOUD_PROJECT_NUMBER must be the numeric Google Cloud project number.");
   }
   validateEncryptionKey(env.APP_ENCRYPTION_KEY_BASE64);
@@ -201,9 +217,9 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
 }
 
 export function toPublicBrowserConfig(config: ServerConfig): PublicBrowserConfig {
-  const { publicLanding, govInfo, courtListener, googleDrive, clientAccounts, firmTeams, privateStorage, resourceLifecycle } =
+  const { publicLanding, govInfo, courtListener, googleAccount, googleDriveExport, googleDriveImport, clientAccounts, firmTeams, privateStorage, resourceLifecycle } =
     config.features;
   return {
-    features: { publicLanding, govInfo, courtListener, googleDrive, clientAccounts, firmTeams, privateStorage, resourceLifecycle },
+    features: { publicLanding, govInfo, courtListener, googleAccount, googleDriveExport, googleDriveImport, clientAccounts, firmTeams, privateStorage, resourceLifecycle },
   };
 }

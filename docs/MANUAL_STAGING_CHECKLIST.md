@@ -47,28 +47,38 @@ Keep `FEATURE_RESOURCE_LIFECYCLE=false` until every item above passes.
 
 Keep `FEATURE_FIRM_TEAMS=false` until every firm-team staging item passes. Disabling the flag hides invitation/team controls while centralized membership and Matter-assignment authorization remains active.
 
-## Google account linking, sign-in, and Drive
+## Google account linking, sign-in, and Drive export
 
-- Back up the staging database and deploy migration 016 with `FEATURE_GOOGLE_DRIVE=false`; confirm existing password signup/login, Matters, Firm Library, Assistant, Matter Intelligence, Work Product, collaboration, and the legacy token Client Portal are unchanged.
-- Complete the private-storage and async-ingestion checklists first. Google activation requires `FEATURE_PRIVATE_STORAGE=true`, `FEATURE_ASYNC_INGESTION=true`, the web process, worker, private bucket, and ClamAV to be healthy.
+- Back up the staging database and deploy migration 016 with
+  `FEATURE_GOOGLE_ACCOUNT=false`, `FEATURE_GOOGLE_DRIVE_EXPORT=false`, and
+  `FEATURE_GOOGLE_DRIVE_IMPORT=false`; confirm existing password signup/login,
+  Matters, Firm Library, Assistant, Matter Intelligence, Work Product,
+  collaboration, and the legacy token Client Portal are unchanged.
+- Keep `FEATURE_ASYNC_INGESTION=false`. Account linking/sign-in and Drive export
+  must work in the web-only topology without private storage, pg-boss, worker,
+  or ClamAV.
 - Create separate Google OAuth clients for local, staging, and production. Set `GOOGLE_OAUTH_REDIRECT_URI` to the exact deployed `/api/auth/google/callback` URL and register that exact URI in Google Cloud.
 - Restrict `GOOGLE_PICKER_API_KEY` to the staging web origin and Google Picker API. Set `GOOGLE_CLOUD_PROJECT_NUMBER` to the numeric project number and confirm neither the client secret nor refresh tokens appear in the browser bundle, `/api/config`, logs, or errors.
 - Inspect the Google consent request and confirm its complete scope list is exactly `openid`, `email`, `profile`, and `https://www.googleapis.com/auth/drive.file`. Confirm no Gmail scope or Gmail control exists and `FEATURE_GMAIL_SEND=false`.
 - Provide a dedicated staging refresh token/file and run `GOOGLE_DRIVE_LIVE_SMOKE=true npm test`. Remove the smoke token from the test environment after the run.
-- Enable `FEATURE_GOOGLE_DRIVE=true` in staging. Link a Google account from Settings and confirm the connection email/status appears while password login continues to work.
+- Enable `FEATURE_GOOGLE_ACCOUNT=true` and
+  `FEATURE_GOOGLE_DRIVE_EXPORT=true` in staging. Keep
+  `FEATURE_GOOGLE_DRIVE_IMPORT=false`. Link a Google account from Settings and
+  confirm the connection email/status appears while password login continues
+  to work.
 - Attempt to link a Google subject already connected to another Exepts user and a different subject to an already linked user. Confirm both are rejected without email-based merging or ownership disclosure.
 - Test expired, replayed, missing, altered, cross-browser, and provider-cancelled OAuth state; test an altered callback URI. Confirm each fails safely and creates no connection or session.
 - Log out and sign in with the linked Google account. Then try an unlinked Google account whose email matches an Exepts password account; confirm it is not merged and is instructed to link after password login.
-- In Firm Library and in two different Matters, select supported PDF, DOCX, TXT, and Google Doc fixtures. Confirm each original/export is private, has a firm/Matter/document/version path, and is queued only after storage succeeds.
-- Confirm Google Docs are exported to DOCX before private storage. Confirm unsupported formats, empty files, files over 50 MB, duplicate content, storage failure, revoked access, and worker failure produce safe bounded states without file bytes or extracted text in logs.
-- Inspect `drive_file_imports` and `document_versions`; confirm Drive file ID, canonical link, modified/import times, imported/current parent IDs, revision/checksum where available, stored SHA-256, sync state, and private version identity are retained.
-- Modify, move, trash, and restrict permissions on fixtures, then use Refresh status. Confirm `changed`, `moved`, `moved and changed`, `deleted`, `permission restricted`, or honest `unavailable` states. Re-import a changed fixture and confirm a new document version is processed without replacing another Matter's data.
-- Attempt list, refresh, and re-import with another user, firm, Matter, import ID, file ID, document ID, and connection ID. Confirm no metadata, canonical link, state, filename, object key, or content is disclosed.
+- Confirm Firm Library and Matter Source Drive-import controls are completely
+  absent. Direct Picker, import, refresh, and re-import API calls must return
+  unavailable while `FEATURE_GOOGLE_DRIVE_IMPORT=false`.
 - Export representative Work Product and Matter Intelligence to Drive. Confirm each DOCX opens from the returned canonical Drive link and `drive_exports` records the authenticated firm, user, Matter, source identity, Drive identity, and export time.
 - Disconnect Google. Confirm provider revocation is attempted, the encrypted refresh token is cleared locally, tracked files show connection revoked, imported Exepts copies remain available, and password login still works. If provider revocation cannot be confirmed, verify the UI instructs the user to review Google Account access.
 - Review database rows, logs, API errors, observability, and browser storage for absence of plaintext refresh tokens, authorization codes, PKCE verifiers, access tokens at rest, document bytes, extracted text, prompts, cookies, database URLs, and client secrets.
 
-Keep `FEATURE_GOOGLE_DRIVE=false` until every Google staging item passes. Keep `FEATURE_GMAIL_SEND=false`; Gmail sending and Gmail scopes are deferred.
+Keep the Account and Export flags false until their live smoke and checklist
+pass. Keep `FEATURE_GOOGLE_DRIVE_IMPORT=false` for Manager Preview. Keep
+`FEATURE_GMAIL_SEND=false`; Gmail sending and Gmail scopes are deferred.
 
 ## Central configuration and health foundation
 

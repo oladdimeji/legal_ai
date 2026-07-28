@@ -14,14 +14,16 @@ export default function SettingsView({
   membership,
   matters,
   onLogout,
-  googleDriveEnabled = false,
+  googleAccountEnabled = false,
+  googleDriveExportEnabled = false,
   firmTeamsEnabled = false,
 }: {
   user: User;
   membership: FirmMembership;
   matters: Case[];
   onLogout: () => void;
-  googleDriveEnabled?: boolean;
+  googleAccountEnabled?: boolean;
+  googleDriveExportEnabled?: boolean;
   firmTeamsEnabled?: boolean;
 }) {
   const [googleStatus, setGoogleStatus] = useState<GoogleConnectionStatus | null>(null);
@@ -29,12 +31,12 @@ export default function SettingsView({
   const [error, setError] = useState("");
 
   const loadGoogle = async () => {
-    if (!googleDriveEnabled) return;
+    if (!googleAccountEnabled) return;
     const response = await fetch("/api/google/connection");
     if (response.ok) setGoogleStatus(await response.json());
   };
 
-  useEffect(() => { void loadGoogle(); }, [googleDriveEnabled]);
+  useEffect(() => { void loadGoogle(); }, [googleAccountEnabled]);
   useEffect(() => {
     const result = new URLSearchParams(window.location.search).get("google");
     const messages: Record<string, string> = {
@@ -80,6 +82,21 @@ export default function SettingsView({
     }
   };
 
+  const refreshGoogle = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const response = await fetch("/api/google/connection/refresh", { method: "POST" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Google authorization could not be refreshed.");
+      setGoogleStatus((current) => ({ ...current, ...data }));
+    } catch (refreshError) {
+      setError(refreshError instanceof Error ? refreshError.message : "Google authorization could not be refreshed.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="flex-1 h-full overflow-y-auto bg-white p-8">
       <div className="mx-auto max-w-2xl space-y-6">
@@ -97,12 +114,12 @@ export default function SettingsView({
           <TeamSettings currentUser={user} matters={matters} />
         )}
 
-        {googleDriveEnabled && (
+        {googleAccountEnabled && (
           <section className="space-y-4 rounded border border-zinc-200 p-6">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <div className="flex items-center gap-2"><Cloud className="h-4 w-4" /><h3 className="text-sm font-semibold uppercase">Google account</h3></div>
-                <p className="mt-2 text-xs leading-relaxed text-zinc-500">Link Google for sign-in and Drive Picker/import/refresh/export. Exepts requests only profile identity and Drive files you choose or create.</p>
+                <p className="mt-2 text-xs leading-relaxed text-zinc-500">Link Google for linked-account sign-in{googleDriveExportEnabled ? " and Drive export" : ""}. Exepts requests only profile identity and access to Drive files you choose or create.</p>
               </div>
               <span className="rounded border px-2 py-1 text-[9px] font-mono font-bold uppercase">{googleStatus?.connected ? "Connected" : "Not connected"}</span>
             </div>
@@ -110,7 +127,7 @@ export default function SettingsView({
             {googleStatus?.revocationState === "provider_revocation_failed" && <p className="text-xs text-amber-800">Exepts disconnected the account locally, but Google could not confirm provider revocation. Review access in your Google Account.</p>}
             {error && <p className="text-xs text-red-700" role="alert">{error}</p>}
             {googleStatus?.connected
-              ? <button onClick={() => void disconnectGoogle()} disabled={busy} className="rounded border border-zinc-300 px-4 py-2 text-[10px] font-mono font-bold uppercase disabled:opacity-50">{busy ? "Disconnecting..." : "Disconnect Google"}</button>
+              ? <div className="flex flex-wrap gap-2"><button onClick={() => void refreshGoogle()} disabled={busy} className="rounded border border-zinc-300 px-4 py-2 text-[10px] font-mono font-bold uppercase disabled:opacity-50">{busy ? "Working..." : "Refresh authorization"}</button><button onClick={() => void disconnectGoogle()} disabled={busy} className="rounded border border-zinc-300 px-4 py-2 text-[10px] font-mono font-bold uppercase disabled:opacity-50">{busy ? "Working..." : "Disconnect Google"}</button></div>
               : <button onClick={() => void connectGoogle()} disabled={busy} className="rounded bg-zinc-950 px-4 py-2 text-[10px] font-mono font-bold uppercase text-white disabled:opacity-50">{busy ? "Connecting..." : "Link Google account"}</button>}
           </section>
         )}

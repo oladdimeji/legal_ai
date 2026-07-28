@@ -6,7 +6,7 @@ import { useCumulativeFileSelection } from "../hooks/useCumulativeFileSelection"
 import { PRIVATE_UPLOAD_MAX_FILES, uploadPrivateFiles } from "../lib/durableUploads";
 import GoogleDrivePanel from "./GoogleDrivePanel";
 
-export default function FirmLibraryView({ googleDriveEnabled = false, resourceLifecycleEnabled = false }: { googleDriveEnabled?: boolean; resourceLifecycleEnabled?: boolean }) {
+export default function FirmLibraryView({ googleDriveImportEnabled = false, resourceLifecycleEnabled = false }: { googleDriveImportEnabled?: boolean; resourceLifecycleEnabled?: boolean }) {
   const [documents, setDocuments] = useState<Document[]>([]);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<string[]>([]);
@@ -167,7 +167,7 @@ export default function FirmLibraryView({ googleDriveEnabled = false, resourceLi
             {uploadError && <p className="text-xs text-red-700">{uploadError}</p>}
             <button disabled={uploading || fileSelection.files.length === 0} className="w-full rounded bg-zinc-950 px-3 py-2 text-[10px] font-mono font-bold uppercase text-white disabled:cursor-not-allowed disabled:opacity-40">{uploading ? "Uploading..." : "Upload for processing"}</button>
           </form>
-          {googleDriveEnabled && <GoogleDrivePanel caseId={null} onImported={load} compact />}
+          {googleDriveImportEnabled && <GoogleDrivePanel caseId={null} onImported={load} compact />}
           </div>
         </div>
       </div>

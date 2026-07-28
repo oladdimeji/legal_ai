@@ -3,7 +3,9 @@ export interface PublicBrowserConfig {
     publicLanding: boolean;
     govInfo: boolean;
     courtListener: boolean;
-    googleDrive: boolean;
+    googleAccount: boolean;
+    googleDriveExport: boolean;
+    googleDriveImport: boolean;
     clientAccounts: boolean;
     firmTeams: boolean;
     privateStorage: boolean;
@@ -16,7 +18,9 @@ export const disabledPublicBrowserConfig: PublicBrowserConfig = {
     publicLanding: false,
     govInfo: false,
     courtListener: false,
-    googleDrive: false,
+    googleAccount: false,
+    googleDriveExport: false,
+    googleDriveImport: false,
     clientAccounts: false,
     firmTeams: false,
     privateStorage: false,

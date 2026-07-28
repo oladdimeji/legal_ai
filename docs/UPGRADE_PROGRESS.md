@@ -1,5 +1,47 @@
 # Compact Upgrade Progress
 
+## Manager Preview Release — Independent Google capabilities
+
+Status: Complete in code; live Google staging smoke remains required before
+Account or Export is enabled.
+
+Implemented:
+
+- Replaced the all-or-nothing runtime gate with independent
+  `FEATURE_GOOGLE_ACCOUNT`, `FEATURE_GOOGLE_DRIVE_EXPORT`, and
+  `FEATURE_GOOGLE_DRIVE_IMPORT` capabilities, all default false.
+- Account linking, linked-only sign-in, connection status, refresh, disconnect,
+  and provider revocation now run without private storage, pg-boss, worker, or
+  ClamAV. Password login remains available and provider subjects—not matching
+  email addresses—remain the only linked-sign-in identity.
+- Work Product and Matter Intelligence Drive export requires Account and Export
+  only. Picker/import/refresh/re-import requires the explicit Import flag and
+  remains unavailable and hidden in Manager Preview.
+- Preserved `FEATURE_GOOGLE_DRIVE=true` compatibility by mapping it to Account
+  and Export only; it can never activate Import.
+- Kept the approved exact scope set (`openid`, `email`, `profile`,
+  `drive.file`), encrypted refresh tokens, and browser-safe boolean-only public
+  configuration.
+
+Schema changes:
+
+- None. Existing additive OAuth and Drive tables remain compatible.
+
+Feature gates:
+
+- Recommended Manager Preview defaults:
+  `FEATURE_GOOGLE_ACCOUNT=false`, `FEATURE_GOOGLE_DRIVE_EXPORT=false`, and
+  `FEATURE_GOOGLE_DRIVE_IMPORT=false`.
+- Account and Export may be enabled only after the live Google staging smoke.
+  Import remains false for this release.
+
+Verification:
+
+- `npm run lint`: passed.
+- `npm test`: passed, 128/128 active tests; Google Drive and GovInfo live
+  smokes skipped as designed.
+- `npm run build`: passed with the existing Vite chunk-size warning.
+
 ## Manager Preview Release — Web-only deployment stabilization
 
 Status: Complete in code; live container staging remains required.

@@ -199,22 +199,35 @@ test("Drive lifecycle distinguishes current, changed, moved, deleted, and restri
   );
 });
 
-test("Google feature requires durable private ingestion and preserves default-false Gmail", () => {
+test("Google account and export are independent of ingestion while import remains explicit", () => {
   const key = Buffer.alloc(32, 5).toString("base64");
   const google = {
     NODE_ENV: "test",
-    FEATURE_GOOGLE_DRIVE: "true",
+    FEATURE_GOOGLE_ACCOUNT: "true",
+    FEATURE_GOOGLE_DRIVE_EXPORT: "true",
     GOOGLE_CLIENT_ID: "client",
     GOOGLE_CLIENT_SECRET: "secret",
     GOOGLE_OAUTH_REDIRECT_URI: "https://example.test/api/auth/google/callback",
+    APP_ENCRYPTION_KEY_BASE64: key,
+  };
+  const enabled = loadServerConfig(google);
+  assert.equal(enabled.features.googleAccount, true);
+  assert.equal(enabled.features.googleDriveExport, true);
+  assert.equal(enabled.features.googleDriveImport, false);
+  assert.equal(enabled.features.asyncIngestion, false);
+  assert.equal(enabled.features.privateStorage, false);
+  assert.equal(enabled.features.gmailSend, false);
+
+  assert.throws(() => loadServerConfig({
+    ...google,
+    FEATURE_GOOGLE_DRIVE_IMPORT: "true",
+  }), /GOOGLE_PICKER_API_KEY/);
+  const importEnabled = loadServerConfig({
+    ...google,
+    FEATURE_GOOGLE_DRIVE_IMPORT: "true",
     GOOGLE_PICKER_API_KEY: "restricted-browser-key",
     GOOGLE_CLOUD_PROJECT_ID: "project-id",
     GOOGLE_CLOUD_PROJECT_NUMBER: "123456",
-    APP_ENCRYPTION_KEY_BASE64: key,
-  };
-  assert.throws(() => loadServerConfig(google), /FEATURE_PRIVATE_STORAGE=true/);
-  const enabled = loadServerConfig({
-    ...google,
     FEATURE_PRIVATE_STORAGE: "true",
     FEATURE_ASYNC_INGESTION: "true",
     SUPABASE_DB_URL: "postgres://fixture.invalid/db",
@@ -225,8 +238,17 @@ test("Google feature requires durable private ingestion and preserves default-fa
     JOBS_PROVIDER: "pg-boss",
     MALWARE_SCANNER_PROVIDER: "clamav",
   });
-  assert.equal(enabled.features.googleDrive, true);
-  assert.equal(enabled.features.gmailSend, false);
+  assert.equal(importEnabled.features.googleDriveImport, true);
+
+  const legacy = loadServerConfig({
+    ...google,
+    FEATURE_GOOGLE_ACCOUNT: "false",
+    FEATURE_GOOGLE_DRIVE_EXPORT: "false",
+    FEATURE_GOOGLE_DRIVE: "true",
+  });
+  assert.equal(legacy.features.googleAccount, true);
+  assert.equal(legacy.features.googleDriveExport, true);
+  assert.equal(legacy.features.googleDriveImport, false);
 });
 
 test("migration and scoped repository cover OAuth conflicts, Drive identity, and firm/user/Matter authorization", async () => {
@@ -246,7 +268,33 @@ test("migration and scoped repository cover OAuth conflicts, Drive identity, and
   assert.match(database, /c\.id = i\.case_id AND c\.firm_id = \$1/);
   assert.match(server, /app\.post\("\/api\/drafts\/:id\/export\/drive"/);
   assert.match(server, /app\.post\("\/api\/cases\/:caseId\/intelligence\/export\/drive"/);
+  assert.match(server, /app\.post\("\/api\/google\/connection\/refresh"/);
+  assert.match(server, /config\.features\.googleDriveImport/);
+  assert.match(server, /config\.features\.googleDriveExport/);
   assert.doesNotMatch(server, /gmail\.send|gmail\.compose/i);
+});
+
+test("disabled Drive import has no active UI and cannot be enabled by the legacy flag", async () => {
+  const [app, library, sources, publicConfig] = await Promise.all([
+    readFile("src/App.tsx", "utf8"),
+    readFile("src/components/FirmLibraryView.tsx", "utf8"),
+    readFile("src/components/MatterSources.tsx", "utf8"),
+    readFile("src/lib/publicConfig.ts", "utf8"),
+  ]);
+  assert.match(app, /googleDriveImportEnabled=\{featureFlags\.googleDriveImport\}/);
+  assert.match(library, /googleDriveImportEnabled && <GoogleDrivePanel/);
+  assert.match(sources, /googleDriveImportEnabled \? \["drive"/);
+  assert.match(publicConfig, /googleDriveImport: false/);
+  const key = Buffer.alloc(32, 6).toString("base64");
+  const legacy = loadServerConfig({
+    NODE_ENV: "test",
+    FEATURE_GOOGLE_DRIVE: "true",
+    GOOGLE_CLIENT_ID: "client",
+    GOOGLE_CLIENT_SECRET: "secret",
+    GOOGLE_OAUTH_REDIRECT_URI: "https://example.test/api/auth/google/callback",
+    APP_ENCRYPTION_KEY_BASE64: key,
+  });
+  assert.equal(legacy.features.googleDriveImport, false);
 });
 
 test("environment-gated live Google Drive staging smoke", { skip: process.env.GOOGLE_DRIVE_LIVE_SMOKE !== "true" }, async () => {

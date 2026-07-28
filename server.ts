@@ -70,7 +70,11 @@ const privateStorage = config.features.privateStorage
     )
   : null;
 const jobs = config.features.asyncIngestion ? new PgBossJobsProvider(config.databaseUrl!) : null;
-const google = config.features.googleDrive
+const google = (
+  config.features.googleAccount
+  || config.features.googleDriveExport
+  || config.features.googleDriveImport
+)
   ? new GoogleOAuthDriveProvider({
       clientId: config.providers.google.clientId!,
       clientSecret: config.providers.google.clientSecret!,
@@ -469,7 +473,9 @@ async function startServer() {
     context: OwnershipContext | null,
     res: Response,
   ) => {
-    if (!google) return res.status(404).json({ error: "Google Drive is not enabled." });
+    if (!google || !config.features.googleAccount) {
+      return res.status(404).json({ error: "Google account features are not enabled." });
+    }
     const state = randomBytes(32).toString("base64url");
     const binding = randomBytes(32).toString("base64url");
     const pkce = createPkcePair();
@@ -491,7 +497,9 @@ async function startServer() {
   const refreshGoogleAccessToken = async (
     context: OwnershipContext,
   ): Promise<{ accessToken: string; connection: any }> => {
-    if (!google) throw new Error("Google Drive is not enabled.");
+    if (!google || !config.features.googleAccount) {
+      throw new Error("Google account features are not enabled.");
+    }
     const connection = await db.getGoogleConnection(context);
     if (
       !connection
@@ -571,7 +579,7 @@ async function startServer() {
     caseId: string | null,
     existingImportId: string | null,
   ) => {
-    if (!google || !privateStorage || !jobs) {
+    if (!config.features.googleDriveImport || !google || !privateStorage || !jobs) {
       throw new Error("Google Drive import is not enabled.");
     }
     const { accessToken, connection } = await refreshGoogleAccessToken(context);
@@ -673,6 +681,9 @@ async function startServer() {
   };
 
   app.get("/api/auth/google/start", async (_req, res) => {
+    if (!config.features.googleAccount) {
+      return res.status(404).json({ error: "Google account features are not enabled." });
+    }
     try {
       return await beginGoogleOAuth("signin", null, res);
     } catch {
@@ -686,7 +697,9 @@ async function startServer() {
     let mode: "link" | "signin" = "signin";
     res.setHeader("Set-Cookie", googleOAuthCookie("", isProduction, true));
     res.setHeader("Cache-Control", "no-store");
-    if (!google || !state || !binding) return res.redirect(303, safeGoogleRedirect(mode, "invalid_state"));
+    if (!config.features.googleAccount || !google || !state || !binding) {
+      return res.redirect(303, safeGoogleRedirect(mode, "invalid_state"));
+    }
     try {
       const stored = await db.consumeOAuthAuthorizationState(sha256(state), sha256(binding));
       if (!stored) return res.redirect(303, safeGoogleRedirect(mode, "invalid_state"));
@@ -1026,6 +1039,9 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
   });
 
   app.post("/api/google/oauth/start", async (req, res) => {
+    if (!config.features.googleAccount) {
+      return res.status(404).json({ error: "Google account features are not enabled." });
+    }
     try {
       return await beginGoogleOAuth("link", ownership(req), res);
     } catch {
@@ -1034,7 +1050,9 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
   });
 
   app.get("/api/google/connection", async (req, res) => {
-    if (!google) return res.status(404).json({ error: "Google Drive is not enabled." });
+    if (!google || !config.features.googleAccount) {
+      return res.status(404).json({ error: "Google account features are not enabled." });
+    }
     const connection = await db.getGoogleConnection(ownership(req));
     res.setHeader("Cache-Control", "no-store");
     if (!connection) return res.json({ connected: false });
@@ -1049,7 +1067,9 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
   });
 
   app.delete("/api/google/connection", async (req, res) => {
-    if (!google) return res.status(404).json({ error: "Google Drive is not enabled." });
+    if (!google || !config.features.googleAccount) {
+      return res.status(404).json({ error: "Google account features are not enabled." });
+    }
     const context = ownership(req);
     const connection = await db.getGoogleConnection(context);
     if (!connection) return res.status(404).json({ error: "Google account is not connected." });
@@ -1074,8 +1094,29 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
     return res.json({ connected: false, providerRevoked: revoked, passwordLoginPreserved: true });
   });
 
+  app.post("/api/google/connection/refresh", async (req, res) => {
+    if (!google || !config.features.googleAccount) {
+      return res.status(404).json({ error: "Google account features are not enabled." });
+    }
+    try {
+      const { connection } = await refreshGoogleAccessToken(ownership(req));
+      res.setHeader("Cache-Control", "no-store");
+      return res.json({
+        connected: true,
+        email: connection.provider_email,
+        revocationState: "active",
+      });
+    } catch (error) {
+      return res.status(401).json({
+        error: error instanceof Error ? error.message : "Google authorization could not be refreshed.",
+      });
+    }
+  });
+
   app.get("/api/google/drive/picker-session", async (req, res) => {
-    if (!google) return res.status(404).json({ error: "Google Drive is not enabled." });
+    if (!google || !config.features.googleDriveImport) {
+      return res.status(404).json({ error: "Google Drive import is not enabled." });
+    }
     try {
       const { accessToken } = await refreshGoogleAccessToken(ownership(req));
       res.setHeader("Cache-Control", "no-store");
@@ -1092,7 +1133,9 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
   });
 
   app.get("/api/google/drive/imports", async (req, res) => {
-    if (!google) return res.status(404).json({ error: "Google Drive is not enabled." });
+    if (!google || !config.features.googleDriveImport) {
+      return res.status(404).json({ error: "Google Drive import is not enabled." });
+    }
     const caseId = requestedCaseId(req.query.caseId);
     if (caseId && !(await db.getCaseById(caseId, ownership(req)))) {
       return res.status(404).json({ error: "Matter not found." });
@@ -1102,7 +1145,9 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
   });
 
   app.post("/api/google/drive/import", async (req, res) => {
-    if (!google) return res.status(404).json({ error: "Google Drive is not enabled." });
+    if (!google || !config.features.googleDriveImport) {
+      return res.status(404).json({ error: "Google Drive import is not enabled." });
+    }
     const caseId = requestedCaseId(req.body.caseId);
     const fileIds: string[] = Array.isArray(req.body.fileIds)
       ? Array.from(new Set(req.body.fileIds.filter((id: unknown): id is string =>
@@ -1132,7 +1177,9 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
   });
 
   app.post("/api/google/drive/imports/refresh", async (req, res) => {
-    if (!google) return res.status(404).json({ error: "Google Drive is not enabled." });
+    if (!google || !config.features.googleDriveImport) {
+      return res.status(404).json({ error: "Google Drive import is not enabled." });
+    }
     const context = ownership(req);
     const caseId = requestedCaseId(req.body.caseId);
     try {
@@ -1151,7 +1198,9 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
   });
 
   app.post("/api/google/drive/imports/:importId/reimport", async (req, res) => {
-    if (!google) return res.status(404).json({ error: "Google Drive is not enabled." });
+    if (!google || !config.features.googleDriveImport) {
+      return res.status(404).json({ error: "Google Drive import is not enabled." });
+    }
     const context = ownership(req);
     const tracked = await db.getDriveImport(req.params.importId, context);
     if (!tracked) return res.status(404).json({ error: "Drive import not found." });
@@ -1176,7 +1225,9 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
     title: string;
     content: string;
   }) => {
-    if (!google) throw new Error("Google Drive is not enabled.");
+    if (!google || !config.features.googleDriveExport) {
+      throw new Error("Google Drive export is not enabled.");
+    }
     const { accessToken, connection } = await refreshGoogleAccessToken(input.context);
     const buffer = await Packer.toBuffer(markdownToDocxDocument(input.title, input.content));
     const driveName = `${input.title.replace(/[\\/:*?"<>|]+/g, "_").slice(0, 180)}.docx`;
@@ -1203,6 +1254,9 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
   };
 
   app.post("/api/drafts/:id/export/drive", async (req, res) => {
+    if (!config.features.googleDriveExport) {
+      return res.status(404).json({ error: "Google Drive export is not enabled." });
+    }
     const caseId = requestedCaseId(req.body.caseId);
     if (!caseId) return res.status(400).json({ error: "Matter context is required." });
     const draft = await db.getDraftById(req.params.id, caseId, ownership(req));
@@ -1224,6 +1278,9 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
   });
 
   app.post("/api/cases/:caseId/intelligence/export/drive", async (req, res) => {
+    if (!config.features.googleDriveExport) {
+      return res.status(404).json({ error: "Google Drive export is not enabled." });
+    }
     const context = ownership(req);
     const record = await db.getMatterIntelligence(req.params.caseId, context);
     const matter = await db.getCaseById(req.params.caseId, context);
