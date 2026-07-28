@@ -1,5 +1,40 @@
 # Compact Upgrade Progress
 
+## Manager Preview Release — Web-only deployment stabilization
+
+Status: Complete in code; live container staging remains required.
+
+Implemented:
+
+- Made the existing worker and ClamAV services opt-in through the Compose
+  `ingestion` profile without deleting or changing their application code.
+- The default `docker compose up -d` topology now starts only the required web
+  service. Web readiness already reports jobs as `disabled` and does not require
+  pg-boss or ClamAV while `FEATURE_ASYNC_INGESTION=false`.
+- Documented the default web-only and deferred ingestion-profile commands and
+  added a focused manual staging checklist.
+
+Schema changes:
+
+- None.
+
+Verification:
+
+- Baseline `npm ci`: passed; npm reported two existing high-severity advisories.
+- Baseline `npm run verify`: passed, 127/127 active tests; the Google Drive and
+  GovInfo live smokes were skipped as designed.
+- Phase `npm run lint`: passed.
+- Phase `npm test`: passed, 127/127 active tests; two live smokes skipped.
+- Phase `npm run build`: passed with the existing Vite chunk-size warning.
+- `docker compose config --services`: passed and listed only `web`.
+- `docker compose --profile ingestion config --services`: passed and retained
+  `clamav`, `web`, and `worker`.
+
+Feature gate:
+
+- `FEATURE_ASYNC_INGESTION=false` remains required for Manager Preview.
+- The `ingestion` Compose profile is not activated by default.
+
 ## V1 Completion Phase — Complete Resource Lifecycle and Version Paths
 
 Status: Complete in code; staging gate remains closed.

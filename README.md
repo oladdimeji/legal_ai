@@ -59,17 +59,32 @@ Health endpoints:
 
 ## Docker Compose deployment
 
-Docker Compose is the canonical production deployment path.
+Docker Compose is the canonical production deployment path. The Manager Preview
+defaults to the web-only topology: worker and ClamAV are retained behind the
+opt-in `ingestion` profile and are not started by the default command.
 
 ```bash
 cp .env.example .env
-# Fill in the required values and keep SEED_DEMO_DATA=false.
+# Fill in the required values and keep SEED_DEMO_DATA=false and
+# FEATURE_ASYNC_INGESTION=false.
 docker compose build
 docker compose up -d
 docker compose ps
 ```
 
-The Compose service builds a deterministic multi-stage Node 22 image, loads `.env`, publishes `PORT` (default `3000`), and checks `/api/health`. It does not include a database; use the external Supabase/PostgreSQL service.
+The default command starts only `web`, publishes `PORT` (default `3000`), and
+checks `/api/health/ready`. It does not include a database; use the external
+Supabase/PostgreSQL service.
+
+The deferred ingestion topology remains available for a later staged release:
+
+```bash
+# Only after private storage, pg-boss, and ClamAV have passed staging.
+docker compose --profile ingestion up -d
+```
+
+That opt-in profile starts `web`, `worker`, and private `clamav`. Do not use it
+for Manager Preview, where `FEATURE_ASYNC_INGESTION=false`.
 
 Before every production update, take and verify a database backup. Retain the previously deployed image or release, fetch the intended source revision, review `.env`, run `npm ci` and `npm run verify`, build the new image, then run `docker compose up -d`. Confirm the health check and review `docker compose logs app`. If validation fails, redeploy the retained release and investigate before retrying.
 
@@ -103,7 +118,7 @@ Private originals are gated by `FEATURE_PRIVATE_STORAGE=false`. Staging activati
 
 Uploads are limited to 50 MB per file, 25 files and 500 MB per batch, and 10,000 files or 10 GB per workspace. Existing multipart PDF/DOCX/TXT routes remain available while the private-storage and async-ingestion flags are false.
 
-Async ingestion is independently gated by `FEATURE_ASYNC_INGESTION=false`. When enabled after staging, set `JOBS_PROVIDER=pg-boss`, `MALWARE_SCANNER_PROVIDER=clamav`, `CLAMAV_HOST=clamav`, and `CLAMAV_PORT=3310`, and enable private storage. Compose runs separate `web`, `worker`, and private `clamav` services. Only confirmed objects are queued. The worker scans before extraction, then extracts PDF/DOCX/TXT, chunks, embeds, and durably records progress. Image-only PDFs remain stored and enter `needs_ocr`; OCR is deferred in V1.
+Async ingestion is independently gated by `FEATURE_ASYNC_INGESTION=false`. When enabled after staging, set `JOBS_PROVIDER=pg-boss`, `MALWARE_SCANNER_PROVIDER=clamav`, `CLAMAV_HOST=clamav`, and `CLAMAV_PORT=3310`, enable private storage, and start Compose with `--profile ingestion`. Only confirmed objects are queued. The worker scans before extraction, then extracts PDF/DOCX/TXT, chunks, embeds, and durably records progress. Image-only PDFs remain stored and enter `needs_ocr`; OCR is deferred in V1.
 
 Resource lifecycle controls are gated by `FEATURE_RESOURCE_LIFECYCLE=false` and require staged async ingestion. The phase adds Matter archive/restore, retention and export packages; Source replacement, metadata, versions, original download, re-index, archive, dependency warnings and protected deletion; Firm Library folders, tags and bulk lifecycle actions; and Work Product autosave, immutable lawyer/client version lanes, restore-as-new-version, DOCX/PDF export, archive and intentional add-as-Matter-Source. Permanent deletion is administrator-only, requires archive state and exact typed confirmation, respects retention and blocking dependencies, waits at least 24 hours, removes private originals before database content, and leaves an audit trail. Keep the flag false until its staging checklist passes.
 

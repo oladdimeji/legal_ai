@@ -1,5 +1,21 @@
 # Manual Staging Checklist
 
+## Manager Preview web-only deployment
+
+- Keep `FEATURE_ASYNC_INGESTION=false`, `FEATURE_CLIENT_DURABLE_UPLOADS=false`,
+  `FEATURE_GOOGLE_DRIVE_IMPORT=false`, `FEATURE_OCR=false`,
+  `FEATURE_COURTLISTENER=false`, and `FEATURE_GMAIL_SEND=false`.
+- Run `docker compose config --services` and confirm the default topology lists
+  only `web`.
+- Run `docker compose up -d`, confirm no worker or ClamAV container is created,
+  and confirm `/api/health/ready` reports database ready and jobs disabled.
+- Refresh representative nested `/app`, `/app/matters/<id>`,
+  `/client/dashboard`, `/client/invitations/<token>`, and legacy
+  `/client/<token>` routes through the production proxy.
+- Treat `docker compose --profile ingestion up -d` as deferred and do not use it
+  for Manager Preview. It remains documented only to preserve the existing
+  opt-in worker/ClamAV topology for a later ingestion release.
+
 ## Resource lifecycle and immutable versions
 
 - Back up staging and deploy migration 018 with `FEATURE_RESOURCE_LIFECYCLE=false`. Confirm it only adds lifecycle columns, indexes, immutable version/audit/link tables, and the delayed deletion-request table; confirm no existing Matter, Source, Firm Library document, Work Product, original, conversation, client access, or collaboration row is removed.

@@ -91,11 +91,16 @@ test("worker enforces scan-first, bounded retries, recovery, cancellation, and s
   assert.match(uploads, /Promise\.allSettled/);
 });
 
-test("Docker topology keeps ClamAV private and separates web and worker", async () => {
+test("Docker defaults to web-only while retaining private opt-in ingestion services", async () => {
   const compose = await readFile("compose.yaml", "utf8");
   assert.match(compose, /\n  web:\n/);
   assert.match(compose, /\n  worker:\n/);
   assert.match(compose, /\n  clamav:\n/);
+  const worker = compose.slice(compose.indexOf("\n  worker:"), compose.indexOf("\n  clamav:"));
+  const clamav = compose.slice(compose.indexOf("\n  clamav:"));
+  assert.match(worker, /profiles:\s*\["ingestion"\]/);
+  assert.match(clamav, /profiles:\s*\["ingestion"\]/);
+  assert.doesNotMatch(compose.slice(compose.indexOf("\n  web:"), compose.indexOf("\n  worker:")), /profiles:/);
   assert.match(compose, /expose:\s*\n\s*- "3310"/);
   assert.doesNotMatch(compose, /clamav:[\s\S]*ports:/);
 });
