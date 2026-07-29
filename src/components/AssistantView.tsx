@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { 
-  MessageSquare, Send, Sparkles, Search, Library, AlertCircle, 
+  MessageSquare, Send, Sparkles, Search, AlertCircle,
   ChevronDown, ChevronUp, FileText, Check, Paperclip, RefreshCw, 
   ExternalLink, BookOpen, Copy, Pencil, X, Briefcase, 
   Folder, Globe, ThumbsUp, ThumbsDown,
@@ -139,6 +139,9 @@ export default function AssistantView({
   const [inputValue, setInputValue] = useState("");
   const [deepResearchEnabled, setDeepResearchEnabled] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [streaming, setStreaming] = useState(false);
+  const [workingStages, setWorkingStages] = useState<string[]>([]);
+  const [workingStageIndex, setWorkingStageIndex] = useState(0);
   const [citationPanelSource, setCitationPanelSource] = useState<Citation | null>(null);
   const [activeMessageCitations, setActiveMessageCitations] = useState<Citation[]>([]);
   const [draftingMessageId, setDraftingMessageId] = useState<string | null>(null);
@@ -148,8 +151,6 @@ export default function AssistantView({
   
   // Custom states for toggleable retrieval sources
   const [enableWebSearch, setEnableWebSearch] = useState(false);
-  const [enableCourtListener, setEnableCourtListener] = useState(false);
-  const [enableGovInfo, setEnableGovInfo] = useState(false);
   const [filesAndSourcesOpen, setFilesAndSourcesOpen] = useState(false);
   const [temporaryFiles, setTemporaryFiles] = useState<TemporaryFile[]>([]);
   const [temporaryFileError, setTemporaryFileError] = useState("");
@@ -158,6 +159,7 @@ export default function AssistantView({
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const responseStreamTimerRef = useRef<number | null>(null);
 
   // New docked side editor state declarations
   const [sideEditorMessageId, setSideEditorMessageId] = useState<string | null>(null);
@@ -279,7 +281,23 @@ export default function AssistantView({
   // Scroll to bottom
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, loading]);
+  }, [messages, loading, workingStageIndex]);
+
+  useEffect(() => {
+    if (!loading || streaming || workingStages.length < 2) return;
+    const intervalId = window.setInterval(() => {
+      setWorkingStageIndex((current) => Math.min(current + 1, workingStages.length - 1));
+    }, 1100);
+    return () => window.clearInterval(intervalId);
+  }, [loading, streaming, workingStages]);
+
+  useEffect(() => {
+    return () => {
+      if (responseStreamTimerRef.current !== null) {
+        window.clearInterval(responseStreamTimerRef.current);
+      }
+    };
+  }, []);
 
   const fetchThreads = async () => {
     try {
@@ -330,6 +348,16 @@ export default function AssistantView({
     const queryText = (customQuery || inputValue).trim();
     if (!queryText || loading) return;
 
+    setLoading(true);
+    setStreaming(false);
+    setWorkingStageIndex(0);
+    setWorkingStages([
+      "Understanding your request…",
+      activeCaseId ? "Reviewing Matter sources…" : "Reviewing Firm Library…",
+      ...(enableWebSearch ? ["Searching the web…"] : []),
+      ...(deepResearchEnabled ? ["Breaking the question into research steps…"] : ["Checking research depth…"]),
+      "Preparing the response…",
+    ]);
     setInputValue("");
     setFilesAndSourcesOpen(false);
 
@@ -338,7 +366,10 @@ export default function AssistantView({
       currentThreadId = await handleStartNewThread();
     }
 
-    if (!currentThreadId) return;
+    if (!currentThreadId) {
+      setLoading(false);
+      return;
+    }
     const submittedTemporaryFiles = temporaryFiles.filter((file) => file.status === "ready");
     const submittedAttachments = Array.from(
       new Map(submittedTemporaryFiles.map((file) => [file.filename.trim().slice(0, 180), { name: file.filename.trim().slice(0, 180) }])).values()
@@ -356,7 +387,6 @@ export default function AssistantView({
       metadata: submittedAttachments.length ? { attachments: submittedAttachments } : {},
     };
     setMessages((prev) => [...prev, tempUserMsg]);
-    setLoading(true);
 
     try {
       const res = await fetch(`/api/threads/${currentThreadId}/messages`, {
@@ -366,8 +396,6 @@ export default function AssistantView({
           content: queryText,
           forceDeepResearch: deepResearchEnabled,
           enableWebSearch,
-          enableCourtListener,
-          enableGovInfo,
           temporaryFiles: submittedTemporaryFiles
             .map(({ filename, text }) => ({ filename, text }))
         })
@@ -378,10 +406,48 @@ export default function AssistantView({
         throw new Error(data.error);
       }
 
-      // Refresh messages with updated thread state
-      fetchMessages(currentThreadId);
+      const savedUserMessage = data.userMessage as Message;
+      const savedAssistantMessage = data.assistantMessage as Message;
+      const streamTokens = savedAssistantMessage.content.match(/\S+\s*/g) || [savedAssistantMessage.content];
+      const streamSteps = Math.min(36, Math.max(1, streamTokens.length));
+      const tokensPerStep = Math.max(1, Math.ceil(streamTokens.length / streamSteps));
+      let revealedTokenCount = 0;
+
+      setMessages((prev) => [
+        ...prev.map((message) => message.id === tempUserMsg.id ? savedUserMessage : message),
+        { ...savedAssistantMessage, content: "" },
+      ]);
+      setStreaming(true);
+
+      await new Promise<void>((resolve) => {
+        responseStreamTimerRef.current = window.setInterval(() => {
+          revealedTokenCount = Math.min(revealedTokenCount + tokensPerStep, streamTokens.length);
+          const revealedContent = streamTokens.slice(0, revealedTokenCount).join("");
+          setMessages((prev) => prev.map((message) =>
+            message.id === savedAssistantMessage.id
+              ? { ...savedAssistantMessage, content: revealedContent }
+              : message
+          ));
+          if (revealedTokenCount >= streamTokens.length) {
+            if (responseStreamTimerRef.current !== null) {
+              window.clearInterval(responseStreamTimerRef.current);
+              responseStreamTimerRef.current = null;
+            }
+            setMessages((prev) => prev.map((message) =>
+              message.id === savedAssistantMessage.id ? savedAssistantMessage : message
+            ));
+            resolve();
+          }
+        }, 28);
+      });
+
       setTemporaryFiles([]);
     } catch (err: any) {
+      if (responseStreamTimerRef.current !== null) {
+        window.clearInterval(responseStreamTimerRef.current);
+        responseStreamTimerRef.current = null;
+      }
+      setStreaming(false);
       console.error("Error processing request:", err);
       const errAssistantMsg: Message = {
         id: `temp_err_${Date.now()}`,
@@ -394,6 +460,7 @@ export default function AssistantView({
       };
       setMessages((prev) => [...prev, errAssistantMsg]);
     } finally {
+      setStreaming(false);
       setLoading(false);
     }
   };
@@ -630,27 +697,13 @@ export default function AssistantView({
       <form onSubmit={handleAsk} className="w-full relative flex flex-col select-none">
         <div className="w-full border border-zinc-200 focus-within:border-zinc-400 rounded-lg bg-white p-3 transition-all flex flex-col gap-2.5">
           {/* Selected Files / Sources Chips Bar at the top of the container */}
-          {(enableWebSearch || enableCourtListener || enableGovInfo || temporaryFiles.length > 0) && (
+          {(enableWebSearch || temporaryFiles.length > 0) && (
             <div className="flex flex-wrap gap-2 select-none pb-2 border-b border-zinc-100 animate-fade-in" id="attached-chips-row">
               {enableWebSearch && (
                 <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 bg-zinc-50 text-zinc-600 rounded-full text-xs font-mono border border-zinc-200 animate-fade-in">
                   <Globe className="h-3 w-3 shrink-0 text-zinc-450" />
                   <span>Web search</span>
                   <button type="button" onClick={() => setEnableWebSearch(false)} className="hover:text-zinc-900 font-bold ml-1 text-[10px] focus:outline-none cursor-pointer">✕</button>
-                </span>
-              )}
-              {enableCourtListener && (
-                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 bg-zinc-50 text-zinc-600 rounded-full text-xs font-mono border border-zinc-200 animate-fade-in">
-                  <Library className="h-3 w-3 shrink-0 text-zinc-450" />
-                  <span>CourtListener</span>
-                  <button type="button" onClick={() => setEnableCourtListener(false)} className="hover:text-zinc-900 font-bold ml-1 text-[10px] focus:outline-none cursor-pointer">✕</button>
-                </span>
-              )}
-              {enableGovInfo && (
-                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 bg-zinc-50 text-zinc-600 rounded-full text-xs font-mono border border-zinc-200 animate-fade-in">
-                  <FileText className="h-3 w-3 shrink-0 text-zinc-450" />
-                  <span>GovInfo</span>
-                  <button type="button" onClick={() => setEnableGovInfo(false)} className="hover:text-zinc-900 font-bold ml-1 text-[10px] focus:outline-none cursor-pointer">✕</button>
                 </span>
               )}
               {temporaryFiles.map((file) => (
@@ -752,41 +805,6 @@ export default function AssistantView({
                           </div>
                         </button>
 
-                        <button
-                          type="button"
-                          onClick={() => setEnableCourtListener(!enableCourtListener)}
-                          className={`w-full flex items-center justify-between px-3 py-2 text-xs rounded-md border transition-all cursor-pointer ${
-                            enableCourtListener
-                              ? "bg-blue-50 text-blue-900 border-blue-200 font-semibold"
-                              : "bg-white text-zinc-700 border-zinc-200 hover:bg-zinc-50"
-                          }`}
-                        >
-                          <div className="flex items-center gap-2.5">
-                            <Library className="h-4 w-4 text-blue-600 shrink-0" />
-                            <span>CourtListener Case Law</span>
-                          </div>
-                          <div className={`w-4 h-4 rounded border flex items-center justify-center ${enableCourtListener ? "bg-blue-600 border-blue-600 text-white" : "border-zinc-300 bg-white"}`}>
-                            {enableCourtListener && <Check className="h-3 w-3" />}
-                          </div>
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => setEnableGovInfo(!enableGovInfo)}
-                          className={`w-full flex items-center justify-between px-3 py-2 text-xs rounded-md border transition-all cursor-pointer ${
-                            enableGovInfo
-                              ? "bg-purple-50 text-purple-900 border-purple-200 font-semibold"
-                              : "bg-white text-zinc-700 border-zinc-200 hover:bg-zinc-50"
-                          }`}
-                        >
-                          <div className="flex items-center gap-2.5">
-                            <FileText className="h-4 w-4 text-purple-600 shrink-0" />
-                            <span>GovInfo Legislative Library</span>
-                          </div>
-                          <div className={`w-4 h-4 rounded border flex items-center justify-center ${enableGovInfo ? "bg-purple-600 border-purple-600 text-white" : "border-zinc-300 bg-white"}`}>
-                            {enableGovInfo && <Check className="h-3 w-3" />}
-                          </div>
-                        </button>
                       </div>
                     </div>
 
@@ -848,7 +866,7 @@ export default function AssistantView({
                 id="btn-submit-ask"
                 className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-mono uppercase font-bold text-white bg-zinc-950 hover:bg-zinc-900 border border-zinc-950 rounded shadow-xs disabled:opacity-40 transition-all cursor-pointer"
               >
-                {loading ? "Sending..." : "Ask"}
+                {streaming ? "Responding..." : loading ? "Sending..." : "Ask"}
                 {loading ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
               </button>
             </div>
@@ -878,33 +896,6 @@ export default function AssistantView({
             {enableWebSearch && <Check className="h-3.5 w-3.5 ml-0.5 text-amber-700" />}
           </button>
 
-          <button
-            type="button"
-            onClick={() => setEnableCourtListener(!enableCourtListener)}
-            className={`flex items-center gap-2 px-3.5 py-2 rounded-full border text-xs font-semibold transition-all cursor-pointer ${
-              enableCourtListener
-                ? "bg-blue-50 text-blue-900 border-blue-300 shadow-sm"
-                : "bg-white text-zinc-600 border-zinc-200 hover:bg-zinc-50 hover:border-zinc-300"
-            }`}
-          >
-            <Library className="h-4 w-4 text-blue-600" />
-            <span>CourtListener</span>
-            {enableCourtListener && <Check className="h-3.5 w-3.5 ml-0.5 text-blue-700" />}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setEnableGovInfo(!enableGovInfo)}
-            className={`flex items-center gap-2 px-3.5 py-2 rounded-full border text-xs font-semibold transition-all cursor-pointer ${
-              enableGovInfo
-                ? "bg-purple-50 text-purple-900 border-purple-300 shadow-sm"
-                : "bg-white text-zinc-600 border-zinc-200 hover:bg-zinc-50 hover:border-zinc-300"
-            }`}
-          >
-            <FileText className="h-4 w-4 text-purple-600" />
-            <span>GovInfo Library</span>
-            {enableGovInfo && <Check className="h-3.5 w-3.5 ml-0.5 text-purple-700" />}
-          </button>
         </div>
       </div>
     );
@@ -1009,8 +1000,6 @@ export default function AssistantView({
                   setActiveThreadId(null);
                   setMessages([]);
                   setEnableWebSearch(false);
-                  setEnableCourtListener(false);
-                  setEnableGovInfo(false);
                 }}
                 id="header-new-thread-btn"
                 className="text-xs uppercase font-mono font-bold border border-zinc-950 text-zinc-950 px-4 py-2 rounded hover:bg-zinc-100 transition-all cursor-pointer"
@@ -1204,15 +1193,19 @@ export default function AssistantView({
               })}
 
               {loading && (
-                <div className="flex items-start" id="chat-loading-indicator">
-                  <div className="bg-zinc-50 border border-zinc-200 rounded-lg p-6 max-w-xl flex items-center gap-3.5 select-none animate-pulse">
-                    <RefreshCw className="h-5 w-5 text-zinc-900 animate-spin" />
-                    <div className="text-sm">
-                      <p className="font-bold text-zinc-900 uppercase tracking-tight text-xs">Analyzing materials...</p>
-                      <p className="text-xs text-zinc-400 mt-1">Searching workspace chunks, legal connector API endpoints & grounding results...</p>
+                !streaming && (
+                  <div className="flex items-start" id="chat-loading-indicator" aria-live="polite">
+                    <div className="bg-zinc-50 border border-zinc-200 rounded-lg px-4 py-3 max-w-xl flex items-center gap-3 select-none">
+                      <span className="relative flex h-2.5 w-2.5">
+                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-zinc-400 opacity-50" />
+                        <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-zinc-800" />
+                      </span>
+                      <p className="text-xs font-mono font-medium text-zinc-700">
+                        {workingStages[workingStageIndex] || "Understanding your request…"}
+                      </p>
                     </div>
                   </div>
-                </div>
+                )
               )}
 
               <div ref={messagesEndRef} />

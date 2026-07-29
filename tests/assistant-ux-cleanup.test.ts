@@ -12,8 +12,47 @@ import type { Citation } from "../src/types.js";
 
 const citations: Citation[] = [
   { id: "cit_1", type: "workspace", title: "Agreement", textSnippet: "A", sourceName: "Matter Sources" },
-  { id: "cit_2", type: "connector", title: "Case", textSnippet: "B", sourceName: "CourtListener" },
+  { id: "cit_2", type: "web", title: "Case", textSnippet: "B", sourceName: "Google Search Grounding" },
 ];
+
+test("Assistant research sources retain web search and attachments without retired connectors", async () => {
+  const [assistant, server] = await Promise.all([
+    readFile("src/components/AssistantView.tsx", "utf8"),
+    readFile("server.ts", "utf8"),
+  ]);
+  const route = server.slice(
+    server.indexOf('app.post("/api/threads/:id/messages"'),
+    server.indexOf('app.put("/api/messages/:id"', server.indexOf('app.post("/api/threads/:id/messages"'))
+  );
+
+  assert.doesNotMatch(assistant, /CourtListener|GovInfo|enableCourtListener|enableGovInfo/);
+  assert.doesNotMatch(route, /CourtListenerAdapter|GovInfoAdapter|enableCourtListener|enableGovInfo/);
+  assert.match(assistant, /const \[enableWebSearch, setEnableWebSearch\]/);
+  assert.match(assistant, /<span>Web Search<\/span>/);
+  assert.match(assistant, /temporaryFiles: submittedTemporaryFiles/);
+  assert.match(assistant, /Temporary File Attachments/);
+  assert.match(route, /temporaryAttachmentMetadata\(temporaryFiles\)/);
+  assert.match(route, /sourceName: "Temporary File Attachment"/);
+});
+
+test("Assistant uses rotating working statuses and completes designed response streaming", async () => {
+  const assistant = await readFile("src/components/AssistantView.tsx", "utf8");
+
+  assert.doesNotMatch(assistant, /ANALYZING MATERIALS|Analyzing materials|connector API endpoints/i);
+  assert.match(assistant, /Understanding your request…/);
+  assert.match(assistant, /Reviewing Matter sources…/);
+  assert.match(assistant, /Reviewing Firm Library…/);
+  assert.match(assistant, /Searching the web…/);
+  assert.match(assistant, /Checking research depth…/);
+  assert.match(assistant, /Preparing the response…/);
+  assert.match(assistant, /const \[streaming, setStreaming\]/);
+  assert.match(assistant, /\{ \.\.\.savedAssistantMessage, content: "" \}/);
+  assert.match(assistant, /content: revealedContent/);
+  assert.match(assistant, /message\.id === savedAssistantMessage\.id \? savedAssistantMessage : message/);
+  assert.match(assistant, /message\.id === tempUserMsg\.id \? savedUserMessage : message/);
+  assert.match(assistant, /streaming \? "Responding\.\.\." : loading \? "Sending\.\.\."/);
+  assert.match(assistant, /window\.clearInterval\(responseStreamTimerRef\.current\)/);
+});
 
 test("Assistant message wrappers no longer include a bottom separator", async () => {
   const assistant = await readFile("src/components/AssistantView.tsx", "utf8");

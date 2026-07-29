@@ -687,3 +687,28 @@ Known limitations:
 - Google and Brevo delivery require the documented production credentials and authorized redirect URI; live third-party authentication was not exercised by the automated suite.
 - Firm invitation codes can be consumed during onboarding, but creation and management remain intentionally outside this phase.
 - Manual browser verification against a live migrated PostgreSQL workspace remains to be performed.
+
+## Assistant Presentation UX Update
+
+Status: Complete.
+
+Implemented:
+
+- Removed CourtListener and GovInfo controls, request flags, imports, queries, result aggregation, and connector citations from the Assistant flow; Web Search remains optional and user-controlled.
+- Replaced the static analysis box with compact rotating high-level statuses tailored to Matter or Firm Library context, Web Search, and Deep Research.
+- Added a short frontend response reveal that replaces the optimistic user message with the saved server message, streams one assistant placeholder, and finishes with the exact saved assistant message.
+- Preserved temporary attachments, internal retrieval, citations, research steps, suggestions, feedback, Markdown, drafting, and editing behavior.
+
+Schema changes:
+
+- None.
+
+Dependencies added or changed:
+
+- None.
+
+Verification:
+
+- `npm run lint`: passed.
+- `npm test`: passed, 93/93 tests.
+- `npm run build`: passed with the existing Vite large-chunk warning.

@@ -7,8 +7,6 @@ import { createServer as createViteServer } from "vite";
 import { db } from "./server/db.js";
 import type { OwnershipContext } from "./server/db.js";
 import { callModel, MODEL_CONFIGS } from "./server/model.js";
-import { CourtListenerAdapter } from "./server/connectors/courtlistener.js";
-import { GovInfoAdapter } from "./server/connectors/govinfo.js";
 import {
   Account,
   Document,
@@ -1203,7 +1201,7 @@ ${sourceText}`;
   // Core Assistant Chat Endpoint
   app.post("/api/threads/:id/messages", async (req, res) => {
     const threadId = req.params.id;
-    const { content, forceDeepResearch, enableWebSearch, enableCourtListener, enableGovInfo } = req.body;
+    const { content, forceDeepResearch, enableWebSearch } = req.body;
     const temporaryFiles: Array<{ filename: string; text: string }> = Array.isArray(req.body.temporaryFiles)
       ? req.body.temporaryFiles
           .filter((file: any) => typeof file?.filename === "string" && typeof file?.text === "string")
@@ -1330,10 +1328,6 @@ Query: "${content}"`;
           const allLocalChunks = await db.vectorSearch(`${subQ}\n${retrievalQuery}`.slice(0, 4000), scope, requestOwnership, 2);
           const localChunks = allLocalChunks.filter(c => c.similarity >= SIMILARITY_THRESHOLD);
           
-          // Connectors Query
-          const clResults = enableCourtListener ? await CourtListenerAdapter.query(subQ) : [];
-          const giResults = enableGovInfo ? await GovInfoAdapter.query(subQ) : [];
-
           // Register retrieved context to citations
           const stepCitations: string[] = [];
 
@@ -1352,28 +1346,6 @@ Query: "${content}"`;
             stepCitations.push(`[${cit.id}] ${cit.title}`);
           }
 
-          clResults.forEach((r) => {
-            const cit = registerCitation({
-              type: "connector",
-              title: r.title,
-              url: r.url,
-              textSnippet: r.textSnippet,
-              sourceName: r.sourceName
-            });
-            stepCitations.push(`[${cit.id}] ${cit.title} (${cit.sourceName})`);
-          });
-
-          giResults.forEach((r) => {
-            const cit = registerCitation({
-              type: "connector",
-              title: r.title,
-              url: r.url,
-              textSnippet: r.textSnippet,
-              sourceName: r.sourceName
-            });
-            stepCitations.push(`[${cit.id}] ${cit.title} (${cit.sourceName})`);
-          });
-
           for (const file of temporaryFiles) {
             const cit = registerCitation({
               type: "workspace",
@@ -1385,7 +1357,7 @@ Query: "${content}"`;
           }
 
           // Generate sub-step note via AI (using cheaper/lighter model)
-          const contextText = localChunks.map(c => c.chunk_text).concat(clResults.map(r => r.textSnippet), giResults.map(r => r.textSnippet), temporaryFiles.map((f) => f.text.slice(0, 4000))).join("\n\n");
+          const contextText = localChunks.map(c => c.chunk_text).concat(temporaryFiles.map((f) => f.text.slice(0, 4000))).join("\n\n");
           let subNote = "";
           try {
             const noteResult = await callModel("summarize-subquestion", [
@@ -1393,7 +1365,7 @@ Query: "${content}"`;
             ]);
             subNote = noteResult.text.trim();
           } catch (err) {
-            subNote = "Completed document and connector lookup.";
+            subNote = "Completed permitted source lookup.";
           }
 
           researchSteps.push({
@@ -1481,12 +1453,7 @@ ${citationInstSearch}`;
         // STANDARD RESEARCH FLOW (Single shot lookup)
         console.log(`[Standard Research] Performing single-shot legal lookup for: "${content}"...`);
 
-        // Perform parallel lookups
-        const [allLocalChunks, clResults, giResults] = await Promise.all([
-          db.vectorSearch(retrievalQuery.slice(0, 4000), scope, requestOwnership, 3),
-          enableCourtListener ? CourtListenerAdapter.query(content) : Promise.resolve([]),
-          enableGovInfo ? GovInfoAdapter.query(content) : Promise.resolve([])
-        ]);
+        const allLocalChunks = await db.vectorSearch(retrievalQuery.slice(0, 4000), scope, requestOwnership, 3);
 
         const localChunks = allLocalChunks.filter(c => c.similarity >= SIMILARITY_THRESHOLD);
 
@@ -1504,26 +1471,6 @@ ${citationInstSearch}`;
             sourceName: thread.case_id ? "Matter Sources" : "Firm Library"
           });
         }
-
-        clResults.forEach((r) => {
-          registerCitation({
-            type: "connector",
-            title: r.title,
-            url: r.url,
-            textSnippet: r.textSnippet,
-            sourceName: r.sourceName
-          });
-        });
-
-        giResults.forEach((r) => {
-          registerCitation({
-            type: "connector",
-            title: r.title,
-            url: r.url,
-            textSnippet: r.textSnippet,
-            sourceName: r.sourceName
-          });
-        });
 
         for (const file of temporaryFiles) {
           registerCitation({
