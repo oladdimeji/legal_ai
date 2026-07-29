@@ -34,6 +34,10 @@ test("password entry is removed and both legacy password endpoints are disabled"
 test("migration is additive, migrates existing firm users, and creates OTP enforcement storage", async () => {
   const migration = await readFile("server/migrations.ts", "utf8");
   const phase = migration.slice(migration.indexOf('name: "passwordless_authentication_and_onboarding"'));
+  assert.match(
+    migration,
+    /version: 20,\s*name: "passwordless_authentication_and_onboarding"/
+  );
   assert.match(phase, /ALTER TABLE users ALTER COLUMN name DROP NOT NULL/);
   assert.match(phase, /google_sub TEXT/);
   assert.match(phase, /email_verified_at TEXT/);

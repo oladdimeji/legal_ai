@@ -466,7 +466,7 @@ const migrations: Migration[] = [
     },
   },
   {
-    version: 13,
+    version: 20,
     name: "passwordless_authentication_and_onboarding",
     async run(client) {
       await client.query("ALTER TABLE users ALTER COLUMN name DROP NOT NULL");

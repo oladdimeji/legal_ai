@@ -662,7 +662,7 @@ Implemented:
 
 Schema changes:
 
-- Migration 013, `passwordless_authentication_and_onboarding`, is additive and non-destructive.
+- Migration 020, `passwordless_authentication_and_onboarding`, is additive and non-destructive.
 - `users.name` is now nullable until onboarding; `users.firm_id` remains nullable.
 - Added `users.google_sub`, `email_verified_at`, `onboarding_completed`, `professional_role`, `custom_professional_role`, `workspace_type`, `practice_areas`, and `custom_practice_area`.
 - Added a partial unique index for non-null Google `sub` identifiers.
