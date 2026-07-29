@@ -5,9 +5,9 @@ dotenv.config();
 
 // Unified configuration for models per task type
 export const MODEL_CONFIGS = {
-  chat: "gemini-2.5-flash",
+  chat: "gemini-3.6-flash",
   "classify-complexity": "gemini-3.1-flash-lite",
-  "draft-generation": "gemini-2.5-flash",
+  "draft-generation": "gemini-3.6-flash",
   "matter-intelligence": "gemini-3.1-flash-lite",
   "client-assistant": "gemini-3.1-flash-lite",
   embedding: "gemini-embedding-2",
