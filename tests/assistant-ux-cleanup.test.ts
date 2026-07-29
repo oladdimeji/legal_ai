@@ -40,18 +40,34 @@ test("Assistant uses rotating working statuses and completes designed response s
 
   assert.doesNotMatch(assistant, /ANALYZING MATERIALS|Analyzing materials|connector API endpoints/i);
   assert.match(assistant, /Understanding your request…/);
+  assert.match(assistant, /Identifying the relevant context…/);
   assert.match(assistant, /Reviewing Matter sources…/);
-  assert.match(assistant, /Reviewing Firm Library…/);
+  assert.match(assistant, /Reviewing Firm Library materials…/);
+  assert.match(assistant, /hasAttachments[\s\S]*Reviewing attached documents…/);
+  assert.match(assistant, /if \(webSearchEnabled\) activities\.push\("Searching the web…"\)/);
+  assert.match(assistant, /if \(deepResearchEnabled\)[\s\S]*Breaking the question into research steps…/);
   assert.match(assistant, /Searching the web…/);
   assert.match(assistant, /Checking research depth…/);
-  assert.match(assistant, /Preparing the response…/);
+  assert.match(assistant, /Refining the response…/);
+  assert.doesNotMatch(assistant, /Preparing the response…/);
+  assert.match(assistant, /const WORKING_ACTIVITY_DELAY_MS = 2000/);
+  assert.match(assistant, /\(current \+ 1\) % workingStages\.length/);
+  assert.doesNotMatch(assistant, /Math\.min\(current \+ 1, workingStages\.length - 1\)/);
+  assert.doesNotMatch(assistant, /classificationReason|Classifier result|confidence score/i);
   assert.match(assistant, /const \[streaming, setStreaming\]/);
   assert.match(assistant, /\{ \.\.\.savedAssistantMessage, content: "" \}/);
   assert.match(assistant, /content: revealedContent/);
+  assert.match(assistant, /2800 \+ wordCount \* 14/);
+  assert.match(assistant, /Math\.min\(8500, Math\.max\(3000,/);
+  assert.match(assistant, /Math\.min\(90, Math\.max\(24,/);
+  assert.match(assistant, /prefers-reduced-motion: reduce/);
+  assert.match(assistant, /revealedTokenCount < wordCount[\s\S]*revealNextChunk\(\)/);
   assert.match(assistant, /message\.id === savedAssistantMessage\.id \? savedAssistantMessage : message/);
+  assert.match(assistant, /message\.id !== savedUserMessage\.id && message\.id !== savedAssistantMessage\.id/);
   assert.match(assistant, /message\.id === tempUserMsg\.id \? savedUserMessage : message/);
   assert.match(assistant, /streaming \? "Responding\.\.\." : loading \? "Sending\.\.\."/);
-  assert.match(assistant, /window\.clearInterval\(responseStreamTimerRef\.current\)/);
+  assert.match(assistant, /window\.clearTimeout\(workingActivityTimerRef\.current\)/);
+  assert.match(assistant, /window\.clearTimeout\(responseStreamTimerRef\.current\)/);
 });
 
 test("Assistant message wrappers no longer include a bottom separator", async () => {

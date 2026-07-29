@@ -38,6 +38,60 @@ const STOP_WORDS = new Set([
   "the", "and", "for", "with", "that", "this", "there", "their", "them", "then", "have", "has", "had", "been", "were", "are", "was", "will", "would", "could", "should", "from", "into", "about", "above", "below", "what", "how", "why", "who", "where", "when", "which", "under", "over", "between", "through", "during", "before", "after", "here", "there", "both", "each", "some", "any", "all", "most", "more", "other", "such", "only", "own", "same", "than", "too", "very", "can", "just", "should"
 ]);
 
+const WORKING_ACTIVITY_DELAY_MS = 2000;
+
+function buildWorkingActivities({
+  queryText,
+  hasMatter,
+  hasAttachments,
+  webSearchEnabled,
+  deepResearchEnabled,
+}: {
+  queryText: string;
+  hasMatter: boolean;
+  hasAttachments: boolean;
+  webSearchEnabled: boolean;
+  deepResearchEnabled: boolean;
+}): string[] {
+  const activities = [
+    "Understanding your request…",
+    "Identifying the relevant context…",
+    hasMatter ? "Reviewing Matter sources…" : "Reviewing Firm Library materials…",
+  ];
+
+  if (hasAttachments) {
+    activities.push("Reviewing attached documents…");
+    if (hasMatter) activities.push("Comparing the documents with the Matter…");
+  }
+  if (webSearchEnabled) activities.push("Searching the web…");
+
+  if (deepResearchEnabled) {
+    activities.push(
+      "Breaking the question into research steps…",
+      "Examining the legal issues…",
+      "Checking supporting and conflicting evidence…",
+      "Connecting the relevant findings…",
+    );
+  } else {
+    activities.push(
+      "Checking research depth…",
+      /claim|liability|breach|cause of action/i.test(queryText)
+        ? "Determining the main legal claims…"
+        : "Examining the legal issues…",
+    );
+  }
+
+  activities.push(
+    "Organizing the supporting sources…",
+    "Synthesizing the findings…",
+    "Preparing citations…",
+    "Drafting the response…",
+    "Refining the response…",
+  );
+
+  return activities.filter((activity, index) => activity !== activities[index - 1]);
+}
+
 function getProcessedSnippet(snippet: string, queryText: string, maxLen: number = 300): { element: React.ReactNode; isTruncated: boolean } {
   if (!snippet) {
     return { element: <span></span>, isTruncated: false };
@@ -159,7 +213,9 @@ export default function AssistantView({
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const workingActivityTimerRef = useRef<number | null>(null);
   const responseStreamTimerRef = useRef<number | null>(null);
+  const componentMountedRef = useRef(true);
 
   // New docked side editor state declarations
   const [sideEditorMessageId, setSideEditorMessageId] = useState<string | null>(null);
@@ -285,16 +341,30 @@ export default function AssistantView({
 
   useEffect(() => {
     if (!loading || streaming || workingStages.length < 2) return;
-    const intervalId = window.setInterval(() => {
-      setWorkingStageIndex((current) => Math.min(current + 1, workingStages.length - 1));
-    }, 1100);
-    return () => window.clearInterval(intervalId);
+    const advanceActivity = () => {
+      workingActivityTimerRef.current = window.setTimeout(() => {
+        setWorkingStageIndex((current) => (current + 1) % workingStages.length);
+        advanceActivity();
+      }, WORKING_ACTIVITY_DELAY_MS);
+    };
+    advanceActivity();
+    return () => {
+      if (workingActivityTimerRef.current !== null) {
+        window.clearTimeout(workingActivityTimerRef.current);
+        workingActivityTimerRef.current = null;
+      }
+    };
   }, [loading, streaming, workingStages]);
 
   useEffect(() => {
+    componentMountedRef.current = true;
     return () => {
+      componentMountedRef.current = false;
+      if (workingActivityTimerRef.current !== null) {
+        window.clearTimeout(workingActivityTimerRef.current);
+      }
       if (responseStreamTimerRef.current !== null) {
-        window.clearInterval(responseStreamTimerRef.current);
+        window.clearTimeout(responseStreamTimerRef.current);
       }
     };
   }, []);
@@ -348,16 +418,24 @@ export default function AssistantView({
     const queryText = (customQuery || inputValue).trim();
     if (!queryText || loading) return;
 
+    if (workingActivityTimerRef.current !== null) {
+      window.clearTimeout(workingActivityTimerRef.current);
+      workingActivityTimerRef.current = null;
+    }
+    if (responseStreamTimerRef.current !== null) {
+      window.clearTimeout(responseStreamTimerRef.current);
+      responseStreamTimerRef.current = null;
+    }
     setLoading(true);
     setStreaming(false);
     setWorkingStageIndex(0);
-    setWorkingStages([
-      "Understanding your request…",
-      activeCaseId ? "Reviewing Matter sources…" : "Reviewing Firm Library…",
-      ...(enableWebSearch ? ["Searching the web…"] : []),
-      ...(deepResearchEnabled ? ["Breaking the question into research steps…"] : ["Checking research depth…"]),
-      "Preparing the response…",
-    ]);
+    setWorkingStages(buildWorkingActivities({
+      queryText,
+      hasMatter: activeCaseId !== null,
+      hasAttachments: temporaryFiles.some((file) => file.status === "ready"),
+      webSearchEnabled: enableWebSearch,
+      deepResearchEnabled,
+    }));
     setInputValue("");
     setFilesAndSourcesOpen(false);
 
@@ -405,46 +483,73 @@ export default function AssistantView({
       if (data.error) {
         throw new Error(data.error);
       }
+      if (!componentMountedRef.current) return;
+      if (workingActivityTimerRef.current !== null) {
+        window.clearTimeout(workingActivityTimerRef.current);
+        workingActivityTimerRef.current = null;
+      }
 
       const savedUserMessage = data.userMessage as Message;
       const savedAssistantMessage = data.assistantMessage as Message;
-      const streamTokens = savedAssistantMessage.content.match(/\S+\s*/g) || [savedAssistantMessage.content];
-      const streamSteps = Math.min(36, Math.max(1, streamTokens.length));
-      const tokensPerStep = Math.max(1, Math.ceil(streamTokens.length / streamSteps));
+      const leadingWhitespace = savedAssistantMessage.content.match(/^\s*/)?.[0] || "";
+      const streamTokens = savedAssistantMessage.content.slice(leadingWhitespace.length).match(/\S+\s*/g) || [];
+      const wordCount = streamTokens.length;
+      const targetDuration = Math.min(8500, Math.max(3000, 2800 + wordCount * 14));
+      const targetUpdates = Math.min(90, Math.max(24, Math.ceil(wordCount / 2)));
+      const tokensPerStep = Math.max(1, Math.ceil(wordCount / targetUpdates));
+      const streamDelay = Math.max(45, Math.round(targetDuration / Math.max(1, Math.ceil(wordCount / tokensPerStep))));
       let revealedTokenCount = 0;
 
-      setMessages((prev) => [
-        ...prev.map((message) => message.id === tempUserMsg.id ? savedUserMessage : message),
-        { ...savedAssistantMessage, content: "" },
-      ]);
+      setMessages((prev) => {
+        const messagesWithoutSavedCopies = prev.filter((message) =>
+          message.id !== savedUserMessage.id && message.id !== savedAssistantMessage.id
+        );
+        return [
+          ...messagesWithoutSavedCopies.map((message) => message.id === tempUserMsg.id ? savedUserMessage : message),
+          { ...savedAssistantMessage, content: "" },
+        ];
+      });
       setStreaming(true);
 
-      await new Promise<void>((resolve) => {
-        responseStreamTimerRef.current = window.setInterval(() => {
-          revealedTokenCount = Math.min(revealedTokenCount + tokensPerStep, streamTokens.length);
-          const revealedContent = streamTokens.slice(0, revealedTokenCount).join("");
-          setMessages((prev) => prev.map((message) =>
-            message.id === savedAssistantMessage.id
-              ? { ...savedAssistantMessage, content: revealedContent }
-              : message
-          ));
-          if (revealedTokenCount >= streamTokens.length) {
-            if (responseStreamTimerRef.current !== null) {
-              window.clearInterval(responseStreamTimerRef.current);
+      const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      if (prefersReducedMotion || wordCount === 0) {
+        setMessages((prev) => prev.map((message) =>
+          message.id === savedAssistantMessage.id ? savedAssistantMessage : message
+        ));
+      } else {
+        await new Promise<void>((resolve) => {
+          const revealNextChunk = () => {
+            responseStreamTimerRef.current = window.setTimeout(() => {
+              revealedTokenCount = Math.min(revealedTokenCount + tokensPerStep, wordCount);
+              const revealedContent = leadingWhitespace + streamTokens.slice(0, revealedTokenCount).join("");
+              setMessages((prev) => prev.map((message) =>
+                message.id === savedAssistantMessage.id
+                  ? { ...savedAssistantMessage, content: revealedContent }
+                  : message
+              ));
+              if (revealedTokenCount < wordCount) {
+                revealNextChunk();
+                return;
+              }
               responseStreamTimerRef.current = null;
-            }
-            setMessages((prev) => prev.map((message) =>
-              message.id === savedAssistantMessage.id ? savedAssistantMessage : message
-            ));
-            resolve();
-          }
-        }, 28);
-      });
+              setMessages((prev) => prev.map((message) =>
+                message.id === savedAssistantMessage.id ? savedAssistantMessage : message
+              ));
+              resolve();
+            }, streamDelay);
+          };
+          revealNextChunk();
+        });
+      }
 
       setTemporaryFiles([]);
     } catch (err: any) {
+      if (workingActivityTimerRef.current !== null) {
+        window.clearTimeout(workingActivityTimerRef.current);
+        workingActivityTimerRef.current = null;
+      }
       if (responseStreamTimerRef.current !== null) {
-        window.clearInterval(responseStreamTimerRef.current);
+        window.clearTimeout(responseStreamTimerRef.current);
         responseStreamTimerRef.current = null;
       }
       setStreaming(false);

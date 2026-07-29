@@ -712,3 +712,10 @@ Verification:
 - `npm run lint`: passed.
 - `npm test`: passed, 93/93 tests.
 - `npm run build`: passed with the existing Vite large-chunk warning.
+
+### Working-state pacing follow-up
+
+- Replaced the capped working-stage interval with one paced, continuously rotating request-aware timeout that includes Matter, Firm Library, attachment, Web Search, and Deep Research activities only when relevant.
+- Slowed the presentation-safe response reveal with adaptive word-based chunking, a 3–8.5 second duration cap, exact final-message replacement, and reduced-motion support.
+- Kept the Assistant API, retrieval, citations, stored messages, and error behavior unchanged.
+- Focused Assistant tests, `npm run lint`, all 93 tests, and `npm run build` passed; the existing Vite large-chunk warning remains.
