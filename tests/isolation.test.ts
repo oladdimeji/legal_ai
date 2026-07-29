@@ -29,6 +29,9 @@ test("Matter vector retrieval requires an owned Matter and direct-or-linked sour
 
 test("protected routes derive ownership from authenticated request context", () => {
   assert.match(serverSource, /function ownership\(req: Request\): OwnershipContext/);
-  assert.match(serverSource, /app\.use\("\/api", requireAuth\)/);
+  assert.match(
+    serverSource,
+    /app\.use\("\/api", requireAuth, requireCompletedOnboarding\)/
+  );
   assert.doesNotMatch(serverSource, /req\.body\.(userId|firmId)/);
 });

@@ -56,7 +56,7 @@ export default function Sidebar({
         ) : (
           <div className="min-w-0 flex-1">
             <h1 className="font-sans font-semibold text-sm tracking-tight text-zinc-900 uppercase truncate">Exepts</h1>
-            <p className="text-[10px] font-mono text-zinc-500 truncate">{firmName || "Sterling & Croft LLP"}</p>
+            <p className="text-[10px] font-mono text-zinc-500 truncate">{firmName}</p>
           </div>
         )}
       </button>

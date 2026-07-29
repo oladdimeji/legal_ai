@@ -148,10 +148,10 @@ test("Phase 9 portal token routes precede and remain separate from lawyer sessio
     readFile("server.ts", "utf8"),
     readFile("src/App.tsx", "utf8"),
   ]);
-  assert.ok(server.indexOf('app.get("/api/portal/:token"') < server.indexOf('app.use("/api", requireAuth)'));
+  assert.ok(server.indexOf('app.get("/api/portal/:token"') < server.indexOf('app.use("/api", requireAuth, requireCompletedOnboarding)'));
   assert.match(server, /portalTokenHash = \(token: string\) => hashSessionToken/);
-  assert.match(app, /window\.location\.pathname\.startsWith\("\/client\/"\)/);
-  assert.match(app, /<ClientPortalView token=\{portalToken\}/);
+  assert.match(app, /route\.kind === "client"/);
+  assert.match(app, /<ClientPortalView token=\{route\.token\}/);
 });
 
 test("Phase 9 portal SQL allow-lists shared, requested, revision, and client-submission content", async () => {

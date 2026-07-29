@@ -1,126 +1,217 @@
-import React, { useState } from "react";
-import { Firm, User } from "../types";
+import React, { useEffect, useState } from "react";
+import { ArrowLeft } from "lucide-react";
+import { Account } from "../types";
 
 interface AuthViewProps {
-  onAuthenticated: (account: { user: User; firm: Firm }) => void;
+  returnTo: string;
+  initialError?: string;
+  onAuthenticated: (account: Account, redirectTo: string) => void;
+  onBack: () => void;
 }
 
-export default function AuthView({ onAuthenticated }: AuthViewProps) {
-  const [mode, setMode] = useState<"login" | "signup">("login");
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const [submitting, setSubmitting] = useState(false);
+interface ApiError {
+  error?: string;
+  retryAfterSeconds?: number;
+}
 
-  const submit = async (event: React.FormEvent) => {
-    event.preventDefault();
+export default function AuthView({
+  returnTo,
+  initialError = "",
+  onAuthenticated,
+  onBack,
+}: AuthViewProps) {
+  const [step, setStep] = useState<"email" | "code">("email");
+  const [email, setEmail] = useState("");
+  const [code, setCode] = useState("");
+  const [error, setError] = useState(initialError);
+  const [submitting, setSubmitting] = useState(false);
+  const [cooldown, setCooldown] = useState(0);
+
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const timer = window.setInterval(() => setCooldown((value) => Math.max(0, value - 1)), 1000);
+    return () => window.clearInterval(timer);
+  }, [cooldown]);
+
+  const requestCode = async () => {
     setError("");
     setSubmitting(true);
     try {
-      const response = await fetch(`/api/auth/${mode}`, {
+      const response = await fetch("/api/auth/email/request-code", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(mode === "signup" ? { name, email, password } : { email, password }),
+        body: JSON.stringify({ email }),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Authentication failed.");
-      onAuthenticated(data);
-    } catch (err: any) {
-      setError(err.message || "Authentication failed.");
+      const data = (await response.json()) as ApiError;
+      if (!response.ok) {
+        if (data.retryAfterSeconds) setCooldown(data.retryAfterSeconds);
+        throw new Error(data.error || "Unable to send a verification code.");
+      }
+      setStep("code");
+      setCooldown(data.retryAfterSeconds || 60);
+      setCode("");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Unable to send a verification code.");
     } finally {
       setSubmitting(false);
     }
   };
 
-  const switchMode = (nextMode: "login" | "signup") => {
-    setMode(nextMode);
+  const submitEmail = async (event: React.FormEvent) => {
+    event.preventDefault();
+    await requestCode();
+  };
+
+  const verifyCode = async (event: React.FormEvent) => {
+    event.preventDefault();
     setError("");
-    setPassword("");
+    setSubmitting(true);
+    try {
+      const response = await fetch("/api/auth/email/verify-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, code, returnTo }),
+      });
+      const data = (await response.json()) as {
+        account?: Account;
+        redirectTo?: string;
+        error?: string;
+      };
+      if (!response.ok || !data.account) {
+        throw new Error(data.error || "Unable to verify the code.");
+      }
+      onAuthenticated(data.account, data.redirectTo || "/assistant");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Unable to verify the code.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const changeEmail = () => {
+    setStep("email");
+    setCode("");
+    setError("");
   };
 
   return (
-    <div className="min-h-screen w-full bg-white text-zinc-900 flex items-center justify-center p-6">
-      <div className="w-full max-w-md border border-zinc-200 rounded-lg bg-white shadow-sm overflow-hidden">
-        <div className="px-8 py-7 border-b border-zinc-200 bg-zinc-50">
-          <div>
-            <h1 className="text-sm font-semibold uppercase tracking-tight">Exepts</h1>
-            <p className="text-[10px] font-mono uppercase text-zinc-500 mt-0.5">Private legal workspace</p>
-          </div>
+    <div className="min-h-screen w-full bg-zinc-50 px-6 py-10 text-zinc-950">
+      <button
+        type="button"
+        onClick={onBack}
+        className="mx-auto flex w-full max-w-md items-center gap-2 text-xs text-zinc-600 hover:text-zinc-950"
+      >
+        <ArrowLeft className="h-3.5 w-3.5" /> Back to Exepts
+      </button>
+      <div className="mx-auto mt-12 w-full max-w-md overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm">
+        <div className="border-b border-zinc-200 bg-zinc-50 px-8 py-7">
+          <h1 className="text-sm font-semibold uppercase tracking-tight">Exepts</h1>
+          <p className="mt-0.5 text-[10px] font-mono uppercase text-zinc-500">
+            Private legal workspace
+          </p>
         </div>
 
-        <form onSubmit={submit} className="p-8 space-y-5">
+        <div className="space-y-6 p-8">
           <div>
-            <h2 className="text-xl font-semibold tracking-tight">
-              {mode === "login" ? "Log in" : "Create your workspace"}
-            </h2>
-            <p className="text-xs text-zinc-500 mt-1.5">
-              {mode === "login"
-                ? "Access your matters, library, conversations, and work product."
-                : "A separate empty workspace will be created for your account."}
+            <h2 className="text-2xl font-semibold tracking-tight">Sign in to Exepts</h2>
+            <p className="mt-2 text-xs leading-5 text-zinc-500">
+              Continue securely with Google or a one-time code sent to your email.
             </p>
           </div>
 
-          {mode === "signup" && (
-            <label className="block space-y-1.5">
-              <span className="text-[10px] font-mono font-semibold uppercase text-zinc-500">Name</span>
-              <input
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                autoComplete="name"
-                required
-                className="w-full border border-zinc-300 rounded px-3 py-2.5 text-sm outline-none focus:border-zinc-900"
-              />
-            </label>
+          <a
+            href={`/api/auth/google?returnTo=${encodeURIComponent(returnTo)}`}
+            className="flex w-full items-center justify-center rounded border border-zinc-300 px-4 py-2.5 text-xs font-semibold hover:border-zinc-950 hover:bg-zinc-50"
+          >
+            Continue with Google
+          </a>
+
+          <div className="flex items-center gap-3">
+            <div className="h-px flex-1 bg-zinc-200" />
+            <span className="text-[10px] font-mono uppercase text-zinc-400">or</span>
+            <div className="h-px flex-1 bg-zinc-200" />
+          </div>
+
+          {step === "email" ? (
+            <form onSubmit={submitEmail} className="space-y-4">
+              <label className="block space-y-1.5">
+                <span className="text-[10px] font-mono font-semibold uppercase text-zinc-500">
+                  Email
+                </span>
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  autoComplete="email"
+                  autoFocus
+                  required
+                  placeholder="you@firm.com"
+                  className="w-full rounded border border-zinc-300 px-3 py-2.5 text-sm outline-none focus:border-zinc-950"
+                />
+              </label>
+              <button
+                type="submit"
+                disabled={submitting}
+                className="w-full rounded bg-zinc-950 px-4 py-2.5 text-xs font-mono font-semibold uppercase text-white hover:bg-zinc-800 disabled:opacity-50"
+              >
+                {submitting ? "Sending..." : "Continue with Email"}
+              </button>
+            </form>
+          ) : (
+            <form onSubmit={verifyCode} className="space-y-4">
+              <div>
+                <p className="text-xs font-semibold">Enter the code sent to</p>
+                <p className="mt-1 text-xs text-zinc-500">{email}</p>
+              </div>
+              <label className="block space-y-1.5">
+                <span className="text-[10px] font-mono font-semibold uppercase text-zinc-500">
+                  Six-digit code
+                </span>
+                <input
+                  value={code}
+                  onChange={(event) =>
+                    setCode(event.target.value.replace(/\D/g, "").slice(0, 6))
+                  }
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  pattern="\d{6}"
+                  autoFocus
+                  required
+                  className="w-full rounded border border-zinc-300 px-3 py-3 text-center font-mono text-xl tracking-[0.35em] outline-none focus:border-zinc-950"
+                />
+              </label>
+              <button
+                type="submit"
+                disabled={submitting || code.length !== 6}
+                className="w-full rounded bg-zinc-950 px-4 py-2.5 text-xs font-mono font-semibold uppercase text-white hover:bg-zinc-800 disabled:opacity-50"
+              >
+                {submitting ? "Verifying..." : "Verify and Continue"}
+              </button>
+              <div className="flex items-center justify-between text-xs">
+                <button type="button" onClick={changeEmail} className="text-zinc-600 hover:text-zinc-950">
+                  Change email
+                </button>
+                <button
+                  type="button"
+                  onClick={requestCode}
+                  disabled={submitting || cooldown > 0}
+                  className="text-zinc-600 hover:text-zinc-950 disabled:text-zinc-400"
+                >
+                  {cooldown > 0 ? `Resend in ${cooldown}s` : "Resend code"}
+                </button>
+              </div>
+            </form>
           )}
 
-          <label className="block space-y-1.5">
-            <span className="text-[10px] font-mono font-semibold uppercase text-zinc-500">Email</span>
-            <input
-              type="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              autoComplete="email"
-              required
-              className="w-full border border-zinc-300 rounded px-3 py-2.5 text-sm outline-none focus:border-zinc-900"
-            />
-          </label>
-
-          <label className="block space-y-1.5">
-            <span className="text-[10px] font-mono font-semibold uppercase text-zinc-500">Password</span>
-            <input
-              type="password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              autoComplete={mode === "login" ? "current-password" : "new-password"}
-              minLength={8}
-              required
-              className="w-full border border-zinc-300 rounded px-3 py-2.5 text-sm outline-none focus:border-zinc-900"
-            />
-          </label>
-
           {error && (
-            <div className="border border-zinc-300 bg-zinc-50 rounded px-3 py-2.5 text-xs text-zinc-800" role="alert">
+            <div
+              role="alert"
+              className="rounded border border-zinc-300 bg-zinc-50 px-3 py-2.5 text-xs text-zinc-800"
+            >
               {error}
             </div>
           )}
-
-          <button
-            type="submit"
-            disabled={submitting}
-            className="w-full bg-zinc-950 text-white rounded px-4 py-2.5 text-xs font-mono uppercase font-semibold hover:bg-zinc-800 disabled:opacity-50"
-          >
-            {submitting ? "Please wait..." : mode === "login" ? "Log in" : "Sign up"}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => switchMode(mode === "login" ? "signup" : "login")}
-            className="w-full text-xs text-zinc-600 hover:text-zinc-950 underline underline-offset-4"
-          >
-            {mode === "login" ? "Need an account? Sign up" : "Already have an account? Log in"}
-          </button>
-        </form>
+        </div>
       </div>
     </div>
   );

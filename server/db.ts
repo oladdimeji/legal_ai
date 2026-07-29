@@ -1,8 +1,26 @@
 import pg from "pg";
 import { randomUUID } from "node:crypto";
-import { Document, DocumentChunk, Case, Thread, Message, Draft, Citation } from "../src/types.js";
+import {
+  Account,
+  Document,
+  DocumentChunk,
+  Case,
+  Thread,
+  Message,
+  Draft,
+  Citation,
+  ProfessionalRole,
+  WorkspaceType,
+} from "../src/types.js";
 import { callModel } from "./model.js";
 import { runMigrations } from "./migrations.js";
+import {
+  OTP_MAX_ATTEMPTS,
+  OTP_MAX_REQUESTS_PER_WINDOW,
+  OTP_REQUEST_WINDOW_MS,
+  OTP_RESEND_COOLDOWN_MS,
+  verifyOtpHash,
+} from "./auth.js";
 import {
   migrateLegacyDraftsFromEnvironment,
   migrateLegacyOwnerFromEnvironment,
@@ -13,6 +31,32 @@ const { Pool } = pg;
 export interface OwnershipContext {
   userId: string;
   firmId: string;
+}
+
+function accountFromRow(row: Record<string, unknown>): Account {
+  return {
+    user: {
+      id: String(row.id),
+      firm_id: row.firm_id ? String(row.firm_id) : null,
+      name: row.name ? String(row.name) : null,
+      email: String(row.email),
+      google_sub: row.google_sub ? String(row.google_sub) : null,
+      email_verified_at: row.email_verified_at ? String(row.email_verified_at) : null,
+      onboarding_completed: Boolean(row.onboarding_completed),
+      professional_role: (row.professional_role || null) as ProfessionalRole | null,
+      custom_professional_role: row.custom_professional_role
+        ? String(row.custom_professional_role)
+        : null,
+      workspace_type: (row.workspace_type || null) as WorkspaceType | null,
+      practice_areas: Array.isArray(row.practice_areas) ? row.practice_areas.map(String) : [],
+      custom_practice_area: row.custom_practice_area
+        ? String(row.custom_practice_area)
+        : null,
+    },
+    firm: row.firm_id
+      ? { id: String(row.firm_id), name: String(row.firm_name) }
+      : null,
+  };
 }
 
 // Lazy initialization of Pool
@@ -137,8 +181,8 @@ class DatabaseService {
       ["firm_123", "Sterling & Croft LLP"]
     );
     await this.query(
-      `INSERT INTO users (id, firm_id, name, email)
-       VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO NOTHING`,
+      `INSERT INTO users (id, firm_id, name, email, onboarding_completed, workspace_type)
+       VALUES ($1, $2, $3, $4, TRUE, 'firm') ON CONFLICT (id) DO NOTHING`,
       ["user_456", "firm_123", "Oladimeji", "oladimeji@workpodd.com"]
     );
     await this.query(
@@ -247,65 +291,6 @@ class DatabaseService {
     };
   }
 
-  public async createAccount(
-    name: string,
-    email: string,
-    passwordHash: string,
-    tokenHash: string,
-    expiresAt: string
-  ): Promise<{
-    user: { id: string; firm_id: string; name: string; email: string };
-    firm: { id: string; name: string };
-  }> {
-    await this.ensureSchema();
-    const client = await getPool().connect();
-    const firmId = `firm_${randomUUID()}`;
-    const userId = `user_${randomUUID()}`;
-    const now = new Date().toISOString();
-    const firmName = `${name}'s Workspace`;
-
-    try {
-      await client.query("BEGIN");
-      await client.query("INSERT INTO firm (id, name) VALUES ($1, $2)", [firmId, firmName]);
-      await client.query(
-        `INSERT INTO users (id, firm_id, name, email, password_hash, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $6)`,
-        [userId, firmId, name, email, passwordHash, now]
-      );
-      await client.query(
-        `INSERT INTO sessions (token_hash, user_id, created_at, expires_at, last_used_at)
-         VALUES ($1, $2, $3, $4, $3)`,
-        [tokenHash, userId, now, expiresAt]
-      );
-      await client.query("COMMIT");
-      return {
-        user: { id: userId, firm_id: firmId, name, email },
-        firm: { id: firmId, name: firmName },
-      };
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
-    } finally {
-      client.release();
-    }
-  }
-
-  public async getUserForLogin(email: string): Promise<{
-    id: string;
-    firm_id: string;
-    name: string;
-    email: string;
-    password_hash: string;
-  } | null> {
-    const rows = await this.query(
-      `SELECT id, firm_id, name, email, password_hash
-       FROM users
-       WHERE LOWER(BTRIM(email)) = $1 AND password_hash IS NOT NULL`,
-      [email]
-    );
-    return rows[0] || null;
-  }
-
   public async createSession(userId: string, tokenHash: string, expiresAt: string): Promise<void> {
     const now = new Date().toISOString();
     await this.query(
@@ -315,32 +300,330 @@ class DatabaseService {
     );
   }
 
-  public async getSessionAccount(tokenHash: string): Promise<{
-    user: { id: string; firm_id: string; name: string; email: string };
-    firm: { id: string; name: string };
-  } | null> {
+  public async getSessionAccount(tokenHash: string): Promise<Account | null> {
     const now = new Date().toISOString();
     const rows = await this.query(
       `UPDATE sessions s
        SET last_used_at = $2
        FROM users u
-       JOIN firm f ON f.id = u.firm_id
        WHERE s.token_hash = $1
          AND s.user_id = u.id
          AND s.expires_at > $2
-       RETURNING u.id, u.firm_id, u.name, u.email, f.name AS firm_name`,
+       RETURNING u.*,
+         (SELECT f.name FROM firm f WHERE f.id = u.firm_id) AS firm_name`,
       [tokenHash, now]
     );
-    if (!rows[0]) return null;
-    return {
-      user: {
-        id: rows[0].id,
-        firm_id: rows[0].firm_id,
-        name: rows[0].name,
-        email: rows[0].email,
-      },
-      firm: { id: rows[0].firm_id, name: rows[0].firm_name },
-    };
+    return rows[0] ? accountFromRow(rows[0]) : null;
+  }
+
+  public async issueEmailOtp(input: {
+    email: string;
+    otpHash: string;
+    otpSalt: string;
+    expiresAt: string;
+  }): Promise<{ allowed: boolean; retryAfterSeconds: number }> {
+    await this.ensureSchema();
+    const client = await getPool().connect();
+    const now = new Date();
+    const nowText = now.toISOString();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [input.email]);
+      await client.query(
+        `DELETE FROM email_otp_challenges
+         WHERE expires_at < $1 AND created_at < $2`,
+        [nowText, new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString()]
+      );
+      const recent = await client.query<{ created_at: string }>(
+        `SELECT created_at FROM email_otp_challenges
+         WHERE email = $1 AND created_at > $2
+         ORDER BY created_at DESC`,
+        [input.email, new Date(now.getTime() - OTP_REQUEST_WINDOW_MS).toISOString()]
+      );
+      const lastCreatedAt = recent.rows[0]?.created_at
+        ? new Date(recent.rows[0].created_at).getTime()
+        : 0;
+      const cooldownRemaining = OTP_RESEND_COOLDOWN_MS - (now.getTime() - lastCreatedAt);
+      if (cooldownRemaining > 0 || recent.rows.length >= OTP_MAX_REQUESTS_PER_WINDOW) {
+        await client.query("COMMIT");
+        return {
+          allowed: false,
+          retryAfterSeconds: Math.max(
+            1,
+            Math.ceil(
+              (cooldownRemaining > 0 ? cooldownRemaining : OTP_REQUEST_WINDOW_MS) / 1000
+            )
+          ),
+        };
+      }
+      await client.query(
+        `UPDATE email_otp_challenges SET consumed_at = $2
+         WHERE email = $1 AND consumed_at IS NULL`,
+        [input.email, nowText]
+      );
+      await client.query(
+        `INSERT INTO email_otp_challenges
+          (id, email, otp_hash, otp_salt, expires_at, attempt_count, created_at, consumed_at)
+         VALUES ($1, $2, $3, $4, $5, 0, $6, NULL)`,
+        [
+          `otp_${randomUUID()}`,
+          input.email,
+          input.otpHash,
+          input.otpSalt,
+          input.expiresAt,
+          nowText,
+        ]
+      );
+      await client.query("COMMIT");
+      return { allowed: true, retryAfterSeconds: Math.ceil(OTP_RESEND_COOLDOWN_MS / 1000) };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async consumeEmailOtp(
+    email: string,
+    code: string
+  ): Promise<"verified" | "invalid" | "expired" | "attempts_exceeded"> {
+    await this.ensureSchema();
+    const client = await getPool().connect();
+    const now = new Date().toISOString();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [email]);
+      const result = await client.query<{
+        id: string;
+        otp_hash: string;
+        otp_salt: string;
+        expires_at: string;
+        attempt_count: number;
+      }>(
+        `SELECT id, otp_hash, otp_salt, expires_at, attempt_count
+         FROM email_otp_challenges
+         WHERE email = $1 AND consumed_at IS NULL
+         ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
+        [email]
+      );
+      const challenge = result.rows[0];
+      if (!challenge) {
+        await client.query("COMMIT");
+        return "invalid";
+      }
+      if (challenge.attempt_count >= OTP_MAX_ATTEMPTS) {
+        await client.query(
+          "UPDATE email_otp_challenges SET consumed_at = $2 WHERE id = $1",
+          [challenge.id, now]
+        );
+        await client.query("COMMIT");
+        return "attempts_exceeded";
+      }
+      if (challenge.expires_at <= now) {
+        await client.query(
+          "UPDATE email_otp_challenges SET consumed_at = $2 WHERE id = $1",
+          [challenge.id, now]
+        );
+        await client.query("COMMIT");
+        return "expired";
+      }
+      if (!verifyOtpHash(code, challenge.otp_salt, challenge.otp_hash)) {
+        const attempts = challenge.attempt_count + 1;
+        await client.query(
+          `UPDATE email_otp_challenges
+           SET attempt_count = $2, consumed_at = CASE WHEN $2 >= $3 THEN $4 ELSE NULL END
+           WHERE id = $1`,
+          [challenge.id, attempts, OTP_MAX_ATTEMPTS, now]
+        );
+        await client.query("COMMIT");
+        return attempts >= OTP_MAX_ATTEMPTS ? "attempts_exceeded" : "invalid";
+      }
+      await client.query(
+        "UPDATE email_otp_challenges SET consumed_at = $2 WHERE id = $1",
+        [challenge.id, now]
+      );
+      await client.query("COMMIT");
+      return "verified";
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async authenticateEmail(email: string): Promise<{ account: Account; isNew: boolean }> {
+    await this.ensureSchema();
+    const client = await getPool().connect();
+    const now = new Date().toISOString();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [email]);
+      const existing = await client.query<{ id: string }>(
+        "SELECT id FROM users WHERE LOWER(BTRIM(email)) = $1 FOR UPDATE",
+        [email]
+      );
+      const isNew = existing.rows.length === 0;
+      const userId = existing.rows[0]?.id || `user_${randomUUID()}`;
+      if (isNew) {
+        await client.query(
+          `INSERT INTO users
+            (id, firm_id, name, email, email_verified_at, onboarding_completed, created_at, updated_at)
+           VALUES ($1, NULL, NULL, $2, $3, FALSE, $3, $3)`,
+          [userId, email, now]
+        );
+      } else {
+        await client.query(
+          "UPDATE users SET email_verified_at = COALESCE(email_verified_at, $2), updated_at = $2 WHERE id = $1",
+          [userId, now]
+        );
+      }
+      const accountResult = await client.query(
+        `SELECT u.*, f.name AS firm_name
+         FROM users u LEFT JOIN firm f ON f.id = u.firm_id WHERE u.id = $1`,
+        [userId]
+      );
+      await client.query("COMMIT");
+      return { account: accountFromRow(accountResult.rows[0]), isNew };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async authenticateGoogle(input: {
+    sub: string;
+    email: string;
+    name: string | null;
+  }): Promise<{ account: Account; isNew: boolean }> {
+    await this.ensureSchema();
+    const client = await getPool().connect();
+    const now = new Date().toISOString();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [input.email]);
+      const bySub = await client.query<{ id: string; email: string }>(
+        "SELECT id, email FROM users WHERE google_sub = $1 FOR UPDATE",
+        [input.sub]
+      );
+      const byEmail = await client.query<{ id: string; google_sub: string | null }>(
+        "SELECT id, google_sub FROM users WHERE LOWER(BTRIM(email)) = $1 FOR UPDATE",
+        [input.email]
+      );
+      if (bySub.rows[0] && byEmail.rows[0] && bySub.rows[0].id !== byEmail.rows[0].id) {
+        throw new Error("GOOGLE_ACCOUNT_CONFLICT");
+      }
+      if (byEmail.rows[0]?.google_sub && byEmail.rows[0].google_sub !== input.sub) {
+        throw new Error("GOOGLE_ACCOUNT_CONFLICT");
+      }
+      const isNew = !bySub.rows[0] && !byEmail.rows[0];
+      const userId = bySub.rows[0]?.id || byEmail.rows[0]?.id || `user_${randomUUID()}`;
+      if (isNew) {
+        await client.query(
+          `INSERT INTO users
+            (id, firm_id, name, email, google_sub, email_verified_at, onboarding_completed,
+             created_at, updated_at)
+           VALUES ($1, NULL, $2, $3, $4, $5, FALSE, $5, $5)`,
+          [userId, input.name, input.email, input.sub, now]
+        );
+      } else {
+        await client.query(
+          `UPDATE users SET google_sub = COALESCE(google_sub, $2),
+             email_verified_at = COALESCE(email_verified_at, $3),
+             name = COALESCE(name, $4), updated_at = $3
+           WHERE id = $1`,
+          [userId, input.sub, now, input.name]
+        );
+      }
+      const accountResult = await client.query(
+        `SELECT u.*, f.name AS firm_name
+         FROM users u LEFT JOIN firm f ON f.id = u.firm_id WHERE u.id = $1`,
+        [userId]
+      );
+      await client.query("COMMIT");
+      return { account: accountFromRow(accountResult.rows[0]), isNew };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async completeOnboarding(input: {
+    userId: string;
+    name: string;
+    professionalRole: ProfessionalRole;
+    customProfessionalRole: string | null;
+    workspaceType: WorkspaceType;
+    invitationCode: string | null;
+    practiceAreas: string[];
+    customPracticeArea: string | null;
+  }): Promise<Account> {
+    await this.ensureSchema();
+    const client = await getPool().connect();
+    const now = new Date().toISOString();
+    try {
+      await client.query("BEGIN");
+      const userResult = await client.query<{
+        id: string;
+        firm_id: string | null;
+        onboarding_completed: boolean;
+      }>("SELECT id, firm_id, onboarding_completed FROM users WHERE id = $1 FOR UPDATE", [
+        input.userId,
+      ]);
+      const user = userResult.rows[0];
+      if (!user) throw new Error("USER_NOT_FOUND");
+      let firmId = user.firm_id;
+      if (!user.onboarding_completed) {
+        if (input.workspaceType === "firm") {
+          const firmResult = await client.query<{ id: string }>(
+            `SELECT id FROM firm
+             WHERE invitation_code IS NOT NULL AND UPPER(BTRIM(invitation_code)) = $1`,
+            [input.invitationCode]
+          );
+          if (!firmResult.rows[0]) throw new Error("INVALID_INVITATION_CODE");
+          firmId = firmResult.rows[0].id;
+        } else if (!firmId) {
+          firmId = `firm_${randomUUID()}`;
+          await client.query("INSERT INTO firm (id, name) VALUES ($1, 'Personal Workspace')", [
+            firmId,
+          ]);
+        }
+        await client.query(
+          `UPDATE users SET firm_id = $2, name = $3, professional_role = $4,
+             custom_professional_role = $5, workspace_type = $6, practice_areas = $7::jsonb,
+             custom_practice_area = $8, onboarding_completed = TRUE, updated_at = $9
+           WHERE id = $1`,
+          [
+            input.userId,
+            firmId,
+            input.name,
+            input.professionalRole,
+            input.customProfessionalRole,
+            input.workspaceType,
+            JSON.stringify(input.practiceAreas),
+            input.customPracticeArea,
+            now,
+          ]
+        );
+      }
+      const accountResult = await client.query(
+        `SELECT u.*, f.name AS firm_name
+         FROM users u LEFT JOIN firm f ON f.id = u.firm_id WHERE u.id = $1`,
+        [input.userId]
+      );
+      await client.query("COMMIT");
+      return accountFromRow(accountResult.rows[0]);
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   public async deleteSession(tokenHash: string): Promise<void> {

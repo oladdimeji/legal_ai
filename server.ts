@@ -2,13 +2,23 @@ import express from "express";
 import type { NextFunction, Request, Response } from "express";
 import path from "path";
 import multer from "multer";
+import { OAuth2Client } from "google-auth-library";
 import { createServer as createViteServer } from "vite";
 import { db } from "./server/db.js";
 import type { OwnershipContext } from "./server/db.js";
 import { callModel, MODEL_CONFIGS } from "./server/model.js";
 import { CourtListenerAdapter } from "./server/connectors/courtlistener.js";
 import { GovInfoAdapter } from "./server/connectors/govinfo.js";
-import { Document, Citation, Message, Draft, ResearchStep } from "./src/types.js";
+import {
+  Account,
+  Document,
+  Citation,
+  Message,
+  Draft,
+  ProfessionalRole,
+  ResearchStep,
+  WorkspaceType,
+} from "./src/types.js";
 import { Packer } from "docx";
 import { extractUploads, MAX_FILE_COUNT, MAX_FILE_SIZE_BYTES } from "./server/fileExtraction.js";
 import { markdownToDocxDocument } from "./server/docxMarkdown.js";
@@ -18,13 +28,22 @@ import { canonicalizeAssistantCitations, rewriteGoogleGroundingCitations, stripI
 import {
   SESSION_COOKIE_NAME,
   SESSION_TTL_MS,
+  OAUTH_STATE_COOKIE_NAME,
+  OTP_TTL_MS,
   clearSessionCookie,
+  clearOAuthStateCookie,
+  createOAuthState,
+  createOtpHash,
   createSessionToken,
-  hashPassword,
+  generateOtp,
   hashSessionToken,
+  isValidEmail,
+  normalizeEmail,
+  oauthStateCookie,
   parseCookie,
+  safeInternalPath,
   sessionCookie,
-  verifyPassword,
+  validateOAuthState,
 } from "./server/auth.js";
 
 const isProduction = process.env.NODE_ENV === "production";
@@ -38,15 +57,67 @@ const upload = multer({
 });
 
 interface AuthenticatedRequest extends Request {
-  auth?: {
-    user: { id: string; firm_id: string; name: string; email: string };
-    firm: { id: string; name: string };
-  };
+  auth?: Account;
 }
 
 function ownership(req: Request): OwnershipContext {
-  const auth = (req as AuthenticatedRequest).auth!;
+  const auth = (req as AuthenticatedRequest).auth;
+  if (!auth?.user.onboarding_completed || !auth.firm || auth.user.firm_id !== auth.firm.id) {
+    throw new Error("Completed workspace authentication is required.");
+  }
   return { userId: auth.user.id, firmId: auth.firm.id };
+}
+
+const PROFESSIONAL_ROLES: ProfessionalRole[] = [
+  "Lawyer",
+  "Paralegal",
+  "Legal Assistant",
+  "Legal Operations",
+  "Other",
+];
+const PRACTICE_AREAS = [
+  "Litigation",
+  "Corporate and Commercial",
+  "Real Estate",
+  "Employment",
+  "Family Law",
+  "Criminal Law",
+  "Intellectual Property",
+  "Tax",
+  "Regulatory and Compliance",
+  "Other",
+] as const;
+
+function normalizeInvitationCode(value: unknown): string {
+  return typeof value === "string" ? value.trim().toUpperCase() : "";
+}
+
+function redirectUrl(req: Request, pathname: string): string {
+  const configured = process.env.APP_URL?.trim();
+  const base = configured || `${req.protocol}://${req.get("host")}`;
+  return new URL(pathname, base.endsWith("/") ? base : `${base}/`).toString();
+}
+
+async function sendOtpEmail(email: string, code: string): Promise<void> {
+  const apiKey = process.env.BREVO_API_KEY;
+  const senderEmail = process.env.BREVO_SENDER_EMAIL;
+  const senderName = process.env.BREVO_SENDER_NAME || "Exepts";
+  if (!apiKey || !senderEmail) throw new Error("EMAIL_AUTH_NOT_CONFIGURED");
+  const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "api-key": apiKey,
+    },
+    body: JSON.stringify({
+      sender: { email: senderEmail, name: senderName },
+      to: [{ email }],
+      subject: "Your Exepts verification code",
+      textContent: `Your verification code is: ${code}\n\nThis code expires in 10 minutes.`,
+      htmlContent: `<p>Your verification code is: <strong>${code}</strong></p><p>This code expires in 10 minutes.</p>`,
+    }),
+  });
+  if (!response.ok) throw new Error(`BREVO_DELIVERY_FAILED_${response.status}`);
 }
 
 function requestedCaseId(value: unknown): string | null {
@@ -247,54 +318,165 @@ async function startServer() {
     res.json({ status: "ok", time: new Date().toISOString() });
   });
 
-  app.post("/api/auth/signup", async (req, res) => {
-    try {
-      const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
-      const email = typeof req.body.email === "string" ? req.body.email.trim().toLowerCase() : "";
-      const password = typeof req.body.password === "string" ? req.body.password : "";
-      if (!name || !email || !email.includes("@") || password.length < 8) {
-        return res.status(400).json({
-          error: "Name, a valid email, and a password of at least 8 characters are required.",
-        });
-      }
+  app.post(["/api/auth/signup", "/api/auth/login"], (_req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    return res.status(410).json({ error: "Password authentication is no longer available." });
+  });
 
-      const passwordHash = await hashPassword(password);
-      const { token, tokenHash } = createSessionToken();
-      const expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString();
-      const account = await db.createAccount(name, email, passwordHash, tokenHash, expiresAt);
-      res.setHeader("Set-Cookie", sessionCookie(token, isProduction));
-      res.setHeader("Cache-Control", "no-store");
-      return res.status(201).json(account);
-    } catch (err: any) {
-      if (err?.code === "23505") {
-        return res.status(409).json({ error: "An account with that email already exists." });
+  app.get("/api/auth/google", (req, res) => {
+    const clientId = process.env.GOOGLE_CLIENT_ID;
+    const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+    const redirectUri = process.env.GOOGLE_OAUTH_REDIRECT_URI;
+    if (!clientId || !clientSecret || !redirectUri) {
+      return res.status(503).json({ error: "Google authentication is not configured." });
+    }
+    const { state, cookieValue } = createOAuthState(req.query.returnTo);
+    const client = new OAuth2Client(clientId, clientSecret, redirectUri);
+    const url = client.generateAuthUrl({
+      access_type: "online",
+      scope: ["openid", "email", "profile"],
+      state,
+      prompt: "select_account",
+    });
+    res.setHeader("Set-Cookie", oauthStateCookie(cookieValue, isProduction));
+    res.setHeader("Cache-Control", "no-store");
+    return res.redirect(url);
+  });
+
+  app.get("/api/auth/google/callback", async (req, res) => {
+    const stateCookie = parseCookie(req.headers.cookie, OAUTH_STATE_COOKIE_NAME);
+    const stateResult = validateOAuthState(req.query.state, stateCookie);
+    const fail = (message: string) => {
+      res.setHeader("Set-Cookie", clearOAuthStateCookie(isProduction));
+      return res.redirect(
+        redirectUrl(req, `/auth?authError=${encodeURIComponent(message)}`)
+      );
+    };
+    if (!stateResult.valid) return fail("The sign-in request expired or was invalid. Please try again.");
+    const code = typeof req.query.code === "string" ? req.query.code : "";
+    const clientId = process.env.GOOGLE_CLIENT_ID;
+    const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+    const redirectUri = process.env.GOOGLE_OAUTH_REDIRECT_URI;
+    if (!code || !clientId || !clientSecret || !redirectUri) {
+      return fail("Google sign-in could not be completed.");
+    }
+    try {
+      const client = new OAuth2Client(clientId, clientSecret, redirectUri);
+      const { tokens } = await client.getToken(code);
+      if (!tokens.id_token) return fail("Google sign-in did not provide a verified identity.");
+      const ticket = await client.verifyIdToken({ idToken: tokens.id_token, audience: clientId });
+      const payload = ticket.getPayload();
+      const validIssuer =
+        payload?.iss === "accounts.google.com" || payload?.iss === "https://accounts.google.com";
+      if (
+        !payload?.sub ||
+        !payload.email ||
+        payload.email_verified !== true ||
+        payload.aud !== clientId ||
+        !validIssuer
+      ) {
+        return fail("Google could not verify this email address.");
       }
-      console.error("Signup failed:", err);
-      return res.status(500).json({ error: "Unable to create the account." });
+      const { account } = await db.authenticateGoogle({
+        sub: payload.sub,
+        email: normalizeEmail(payload.email),
+        name: typeof payload.name === "string" ? payload.name.trim() || null : null,
+      });
+      const { token, tokenHash } = createSessionToken();
+      await db.createSession(
+        account.user.id,
+        tokenHash,
+        new Date(Date.now() + SESSION_TTL_MS).toISOString()
+      );
+      const destination = account.user.onboarding_completed
+        ? safeInternalPath(stateResult.returnTo)
+        : "/onboarding";
+      res.setHeader("Set-Cookie", [
+        sessionCookie(token, isProduction),
+        clearOAuthStateCookie(isProduction),
+      ]);
+      res.setHeader("Cache-Control", "no-store");
+      return res.redirect(redirectUrl(req, destination));
+    } catch (error) {
+      if (error instanceof Error && error.message === "GOOGLE_ACCOUNT_CONFLICT") {
+        return fail("This Google account cannot be linked to the requested Exepts account.");
+      }
+      console.error("Google authentication failed.");
+      return fail("Google sign-in could not be completed. Please try again.");
     }
   });
 
-  app.post("/api/auth/login", async (req, res) => {
+  app.post("/api/auth/email/request-code", async (req, res) => {
+    const email = normalizeEmail(typeof req.body.email === "string" ? req.body.email : "");
+    if (!isValidEmail(email)) return res.status(400).json({ error: "Enter a valid email address." });
     try {
-      const email = typeof req.body.email === "string" ? req.body.email.trim().toLowerCase() : "";
-      const password = typeof req.body.password === "string" ? req.body.password : "";
-      const user = email && password ? await db.getUserForLogin(email) : null;
-      const valid = user ? await verifyPassword(password, user.password_hash) : false;
-      if (!user || !valid) {
-        return res.status(401).json({ error: "Invalid email or password." });
+      const code = generateOtp();
+      const { salt, hash } = createOtpHash(code);
+      const issue = await db.issueEmailOtp({
+        email,
+        otpHash: hash,
+        otpSalt: salt,
+        expiresAt: new Date(Date.now() + OTP_TTL_MS).toISOString(),
+      });
+      if (!issue.allowed) {
+        res.setHeader("Retry-After", String(issue.retryAfterSeconds));
+        return res.status(429).json({
+          error: "Please wait before requesting another code.",
+          retryAfterSeconds: issue.retryAfterSeconds,
+        });
       }
+      try {
+        await sendOtpEmail(email, code);
+      } catch (error) {
+        console.error("Verification email delivery failed.");
+        return res.status(502).json({ error: "Unable to send a verification code right now." });
+      }
+      res.setHeader("Cache-Control", "no-store");
+      return res.json({
+        success: true,
+        message: "If the address can receive email, a verification code has been sent.",
+        retryAfterSeconds: issue.retryAfterSeconds,
+      });
+    } catch (error) {
+      console.error("Email verification request failed.");
+      return res.status(500).json({ error: "Unable to request a verification code." });
+    }
+  });
 
+  app.post("/api/auth/email/verify-code", async (req, res) => {
+    const email = normalizeEmail(typeof req.body.email === "string" ? req.body.email : "");
+    const code = typeof req.body.code === "string" ? req.body.code.trim() : "";
+    if (!isValidEmail(email) || !/^\d{6}$/.test(code)) {
+      return res.status(400).json({ error: "Enter a valid email and six-digit code." });
+    }
+    try {
+      const result = await db.consumeEmailOtp(email, code);
+      if (result !== "verified") {
+        const messages = {
+          invalid: "The verification code is invalid.",
+          expired: "The verification code has expired. Request a new code.",
+          attempts_exceeded: "Too many attempts. Request a new code.",
+        };
+        return res.status(400).json({ error: messages[result] });
+      }
+      const { account } = await db.authenticateEmail(email);
       const { token, tokenHash } = createSessionToken();
-      const expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString();
-      await db.createSession(user.id, tokenHash, expiresAt);
-      const account = await db.getSessionAccount(tokenHash);
-      if (!account) throw new Error("Session could not be loaded after login.");
+      await db.createSession(
+        account.user.id,
+        tokenHash,
+        new Date(Date.now() + SESSION_TTL_MS).toISOString()
+      );
       res.setHeader("Set-Cookie", sessionCookie(token, isProduction));
       res.setHeader("Cache-Control", "no-store");
-      return res.json(account);
-    } catch (err) {
-      console.error("Login failed:", err);
-      return res.status(500).json({ error: "Unable to sign in." });
+      return res.json({
+        account,
+        redirectTo: account.user.onboarding_completed
+          ? safeInternalPath(req.body.returnTo)
+          : "/onboarding",
+      });
+    } catch (error) {
+      console.error("Email verification failed.");
+      return res.status(500).json({ error: "Unable to verify the code." });
     }
   });
 
@@ -325,6 +507,83 @@ async function startServer() {
   app.get("/api/auth/me", requireAuth, (req: AuthenticatedRequest, res) => {
     res.setHeader("Cache-Control", "no-store");
     return res.json(req.auth);
+  });
+
+  app.post("/api/onboarding/complete", requireAuth, async (req: AuthenticatedRequest, res) => {
+    const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
+    const professionalRole = req.body.professionalRole as ProfessionalRole;
+    const customProfessionalRole =
+      typeof req.body.customProfessionalRole === "string"
+        ? req.body.customProfessionalRole.trim()
+        : "";
+    const workspaceType = req.body.workspaceType as WorkspaceType;
+    const invitationCode = normalizeInvitationCode(req.body.invitationCode);
+    const rawPracticeAreas: unknown[] = Array.isArray(req.body.practiceAreas)
+      ? req.body.practiceAreas
+      : [];
+    const practiceAreas: string[] = Array.from(
+      new Set(
+        rawPracticeAreas.filter(
+          (area): area is string =>
+            typeof area === "string" &&
+            PRACTICE_AREAS.includes(area as (typeof PRACTICE_AREAS)[number])
+        )
+      )
+    );
+    const customPracticeArea =
+      typeof req.body.customPracticeArea === "string"
+        ? req.body.customPracticeArea.trim()
+        : "";
+    if (!name || name.length > 120) {
+      return res.status(400).json({ error: "Full name is required." });
+    }
+    if (!PROFESSIONAL_ROLES.includes(professionalRole)) {
+      return res.status(400).json({ error: "Select a professional role." });
+    }
+    if (professionalRole === "Other" && !customProfessionalRole) {
+      return res.status(400).json({ error: "Enter your professional role." });
+    }
+    if (customProfessionalRole.length > 80) {
+      return res.status(400).json({ error: "Professional role must be 80 characters or fewer." });
+    }
+    if (!["firm", "independent"].includes(workspaceType)) {
+      return res.status(400).json({ error: "Select how you will use Exepts." });
+    }
+    if (workspaceType === "firm" && !invitationCode) {
+      return res.status(400).json({ error: "Enter a Firm invitation code." });
+    }
+    if (invitationCode.length > 100) {
+      return res.status(400).json({ error: "Firm invitation code is too long." });
+    }
+    if (rawPracticeAreas.length !== practiceAreas.length) {
+      return res.status(400).json({ error: "One or more practice areas are invalid." });
+    }
+    if (practiceAreas.includes("Other") && !customPracticeArea) {
+      return res.status(400).json({ error: "Enter the other practice area." });
+    }
+    if (customPracticeArea.length > 80) {
+      return res.status(400).json({ error: "Practice area must be 80 characters or fewer." });
+    }
+    try {
+      const account = await db.completeOnboarding({
+        userId: req.auth!.user.id,
+        name,
+        professionalRole,
+        customProfessionalRole: professionalRole === "Other" ? customProfessionalRole : null,
+        workspaceType,
+        invitationCode: workspaceType === "firm" ? invitationCode : null,
+        practiceAreas,
+        customPracticeArea: practiceAreas.includes("Other") ? customPracticeArea : null,
+      });
+      res.setHeader("Cache-Control", "no-store");
+      return res.json({ account, redirectTo: "/assistant" });
+    } catch (error) {
+      if (error instanceof Error && error.message === "INVALID_INVITATION_CODE") {
+        return res.status(400).json({ error: "That Firm invitation code is invalid." });
+      }
+      console.error("Onboarding completion failed.");
+      return res.status(500).json({ error: "Unable to complete onboarding." });
+    }
   });
 
   const portalTokenHash = (token: string) => hashSessionToken(decodeURIComponent(token));
@@ -487,8 +746,24 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
     }
   });
 
-  // All remaining API routes require a server-validated session.
-  app.use("/api", requireAuth);
+  // All remaining API routes require a completed, server-validated workspace session.
+  const requireCompletedOnboarding = (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ) => {
+    if (
+      !req.auth?.user.onboarding_completed ||
+      !req.auth.user.firm_id ||
+      !req.auth.firm ||
+      req.auth.user.firm_id !== req.auth.firm.id
+    ) {
+      return res.status(403).json({ error: "Complete onboarding before using the workspace." });
+    }
+    return next();
+  };
+
+  app.use("/api", requireAuth, requireCompletedOnboarding);
 
   // Enhance/Improve Raw Prompt into Legal-Grade Query
   app.post("/api/improve-prompt", async (req, res) => {

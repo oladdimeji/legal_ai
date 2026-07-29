@@ -1,13 +1,36 @@
 export interface User {
   id: string;
-  firm_id: string;
-  name: string;
+  firm_id: string | null;
+  name: string | null;
   email: string;
+  google_sub: string | null;
+  email_verified_at: string | null;
+  onboarding_completed: boolean;
+  professional_role: ProfessionalRole | null;
+  custom_professional_role: string | null;
+  workspace_type: WorkspaceType | null;
+  practice_areas: string[];
+  custom_practice_area: string | null;
 }
 
 export interface Firm {
   id: string;
   name: string;
+  invitation_code?: string | null;
+}
+
+export type ProfessionalRole =
+  | "Lawyer"
+  | "Paralegal"
+  | "Legal Assistant"
+  | "Legal Operations"
+  | "Other";
+
+export type WorkspaceType = "firm" | "independent";
+
+export interface Account {
+  user: User;
+  firm: Firm | null;
 }
 
 export interface Document {

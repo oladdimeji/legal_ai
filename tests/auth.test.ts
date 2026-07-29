@@ -1,22 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  OAUTH_STATE_COOKIE_NAME,
   SESSION_COOKIE_NAME,
   clearSessionCookie,
+  createOAuthState,
+  createOtpHash,
   createSessionToken,
-  hashPassword,
+  generateOtp,
+  normalizeEmail,
   parseCookie,
+  safeInternalPath,
   sessionCookie,
-  verifyPassword,
+  validateOAuthState,
+  verifyOtpHash,
 } from "../server/auth.js";
-
-test("password hashes are salted and verify in constant-format flow", async () => {
-  const first = await hashPassword("correct horse battery staple");
-  const second = await hashPassword("correct horse battery staple");
-  assert.notEqual(first, second);
-  assert.equal(await verifyPassword("correct horse battery staple", first), true);
-  assert.equal(await verifyPassword("wrong password", first), false);
-});
 
 test("session tokens expose only a distinct hash for storage", () => {
   const { token, tokenHash } = createSessionToken();
@@ -25,7 +23,7 @@ test("session tokens expose only a distinct hash for storage", () => {
   assert.notEqual(token, tokenHash);
 });
 
-test("session cookie is HTTP-only, lax, and secure only in production", () => {
+test("session cookie remains HTTP-only, lax, and secure only in production", () => {
   const development = sessionCookie("secret", false);
   assert.match(development, /HttpOnly/);
   assert.match(development, /SameSite=Lax/);
@@ -33,4 +31,41 @@ test("session cookie is HTTP-only, lax, and secure only in production", () => {
   assert.match(sessionCookie("secret", true), /; Secure/);
   assert.match(clearSessionCookie(true), /Max-Age=0/);
   assert.equal(parseCookie(`other=x; ${SESSION_COOKIE_NAME}=secret`, SESSION_COOKIE_NAME), "secret");
+});
+
+test("email normalization is consistent", () => {
+  assert.equal(normalizeEmail("  Counsel@Example.COM "), "counsel@example.com");
+});
+
+test("OTP values are six digits, salted, and only verify against the matching hash", () => {
+  const code = generateOtp();
+  assert.match(code, /^\d{6}$/);
+  const first = createOtpHash(code);
+  const second = createOtpHash(code);
+  assert.notEqual(first.salt, second.salt);
+  assert.notEqual(first.hash, second.hash);
+  assert.equal(verifyOtpHash(code, first.salt, first.hash), true);
+  assert.equal(verifyOtpHash("000000" === code ? "000001" : "000000", first.salt, first.hash), false);
+});
+
+test("safe internal returns reject external and entry-flow redirects", () => {
+  assert.equal(safeInternalPath("/matters/matter_1?tab=work"), "/matters/matter_1?tab=work");
+  assert.equal(safeInternalPath("https://attacker.example"), "/assistant");
+  assert.equal(safeInternalPath("//attacker.example/path"), "/assistant");
+  assert.equal(safeInternalPath("/\\attacker.example"), "/assistant");
+  assert.equal(safeInternalPath("/onboarding"), "/assistant");
+  assert.equal(safeInternalPath("/auth?returnTo=/settings"), "/assistant");
+});
+
+test("OAuth state is random, bound to its HTTP-only cookie payload, and single-context validated", () => {
+  const first = createOAuthState("/settings");
+  const second = createOAuthState("/settings");
+  assert.notEqual(first.state, second.state);
+  assert.deepEqual(validateOAuthState(first.state, first.cookieValue), {
+    valid: true,
+    returnTo: "/settings",
+  });
+  assert.equal(validateOAuthState(second.state, first.cookieValue).valid, false);
+  assert.equal(validateOAuthState(first.state, null).valid, false);
+  assert.equal(OAUTH_STATE_COOKIE_NAME, "exepts_oauth_state");
 });

@@ -465,6 +465,58 @@ const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 13,
+    name: "passwordless_authentication_and_onboarding",
+    async run(client) {
+      await client.query("ALTER TABLE users ALTER COLUMN name DROP NOT NULL");
+      await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS google_sub TEXT");
+      await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified_at TEXT");
+      await client.query(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_completed BOOLEAN NOT NULL DEFAULT FALSE"
+      );
+      await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS professional_role TEXT");
+      await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_professional_role TEXT");
+      await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS workspace_type TEXT");
+      await client.query(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS practice_areas JSONB NOT NULL DEFAULT '[]'::jsonb"
+      );
+      await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_practice_area TEXT");
+      await client.query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS users_google_sub_unique_idx ON users(google_sub) WHERE google_sub IS NOT NULL"
+      );
+      await client.query("ALTER TABLE firm ADD COLUMN IF NOT EXISTS invitation_code TEXT");
+      await client.query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS firm_invitation_code_unique_idx ON firm(UPPER(BTRIM(invitation_code))) WHERE invitation_code IS NOT NULL"
+      );
+      await client.query(`
+        UPDATE users
+        SET onboarding_completed = TRUE,
+            workspace_type = COALESCE(workspace_type, 'firm')
+        WHERE firm_id IS NOT NULL AND onboarding_completed = FALSE
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS email_otp_challenges (
+          id TEXT PRIMARY KEY,
+          email TEXT NOT NULL,
+          otp_hash TEXT NOT NULL,
+          otp_salt TEXT NOT NULL,
+          expires_at TEXT NOT NULL,
+          attempt_count INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          consumed_at TEXT
+        )
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS email_otp_challenges_email_created_idx
+        ON email_otp_challenges(email, created_at DESC)
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS email_otp_challenges_expiry_idx
+        ON email_otp_challenges(expires_at)
+      `);
+    },
+  },
 ];
 
 export async function runMigrations(pool: Pool): Promise<void> {

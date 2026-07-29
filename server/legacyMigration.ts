@@ -12,7 +12,11 @@ export async function migrateLegacyOwnerFromEnvironment(pool: Pool): Promise<voi
   const client = await pool.connect();
   try {
     const pending = await client.query<{ id: string }>(
-      "SELECT id FROM users WHERE password_hash IS NULL ORDER BY id"
+      `SELECT id FROM users
+       WHERE password_hash IS NULL
+         AND onboarding_completed = FALSE
+         AND firm_id IS NOT NULL
+       ORDER BY id`
     );
     if (pending.rowCount === 0) return;
 

@@ -639,3 +639,51 @@ Known limitations:
 
 - A live container `/api/health` request was not run because no disposable database was used for this deployment pass; application startup automatically connects to the database and runs pending migrations.
 - The existing Vite large-chunk warning remains. Bundle optimization was explicitly outside this pass.
+
+## Entry, Authentication & Onboarding Phase
+
+Status: Complete.
+
+Implemented:
+
+- Added URL-aware SPA navigation for the public landing page, authentication, onboarding, Assistant, Matters, individual Matter workspaces, Firm Library, History, Settings, and the existing token-authenticated Client Portal.
+- Added browser History API navigation, safe protected-route return handling, back/forward support, URL-backed sidebar navigation, direct Matter URLs, and signed-in/signed-out route guards.
+- Added a responsive grayscale Exepts landing page with supported product capabilities and authentication calls to action.
+- Removed password fields and login/signup modes. The legacy password endpoints now return `410 Gone`; the existing `password_hash` column remains untouched for compatibility.
+- Added Google OpenID authentication with the official `google-auth-library`, environment-only configuration, cryptographic state cookies, authorization-code exchange, ID-token verification, stable `sub` linking, conflict prevention, safe redirects, and normal Exepts sessions.
+- Added Brevo email OTP authentication using built-in `fetch`, six-digit cryptographic codes, salted hashes, ten-minute expiry, five-attempt consumption, single-use enforcement, resend cooldown, hourly per-email request limits, generic request responses, and verified-email timestamps.
+- Added required onboarding for new accounts with editable Google name prefilling, approved professional roles, independent or invitation-code workspace setup, optional practice areas, and transactional completion.
+- Added idempotent Personal Workspace creation and case-normalized unique Firm invitation-code joining without adding invitation-code management UI.
+- Updated session loading so authenticated pre-onboarding users can access `/api/auth/me`; all product APIs now additionally require completed onboarding and a valid matching workspace. Client Portal token routes remain separate and precede lawyer-session middleware.
+- Removed the fake sidebar Firm fallback and use the authenticated workspace name.
+- Updated shared account types for nullable pre-onboarding Firm/name state and the new verified-email, role, workspace, practice-area, and onboarding fields.
+- Updated legacy/demo startup handling so normal passwordless accounts are not mistaken for pending legacy password migrations.
+- Added focused tests for cookies, OTP hashing, email normalization, safe redirects, OAuth state, routing, account linking guards, migration compatibility, onboarding idempotency/code joining, and incomplete-account product protection.
+
+Schema changes:
+
+- Migration 013, `passwordless_authentication_and_onboarding`, is additive and non-destructive.
+- `users.name` is now nullable until onboarding; `users.firm_id` remains nullable.
+- Added `users.google_sub`, `email_verified_at`, `onboarding_completed`, `professional_role`, `custom_professional_role`, `workspace_type`, `practice_areas`, and `custom_practice_area`.
+- Added a partial unique index for non-null Google `sub` identifiers.
+- Added nullable `firm.invitation_code` with a case-normalized partial unique index. No default invitation code is created.
+- Added `email_otp_challenges` with email, salted OTP hash, salt, expiry, attempt count, creation time, consumption time, and indexes for email/request enforcement and expiry cleanup.
+- Existing users with a Firm are marked onboarding-complete and retain their current Firm and data.
+- No table or column was deleted or renamed, and `password_hash` remains in place.
+
+Dependencies added:
+
+- `google-auth-library` for official Google OAuth and ID-token verification.
+
+Verification:
+
+- `npm ci`: passed.
+- `npm run lint`: passed.
+- `npm test`: passed, 91/91 tests.
+- `npm run build`: passed.
+
+Known limitations:
+
+- Google and Brevo delivery require the documented production credentials and authorized redirect URI; live third-party authentication was not exercised by the automated suite.
+- Firm invitation codes can be consumed during onboarding, but creation and management remain intentionally outside this phase.
+- Manual browser verification against a live migrated PostgreSQL workspace remains to be performed.
