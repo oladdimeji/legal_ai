@@ -150,10 +150,7 @@ export function classifyProtectedRequest(req: Request): AuthorizationRoute | nul
   }
   if (pathname.startsWith("/team/")) return { action: "team.manage" };
   if (pathname.startsWith("/google/")) {
-    const importId = pathId(pathname, /^\/google\/drive\/imports\/([^/]+)\/reimport$/);
-    return importId
-      ? { action: "integration.use", reference: { type: "drive_import", id: importId } }
-      : { action: "integration.use", matterId };
+    return { action: "integration.use", matterId };
   }
   const driveDraftId = pathId(pathname, /^\/drafts\/([^/]+)\/export\/drive$/);
   if (driveDraftId) return { action: "integration.use", matterId, reference: { type: "draft", id: driveDraftId } };
@@ -161,19 +158,6 @@ export function classifyProtectedRequest(req: Request): AuthorizationRoute | nul
     return { action: "integration.use", matterId };
   }
 
-  if (pathname === "/uploads/capabilities" && method === "GET") return { action: "workspace.view" };
-  if (pathname === "/ingestion/jobs" && method === "GET") return { action: "workspace.view" };
-  if (pathname === "/uploads/authorize" && method === "POST") {
-    return { action: matterId ? "matter.content.write" : "library.write", matterId };
-  }
-  const versionId = pathId(pathname, /^\/(?:uploads|ingestion|document-versions)\/([^/]+)/);
-  if (versionId) {
-    const download = pathname.endsWith("/original-download");
-    return {
-      action: download ? "matter.download" : "matter.content.write",
-      reference: { type: "version", id: versionId },
-    };
-  }
   if (pathname === "/improve-prompt" || pathname === "/extract-files") return { action: "assistant.use" };
 
   if (pathname === "/cases") {

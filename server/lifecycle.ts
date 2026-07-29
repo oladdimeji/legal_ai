@@ -1,6 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 
-export const RESOURCE_LIFECYCLE_FEATURE_FLAG = "FEATURE_RESOURCE_LIFECYCLE";
 export const PERMANENT_DELETION_DELAY_MS = 24 * 60 * 60 * 1000;
 
 export type LifecycleState = "active" | "archived" | "deletion_pending";

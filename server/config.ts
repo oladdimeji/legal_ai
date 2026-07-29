@@ -1,24 +1,5 @@
 export type RuntimeEnvironment = "development" | "test" | "production";
-
-export interface FeatureFlags {
-  publicLanding: boolean;
-  asyncIngestion: boolean;
-  govInfo: boolean;
-  courtListener: boolean;
-  googleAccount: boolean;
-  googleDriveExport: boolean;
-  googleDriveImport: boolean;
-  gmailSend: boolean;
-  ocr: boolean;
-  clientAccounts: boolean;
-  clientDashboard: boolean;
-  clientNotifications: boolean;
-  clientDurableUploads: boolean;
-  transactionalEmail: boolean;
-  firmTeams: boolean;
-  privateStorage: boolean;
-  resourceLifecycle: boolean;
-}
+export type IntegrationStatus = "configured" | "not_configured";
 
 export interface ServerConfig {
   environment: RuntimeEnvironment;
@@ -27,63 +8,54 @@ export interface ServerConfig {
   geminiApiKey?: string;
   encryptionKeyBase64?: string;
   appBaseUrl?: string;
-  clientInternalPreviewLinks: boolean;
-  features: FeatureFlags;
+  integrations: {
+    govInfo: { status: IntegrationStatus; configured: boolean };
+    google: { status: IntegrationStatus; configured: boolean; capabilities: readonly ["account", "drive_export"] | readonly [] };
+    transactionalEmail: { status: IntegrationStatus; configured: boolean };
+  };
   providers: {
-    objectStorage: {
-      provider?: string;
-      supabaseUrl?: string;
-      supabaseSecretKey?: string;
-      bucket?: string;
-    };
-    jobs: { provider?: string };
-    malwareScanning: { provider?: string; host?: string; port: number };
     govInfo: { apiKey?: string; baseUrl: string };
     google: {
       clientId?: string;
       clientSecret?: string;
       oauthRedirectUri?: string;
-      pickerApiKey?: string;
-      cloudProjectId?: string;
-      cloudProjectNumber?: string;
     };
     transactionalEmail: {
-      provider?: string;
       apiKey?: string;
       senderEmail?: string;
       senderName?: string;
-      apiBaseUrl: string;
+      apiBaseUrl?: string;
     };
-    observability: { provider?: string };
   };
 }
 
 export interface PublicBrowserConfig {
-  features: Pick<
-    FeatureFlags,
-    "publicLanding" | "govInfo" | "courtListener" | "googleAccount" | "googleDriveExport" | "googleDriveImport" | "clientAccounts" | "clientDashboard" | "clientNotifications" | "clientDurableUploads" | "transactionalEmail" | "firmTeams" | "privateStorage" | "resourceLifecycle"
-  >;
+  integrations: {
+    govInfo: { status: IntegrationStatus };
+    google: {
+      status: IntegrationStatus;
+      capabilities: readonly ["account", "drive_export"] | readonly [];
+    };
+    transactionalEmail: { status: IntegrationStatus };
+  };
 }
 
-const deferredFlags = [
-  "FEATURE_COURTLISTENER",
-  "FEATURE_GMAIL_SEND",
-  "FEATURE_OCR",
-] as const;
-
-function parseBoolean(env: NodeJS.ProcessEnv, name: string): boolean {
-  const value = env[name];
-  if (value === undefined || value === "" || value === "false") return false;
-  if (value === "true") return true;
-  throw new Error(`${name} must be either true or false.`);
+function supplied(env: NodeJS.ProcessEnv, name: string): boolean {
+  return Boolean(env[name]?.trim());
 }
 
-function requireWhen(enabled: boolean, env: NodeJS.ProcessEnv, names: readonly string[]): void {
-  if (!enabled) return;
-  const missing = names.filter((name) => !env[name]?.trim());
+function requireCompleteGroup(
+  env: NodeJS.ProcessEnv,
+  label: string,
+  names: readonly string[],
+): boolean {
+  const present = names.filter((name) => supplied(env, name));
+  if (present.length === 0) return false;
+  const missing = names.filter((name) => !supplied(env, name));
   if (missing.length) {
-    throw new Error(`Enabled feature configuration is incomplete. Missing: ${missing.join(", ")}.`);
+    throw new Error(`${label} configuration is incomplete. Missing: ${missing.join(", ")}.`);
   }
+  return true;
 }
 
 function validateEncryptionKey(value: string | undefined): void {
@@ -91,6 +63,19 @@ function validateEncryptionKey(value: string | undefined): void {
   const decoded = Buffer.from(value, "base64");
   if (decoded.length !== 32 || decoded.toString("base64") !== value) {
     throw new Error("APP_ENCRYPTION_KEY_BASE64 must be a canonical base64-encoded 32-byte key.");
+  }
+}
+
+function validateUrl(name: string, value: string | undefined, protocols: readonly string[]): void {
+  if (!value) return;
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error(`${name} must be a valid URL.`);
+  }
+  if (!protocols.includes(parsed.protocol)) {
+    throw new Error(`${name} must use ${protocols.join(" or ")}.`);
   }
 }
 
@@ -105,113 +90,35 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
     throw new Error("PORT must be an integer between 1 and 65535.");
   }
 
-  // Backward compatibility: the legacy all-in-one flag may activate account
-  // linking/sign-in and Drive export, but it must never activate Drive import.
-  const legacyGoogleDrive = parseBoolean(env, "FEATURE_GOOGLE_DRIVE");
-  const features: FeatureFlags = {
-    publicLanding: parseBoolean(env, "FEATURE_PUBLIC_LANDING"),
-    asyncIngestion: parseBoolean(env, "FEATURE_ASYNC_INGESTION"),
-    govInfo: parseBoolean(env, "FEATURE_GOVINFO"),
-    courtListener: parseBoolean(env, "FEATURE_COURTLISTENER"),
-    googleAccount: parseBoolean(env, "FEATURE_GOOGLE_ACCOUNT") || legacyGoogleDrive,
-    googleDriveExport: parseBoolean(env, "FEATURE_GOOGLE_DRIVE_EXPORT") || legacyGoogleDrive,
-    googleDriveImport: parseBoolean(env, "FEATURE_GOOGLE_DRIVE_IMPORT"),
-    gmailSend: parseBoolean(env, "FEATURE_GMAIL_SEND"),
-    ocr: parseBoolean(env, "FEATURE_OCR"),
-    clientAccounts: parseBoolean(env, "FEATURE_CLIENT_ACCOUNTS"),
-    clientDashboard: parseBoolean(env, "FEATURE_CLIENT_DASHBOARD"),
-    clientNotifications: parseBoolean(env, "FEATURE_CLIENT_NOTIFICATIONS"),
-    clientDurableUploads: parseBoolean(env, "FEATURE_CLIENT_DURABLE_UPLOADS"),
-    transactionalEmail: parseBoolean(env, "FEATURE_TRANSACTIONAL_EMAIL"),
-    firmTeams: parseBoolean(env, "FEATURE_FIRM_TEAMS"),
-    privateStorage: parseBoolean(env, "FEATURE_PRIVATE_STORAGE"),
-    resourceLifecycle: parseBoolean(env, "FEATURE_RESOURCE_LIFECYCLE"),
-  };
-
-  requireWhen(features.privateStorage, env, [
-    "SUPABASE_URL",
-    "SUPABASE_SECRET_KEY",
-    "STORAGE_BUCKET",
-  ]);
-  if (features.privateStorage && env.OBJECT_STORAGE_PROVIDER !== "supabase") {
-    throw new Error("FEATURE_PRIVATE_STORAGE requires OBJECT_STORAGE_PROVIDER=supabase.");
+  if (environment === "production") {
+    const missing = ["SUPABASE_DB_URL", "GEMINI_API_KEY", "APP_BASE_URL"]
+      .filter((name) => !supplied(env, name));
+    if (missing.length) {
+      throw new Error(`Required application configuration is incomplete. Missing: ${missing.join(", ")}.`);
+    }
   }
 
-  requireWhen(features.asyncIngestion, env, [
-    "SUPABASE_DB_URL",
-    "OBJECT_STORAGE_PROVIDER",
-    "JOBS_PROVIDER",
-    "MALWARE_SCANNER_PROVIDER",
-    "SUPABASE_URL",
-    "SUPABASE_SECRET_KEY",
-    "STORAGE_BUCKET",
-  ]);
-  if (features.asyncIngestion && env.OBJECT_STORAGE_PROVIDER !== "supabase") {
-    throw new Error("FEATURE_ASYNC_INGESTION requires OBJECT_STORAGE_PROVIDER=supabase.");
-  }
-  if (features.asyncIngestion && env.JOBS_PROVIDER !== "pg-boss") {
-    throw new Error("FEATURE_ASYNC_INGESTION requires JOBS_PROVIDER=pg-boss.");
-  }
-  if (features.asyncIngestion && env.MALWARE_SCANNER_PROVIDER !== "clamav") {
-    throw new Error("FEATURE_ASYNC_INGESTION requires MALWARE_SCANNER_PROVIDER=clamav.");
-  }
-  requireWhen(features.govInfo, env, ["GOVINFO_API_KEY"]);
-  requireWhen(
-    features.googleAccount || features.googleDriveExport || features.googleDriveImport,
-    env,
-    [
+  validateUrl("SUPABASE_DB_URL", env.SUPABASE_DB_URL, ["postgres:", "postgresql:"]);
+  validateUrl("APP_BASE_URL", env.APP_BASE_URL, ["http:", "https:"]);
+  validateUrl("GOVINFO_BASE_URL", env.GOVINFO_BASE_URL, ["https:"]);
+  validateUrl("GOOGLE_OAUTH_REDIRECT_URI", env.GOOGLE_OAUTH_REDIRECT_URI, ["http:", "https:"]);
+  validateUrl("BREVO_API_BASE_URL", env.BREVO_API_BASE_URL, ["https:"]);
+  validateEncryptionKey(env.APP_ENCRYPTION_KEY_BASE64);
+
+  const govInfoConfigured = supplied(env, "GOVINFO_API_KEY");
+  const googleConfigured = requireCompleteGroup(env, "Google", [
     "GOOGLE_CLIENT_ID",
     "GOOGLE_CLIENT_SECRET",
     "GOOGLE_OAUTH_REDIRECT_URI",
     "APP_ENCRYPTION_KEY_BASE64",
-    ],
-  );
-  requireWhen(features.googleDriveImport, env, [
-    "GOOGLE_PICKER_API_KEY",
-    "GOOGLE_CLOUD_PROJECT_ID",
-    "GOOGLE_CLOUD_PROJECT_NUMBER",
   ]);
-  if ((features.googleDriveExport || features.googleDriveImport) && !features.googleAccount) {
-    throw new Error("Google Drive capabilities require FEATURE_GOOGLE_ACCOUNT=true.");
-  }
-  if (features.googleDriveImport && !features.privateStorage) {
-    throw new Error("FEATURE_GOOGLE_DRIVE_IMPORT requires FEATURE_PRIVATE_STORAGE=true.");
-  }
-  if (features.googleDriveImport && !features.asyncIngestion) {
-    throw new Error("FEATURE_GOOGLE_DRIVE_IMPORT requires FEATURE_ASYNC_INGESTION=true.");
-  }
-  if (features.resourceLifecycle && !features.asyncIngestion) {
-    throw new Error("FEATURE_RESOURCE_LIFECYCLE requires FEATURE_ASYNC_INGESTION=true.");
-  }
-  if (features.clientDashboard && !features.clientAccounts) {
-    throw new Error("FEATURE_CLIENT_DASHBOARD requires FEATURE_CLIENT_ACCOUNTS=true.");
-  }
-  if (features.clientNotifications && !features.clientAccounts) {
-    throw new Error("FEATURE_CLIENT_NOTIFICATIONS requires FEATURE_CLIENT_ACCOUNTS=true.");
-  }
-  if (features.clientDurableUploads) {
-    throw new Error("FEATURE_CLIENT_DURABLE_UPLOADS is deferred and must remain false.");
-  }
-  requireWhen(features.clientAccounts, env, ["APP_BASE_URL"]);
-  requireWhen(features.transactionalEmail, env, [
+  const transactionalEmailConfigured = requireCompleteGroup(env, "Brevo transactional email", [
     "BREVO_API_KEY",
     "BREVO_SENDER_EMAIL",
+    "BREVO_SENDER_NAME",
+    "BREVO_API_BASE_URL",
     "APP_BASE_URL",
   ]);
-  if (features.transactionalEmail && env.TRANSACTIONAL_EMAIL_PROVIDER !== "brevo") {
-    throw new Error("FEATURE_TRANSACTIONAL_EMAIL requires TRANSACTIONAL_EMAIL_PROVIDER=brevo.");
-  }
-  if (features.googleDriveImport && !/^\d+$/.test(env.GOOGLE_CLOUD_PROJECT_NUMBER || "")) {
-    throw new Error("GOOGLE_CLOUD_PROJECT_NUMBER must be the numeric Google Cloud project number.");
-  }
-  validateEncryptionKey(env.APP_ENCRYPTION_KEY_BASE64);
-
-  for (const flag of deferredFlags) {
-    if (parseBoolean(env, flag)) {
-      throw new Error(`${flag} is deferred in V1 and must remain false.`);
-    }
-  }
-
   return {
     environment,
     port,
@@ -219,21 +126,22 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
     geminiApiKey: env.GEMINI_API_KEY,
     encryptionKeyBase64: env.APP_ENCRYPTION_KEY_BASE64,
     appBaseUrl: env.APP_BASE_URL,
-    clientInternalPreviewLinks: parseBoolean(env, "CLIENT_INTERNAL_PREVIEW_LINKS"),
-    features,
+    integrations: {
+      govInfo: {
+        status: govInfoConfigured ? "configured" : "not_configured",
+        configured: govInfoConfigured,
+      },
+      google: {
+        status: googleConfigured ? "configured" : "not_configured",
+        configured: googleConfigured,
+        capabilities: googleConfigured ? ["account", "drive_export"] : [],
+      },
+      transactionalEmail: {
+        status: transactionalEmailConfigured ? "configured" : "not_configured",
+        configured: transactionalEmailConfigured,
+      },
+    },
     providers: {
-      objectStorage: {
-        provider: env.OBJECT_STORAGE_PROVIDER,
-        supabaseUrl: env.SUPABASE_URL,
-        supabaseSecretKey: env.SUPABASE_SECRET_KEY,
-        bucket: env.STORAGE_BUCKET,
-      },
-      jobs: { provider: env.JOBS_PROVIDER },
-      malwareScanning: {
-        provider: env.MALWARE_SCANNER_PROVIDER,
-        host: env.CLAMAV_HOST,
-        port: Number(env.CLAMAV_PORT || 3310),
-      },
       govInfo: {
         apiKey: env.GOVINFO_API_KEY,
         baseUrl: env.GOVINFO_BASE_URL || "https://api.govinfo.gov",
@@ -242,26 +150,26 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
         clientId: env.GOOGLE_CLIENT_ID,
         clientSecret: env.GOOGLE_CLIENT_SECRET,
         oauthRedirectUri: env.GOOGLE_OAUTH_REDIRECT_URI,
-        pickerApiKey: env.GOOGLE_PICKER_API_KEY,
-        cloudProjectId: env.GOOGLE_CLOUD_PROJECT_ID,
-        cloudProjectNumber: env.GOOGLE_CLOUD_PROJECT_NUMBER,
       },
       transactionalEmail: {
-        provider: env.TRANSACTIONAL_EMAIL_PROVIDER,
         apiKey: env.BREVO_API_KEY,
         senderEmail: env.BREVO_SENDER_EMAIL,
         senderName: env.BREVO_SENDER_NAME,
-        apiBaseUrl: env.BREVO_API_BASE_URL || "https://api.brevo.com/v3",
+        apiBaseUrl: env.BREVO_API_BASE_URL,
       },
-      observability: { provider: env.OBSERVABILITY_PROVIDER },
     },
   };
 }
 
 export function toPublicBrowserConfig(config: ServerConfig): PublicBrowserConfig {
-  const { publicLanding, govInfo, courtListener, googleAccount, googleDriveExport, googleDriveImport, clientAccounts, clientDashboard, clientNotifications, clientDurableUploads, transactionalEmail, firmTeams, privateStorage, resourceLifecycle } =
-    config.features;
   return {
-    features: { publicLanding, govInfo, courtListener, googleAccount, googleDriveExport, googleDriveImport, clientAccounts, clientDashboard, clientNotifications, clientDurableUploads, transactionalEmail, firmTeams, privateStorage, resourceLifecycle },
+    integrations: {
+      govInfo: { status: config.integrations.govInfo.status },
+      google: {
+        status: config.integrations.google.status,
+        capabilities: config.integrations.google.capabilities,
+      },
+      transactionalEmail: { status: config.integrations.transactionalEmail.status },
+    },
   };
 }

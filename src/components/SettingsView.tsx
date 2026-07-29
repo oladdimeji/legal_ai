@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Cloud, Copy, LogOut, Settings, Users } from "lucide-react";
 import { Case, FirmMembership, FirmRole, User } from "../types";
+import type { PublicBrowserConfig } from "../lib/publicConfig";
 
 type GoogleConnectionStatus = {
   connected: boolean;
@@ -14,29 +15,25 @@ export default function SettingsView({
   membership,
   matters,
   onLogout,
-  googleAccountEnabled = false,
-  googleDriveExportEnabled = false,
-  firmTeamsEnabled = false,
+  integrations,
 }: {
   user: User;
   membership: FirmMembership;
   matters: Case[];
   onLogout: () => void;
-  googleAccountEnabled?: boolean;
-  googleDriveExportEnabled?: boolean;
-  firmTeamsEnabled?: boolean;
+  integrations: PublicBrowserConfig["integrations"];
 }) {
   const [googleStatus, setGoogleStatus] = useState<GoogleConnectionStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
   const loadGoogle = async () => {
-    if (!googleAccountEnabled) return;
+    if (integrations.google.status !== "configured") return;
     const response = await fetch("/api/google/connection");
     if (response.ok) setGoogleStatus(await response.json());
   };
 
-  useEffect(() => { void loadGoogle(); }, [googleAccountEnabled]);
+  useEffect(() => { void loadGoogle(); }, [integrations.google.status]);
   useEffect(() => {
     const result = new URLSearchParams(window.location.search).get("google");
     const messages: Record<string, string> = {
@@ -110,16 +107,16 @@ export default function SettingsView({
           <button onClick={onLogout} className="flex items-center gap-2 rounded border border-zinc-300 px-4 py-2 text-[10px] font-mono font-bold uppercase hover:border-zinc-900"><LogOut className="h-4 w-4" />Log out</button>
         </div>
 
-        {firmTeamsEnabled && membership.role === "firm_admin" && (
+        {membership.role === "firm_admin" && (
           <TeamSettings currentUser={user} matters={matters} />
         )}
 
-        {googleAccountEnabled && (
+        {integrations.google.status === "configured" ? (
           <section className="space-y-4 rounded border border-zinc-200 p-6">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <div className="flex items-center gap-2"><Cloud className="h-4 w-4" /><h3 className="text-sm font-semibold uppercase">Google account</h3></div>
-                <p className="mt-2 text-xs leading-relaxed text-zinc-500">Link Google for linked-account sign-in{googleDriveExportEnabled ? " and Drive export" : ""}. Exepts requests only profile identity and access to Drive files you choose or create.</p>
+                <p className="mt-2 text-xs leading-relaxed text-zinc-500">Link Google for linked-account sign-in and Drive export. Exepts requests only profile identity and access to Drive files it creates.</p>
               </div>
               <span className="rounded border px-2 py-1 text-[9px] font-mono font-bold uppercase">{googleStatus?.connected ? "Connected" : "Not connected"}</span>
             </div>
@@ -130,7 +127,15 @@ export default function SettingsView({
               ? <div className="flex flex-wrap gap-2"><button onClick={() => void refreshGoogle()} disabled={busy} className="rounded border border-zinc-300 px-4 py-2 text-[10px] font-mono font-bold uppercase disabled:opacity-50">{busy ? "Working..." : "Refresh authorization"}</button><button onClick={() => void disconnectGoogle()} disabled={busy} className="rounded border border-zinc-300 px-4 py-2 text-[10px] font-mono font-bold uppercase disabled:opacity-50">{busy ? "Working..." : "Disconnect Google"}</button></div>
               : <button onClick={() => void connectGoogle()} disabled={busy} className="rounded bg-zinc-950 px-4 py-2 text-[10px] font-mono font-bold uppercase text-white disabled:opacity-50">{busy ? "Connecting..." : "Link Google account"}</button>}
           </section>
-        )}
+        ) : <section className="rounded border border-zinc-200 p-6"><div className="flex items-center gap-2"><Cloud className="h-4 w-4" /><h3 className="text-sm font-semibold uppercase">Google integration</h3></div><p className="mt-2 text-xs text-zinc-500">Not configured. Account linking and Drive export appear automatically when the server has the complete Google credential set.</p></section>}
+
+        <section className="rounded border border-zinc-200 p-6">
+          <h3 className="text-sm font-semibold uppercase">Optional integrations</h3>
+          <dl className="mt-3 grid gap-2 text-xs">
+            <div className="flex justify-between"><dt>GovInfo</dt><dd className="font-mono uppercase">{integrations.govInfo.status.replace("_", " ")}</dd></div>
+            <div className="flex justify-between"><dt>Transactional email</dt><dd className="font-mono uppercase">{integrations.transactionalEmail.status.replace("_", " ")}</dd></div>
+          </dl>
+        </section>
       </div>
     </div>
   );
@@ -198,11 +203,9 @@ function TeamSettings({ currentUser, matters }: { currentUser: User; matters: Ca
   const invite = async (event: React.FormEvent) => {
     event.preventDefault();
     const data = await request("/api/team/invitations", "POST", { email, role, matterIds });
-    if (data?.invitationUrl) {
-      setInvitationUrl(`${window.location.origin}${data.invitationUrl}`);
-      setEmail("");
-      setMatterIds([]);
-    }
+    setInvitationUrl(data?.invitationUrl || "");
+    setEmail("");
+    setMatterIds([]);
   };
 
   const toggleAssignment = async (member: TeamMember, matterId: string) => {
@@ -215,7 +218,7 @@ function TeamSettings({ currentUser, matters }: { currentUser: User; matters: Ca
   return (
     <section className="space-y-5 rounded border border-zinc-200 p-6">
       <div className="flex items-center gap-2"><Users className="h-4 w-4" /><h3 className="text-sm font-semibold uppercase">Firm team</h3></div>
-      <p className="text-xs leading-relaxed text-zinc-500">Invite firm members, set their role, and assign Matters. Invitation links are shown once for secure delivery outside Exepts.</p>
+      <p className="text-xs leading-relaxed text-zinc-500">Invite firm members, set their role, and assign Matters. Email is sent when configured; otherwise the one-time invitation link is shown once for authorized delivery.</p>
       {error && <p role="alert" className="text-xs text-red-700">{error}</p>}
 
       <form onSubmit={invite} className="space-y-3 border-t border-zinc-100 pt-4">

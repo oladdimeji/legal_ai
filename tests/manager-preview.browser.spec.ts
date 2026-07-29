@@ -423,32 +423,17 @@ test("manager preview lawyer-to-client release journey", async ({ browser }) => 
   const config = loadServerConfig({
     NODE_ENV: "test",
     APP_BASE_URL: origin,
-    FEATURE_CLIENT_ACCOUNTS: "true",
-    FEATURE_CLIENT_DASHBOARD: "true",
-    FEATURE_CLIENT_NOTIFICATIONS: "true",
-    FEATURE_TRANSACTIONAL_EMAIL: "true",
-    TRANSACTIONAL_EMAIL_PROVIDER: "brevo",
     BREVO_API_KEY: "mock-brevo-key",
     BREVO_SENDER_EMAIL: "preview@example.test",
-    CLIENT_INTERNAL_PREVIEW_LINKS: "true",
+    BREVO_SENDER_NAME: "Exepts Preview",
+    BREVO_API_BASE_URL: "https://api.brevo.com/v3",
   });
   const email = new CapturingEmail();
   app.get("/api/config", (_req, res) => res.json({
-    features: {
-      publicLanding: false,
-      govInfo: false,
-      courtListener: false,
-      googleAccount: false,
-      googleDriveExport: false,
-      googleDriveImport: false,
-      clientAccounts: true,
-      clientDashboard: true,
-      clientNotifications: true,
-      clientDurableUploads: false,
-      transactionalEmail: true,
-      firmTeams: false,
-      privateStorage: false,
-      resourceLifecycle: false,
+    integrations: {
+      govInfo: { status: "not_configured" },
+      google: { status: "not_configured", capabilities: [] },
+      transactionalEmail: { status: "configured" },
     },
   }));
   app.get("/api/auth/me", (_req, res) => res.status(401).json({ error: "Authentication required." }));

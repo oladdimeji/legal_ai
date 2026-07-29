@@ -4,7 +4,7 @@ import { MatterIntelligenceRecord } from "../types";
 import FormattedMarkdown from "./FormattedMarkdown";
 import RichDocumentEditor from "./RichDocumentEditor";
 
-export default function MatterIntelligence({ matterId, googleDriveExportEnabled = false }: { matterId: string; googleDriveExportEnabled?: boolean }) {
+export default function MatterIntelligence({ matterId, googleDriveExportAvailable = false }: { matterId: string; googleDriveExportAvailable?: boolean }) {
   const [record, setRecord] = useState<MatterIntelligenceRecord | null>(null);
   const [content, setContent] = useState("");
   const [editing, setEditing] = useState(false);
@@ -109,7 +109,7 @@ export default function MatterIntelligence({ matterId, googleDriveExportEnabled 
           <a href={`/api/cases/${matterId}/intelligence/export`} className="flex items-center gap-1 rounded border px-4 py-2 text-[10px] font-mono font-bold uppercase hover:bg-zinc-50">
             <Download className="h-3.5 w-3.5" />Export .docx
           </a>
-          {googleDriveExportEnabled && (
+          {googleDriveExportAvailable && (
             <button onClick={() => void exportToDrive()} disabled={busy} className="flex items-center gap-1 rounded border px-4 py-2 text-[10px] font-mono font-bold uppercase hover:bg-zinc-50 disabled:opacity-50">
               <Download className="h-3.5 w-3.5" />Export to Drive
             </button>

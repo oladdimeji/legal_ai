@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 
 export type EmailTemplateKey =
+  | "firm_invitation"
   | "client_invitation"
   | "email_verification"
   | "password_reset"
@@ -80,6 +81,13 @@ export function renderTransactionalTemplate(
   const recipientName = values.recipientName?.trim() || "there";
   const escapedName = escapeHtml(recipientName);
   const templates: Record<EmailTemplateKey, () => { subject: string; heading: string; body: string; action: string; actionLabel: string }> = {
+    firm_invitation: () => ({
+      subject: "You have been invited to join a firm in Exepts",
+      heading: "Join your firm in Exepts",
+      body: `You were invited to join Exepts with the ${escapeHtml(requiredValue(values, "role"))} role.`,
+      action: requiredValue(values, "actionUrl"),
+      actionLabel: "Accept invitation",
+    }),
     client_invitation: () => ({
       subject: `You have been invited to ${requiredValue(values, "matterName")} in Exepts`,
       heading: "A lawyer has invited you to Exepts",

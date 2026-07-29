@@ -9,9 +9,8 @@
   "packageManager": "npm@10.9.4",
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs && esbuild worker.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/worker.cjs",
+    "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
     "start": "node scripts/start-production.mjs",
-    "start:worker": "node dist/worker.cjs",
     "lint": "tsc --noEmit",
     "test": "tsx --test tests/**/*.test.ts",
     "test:browser": "playwright test",
@@ -23,7 +22,6 @@
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
-    "@supabase/supabase-js": "^2.110.9",
     "@tailwindcss/vite": "^4.1.14",
     "@types/multer": "^2.2.0",
     "@types/pdfkit": "^0.17.6",
@@ -39,13 +37,11 @@
     "pdf-parse": "^2.4.5",
     "pdfkit": "^0.17.2",
     "pg": "^8.22.0",
-    "pg-boss": "^12.26.3",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
     "react-markdown": "^10.1.0",
     "react-router-dom": "7.18.1",
     "remark-gfm": "^4.0.1",
-    "tus-js-client": "^4.3.1",
     "vite": "^6.2.3"
   },
   "devDependencies": {

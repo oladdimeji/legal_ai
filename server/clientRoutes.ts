@@ -75,7 +75,7 @@ async function emailLawyerActivity(
     message: string;
   },
 ): Promise<void> {
-  if (!config.features.transactionalEmail) return;
+  if (!config.integrations.transactionalEmail.configured) return;
   const recipients = await repository.getMatterLawyerEmailRecipients(
     input.clientUserId,
     input.caseId,
@@ -123,7 +123,6 @@ export function registerPublicClientRoutes(
   },
 ): void {
   const { config, repository, email } = input;
-  const enabled = () => config.features.clientAccounts;
   const production = config.environment === "production";
   const originGuard = createOriginGuard(config.appBaseUrl || "http://localhost:3000");
 
@@ -135,7 +134,6 @@ export function registerPublicClientRoutes(
   });
 
   app.get("/api/client/invitations/:token", async (req, res) => {
-    if (!enabled()) return res.status(404).json({ error: "Client accounts are not enabled." });
     const invitation = await repository.getInvitation(sha256(req.params.token));
     noStore(res);
     if (!invitation || invitation.status !== "pending") {
@@ -155,7 +153,6 @@ export function registerPublicClientRoutes(
     originGuard,
     requireClientCsrf,
     async (req, res) => {
-      if (!enabled()) return res.status(404).json({ error: "Client accounts are not enabled." });
       const key = requestFingerprint(req, req.params.token);
       const limit = await invitationLimiter.before(key);
       if (!limit.allowed) return rateLimited(res, limit.retryAfterSeconds);
@@ -182,8 +179,7 @@ export function registerPublicClientRoutes(
           return res.status(400).json({ error: "Name is required." });
         }
         const verification = rawToken();
-        const previewVerification = !config.features.transactionalEmail
-          && config.clientInternalPreviewLinks;
+        const previewVerification = !config.integrations.transactionalEmail.configured;
         const accepted = await repository.acceptInvitation({
           tokenHash,
           name: requestedName || existing?.name || invitation.client_name,
@@ -197,7 +193,7 @@ export function registerPublicClientRoutes(
         invitationLimiter.succeed(key);
         let verificationRequired = !accepted.emailVerified;
         let delivery: "sent" | "failed" | "skipped" = "skipped";
-        if (verificationRequired && config.features.transactionalEmail) {
+        if (verificationRequired && config.integrations.transactionalEmail.configured) {
           const actionUrl = `${config.appBaseUrl}/client/verify/${encodeURIComponent(verification.token)}`;
           const sent = await email.send({
             firmId: accepted.firmId,
@@ -225,7 +221,7 @@ export function registerPublicClientRoutes(
           activated: true,
           verificationRequired,
           delivery,
-          dashboardAvailable: !verificationRequired && config.features.clientDashboard,
+          dashboardAvailable: !verificationRequired,
         });
       } catch (error) {
         invitationLimiter.fail(key);
@@ -237,7 +233,6 @@ export function registerPublicClientRoutes(
   );
 
   app.post("/api/client/verify/:token", originGuard, requireClientCsrf, async (req, res) => {
-    if (!enabled()) return res.status(404).json({ error: "Client accounts are not enabled." });
     const key = requestFingerprint(req, req.params.token);
     const limit = await verificationLimiter.before(key);
     if (!limit.allowed) return rateLimited(res, limit.retryAfterSeconds);
@@ -256,7 +251,6 @@ export function registerPublicClientRoutes(
     originGuard,
     requireClientCsrf,
     async (req, res) => {
-      if (!enabled()) return res.status(404).json({ error: "Client accounts are not enabled." });
       const emailAddress = validEmail(req.body?.email) || "";
       const password = typeof req.body?.password === "string" ? req.body.password : "";
       const key = requestFingerprint(req, emailAddress);
@@ -270,7 +264,7 @@ export function registerPublicClientRoutes(
         && valid
         && credential.status === "active"
         && !credential.email_verified_at
-        && config.features.transactionalEmail
+        && config.integrations.transactionalEmail.configured
       ) {
         const verification = rawToken();
         await repository.createEmailVerification(
@@ -298,7 +292,6 @@ export function registerPublicClientRoutes(
   );
 
   app.post("/api/client/login", originGuard, requireClientCsrf, async (req, res) => {
-    if (!enabled()) return res.status(404).json({ error: "Client accounts are not enabled." });
     const emailAddress = validEmail(req.body?.email) || "";
     const password = typeof req.body?.password === "string" ? req.body.password : "";
     const key = requestFingerprint(req, emailAddress);
@@ -320,7 +313,7 @@ export function registerPublicClientRoutes(
     await issueClientSession(repository, credential.id, req, res, production);
     return res.json({
       client: { id: credential.id, name: credential.name, email: credential.email },
-      dashboardAvailable: config.features.clientDashboard,
+      dashboardAvailable: true,
     });
   });
 
@@ -329,7 +322,6 @@ export function registerPublicClientRoutes(
     originGuard,
     requireClientCsrf,
     async (req, res) => {
-      if (!enabled()) return res.status(404).json({ error: "Client accounts are not enabled." });
       const emailAddress = validEmail(req.body?.email) || "";
       const key = requestFingerprint(req, emailAddress);
       const limit = await resetLimiter.before(key);
@@ -339,7 +331,7 @@ export function registerPublicClientRoutes(
         credential
         && credential.status === "active"
         && credential.email_verified_at
-        && config.features.transactionalEmail
+        && config.integrations.transactionalEmail.configured
       ) {
         const reset = rawToken();
         await repository.createPasswordReset(
@@ -371,7 +363,6 @@ export function registerPublicClientRoutes(
     originGuard,
     requireClientCsrf,
     async (req, res) => {
-      if (!enabled()) return res.status(404).json({ error: "Client accounts are not enabled." });
       const key = requestFingerprint(req, req.params.token);
       const limit = await resetLimiter.before(key);
       if (!limit.allowed) return rateLimited(res, limit.retryAfterSeconds);
@@ -385,7 +376,7 @@ export function registerPublicClientRoutes(
         resetLimiter.fail(key);
         return res.status(410).json({ error: "This reset link is unavailable or expired." });
       }
-      if (config.features.transactionalEmail) {
+      if (config.integrations.transactionalEmail.configured) {
         await email.send({
           clientUserId: reset.clientUserId,
           toEmail: reset.email,
@@ -442,9 +433,6 @@ export function registerPublicClientRoutes(
   );
 
   app.get("/api/client/dashboard", requireClientAuth, async (req: AuthenticatedClientRequest, res) => {
-    if (!config.features.clientDashboard) {
-      return res.status(404).json({ error: "Client dashboard is not enabled." });
-    }
     noStore(res);
     return res.json(await repository.getDashboard(req.clientAuth!.client.id));
   });
@@ -545,7 +533,7 @@ export function registerPublicClientRoutes(
       const sessionId = validId(req.params.sessionId);
       if (!sessionId) return res.status(400).json({ error: "Invalid session." });
       const revoked = await repository.revokeSession(req.clientAuth!.client.id, sessionId);
-      if (revoked && config.features.transactionalEmail) {
+      if (revoked && config.integrations.transactionalEmail.configured) {
         await email.send({
           clientUserId: req.clientAuth!.client.id,
           toEmail: req.clientAuth!.client.email,
@@ -678,9 +666,6 @@ export function registerLawyerClientRoutes(
   const originGuard = createOriginGuard(config.appBaseUrl || "http://localhost:3000");
 
   app.get("/api/cases/:caseId/client-accounts", async (req, res) => {
-    if (!config.features.clientAccounts) {
-      return res.status(404).json({ error: "Client accounts are not enabled." });
-    }
     const caseId = validId(req.params.caseId);
     if (!caseId) return res.status(400).json({ error: "Invalid Matter." });
     try {
@@ -696,9 +681,6 @@ export function registerLawyerClientRoutes(
     originGuard,
     requireClientCsrf,
     async (req, res) => {
-      if (!config.features.clientAccounts) {
-        return res.status(404).json({ error: "Client accounts are not enabled." });
-      }
       const caseId = validId(req.params.caseId);
       const clientName = validName(req.body?.name);
       const emailAddress = validEmail(req.body?.email);
@@ -717,7 +699,7 @@ export function registerLawyerClientRoutes(
         });
         const invitationUrl = `${config.appBaseUrl}/client/invitations/${encodeURIComponent(invitationToken.token)}`;
         let delivery: "sent" | "failed" | "skipped" = "skipped";
-        if (config.features.transactionalEmail) {
+        if (config.integrations.transactionalEmail.configured) {
           const result = await email.send({
             firmId: ownership(req).firmId,
             toEmail: emailAddress,
@@ -742,8 +724,7 @@ export function registerLawyerClientRoutes(
             expiresAt: invitation.expires_at,
           },
           delivery,
-          ...(config.clientInternalPreviewLinks && !config.features.transactionalEmail
-            ? { invitationUrl } : {}),
+          ...(!config.integrations.transactionalEmail.configured ? { invitationUrl } : {}),
         });
       } catch (error) {
         const conflict = error instanceof Error && /pending|unique/i.test(error.message);
@@ -761,9 +742,6 @@ export function registerLawyerClientRoutes(
     originGuard,
     requireClientCsrf,
     async (req, res) => {
-      if (!config.features.clientAccounts) {
-        return res.status(404).json({ error: "Client accounts are not enabled." });
-      }
       const caseId = validId(req.params.caseId);
       const invitationId = validId(req.params.invitationId);
       if (!caseId || !invitationId) return res.status(400).json({ error: "Invalid invitation." });
@@ -778,9 +756,6 @@ export function registerLawyerClientRoutes(
     originGuard,
     requireClientCsrf,
     async (req, res) => {
-      if (!config.features.clientAccounts) {
-        return res.status(404).json({ error: "Client accounts are not enabled." });
-      }
       const caseId = validId(req.params.caseId);
       const membershipId = validId(req.params.membershipId);
       const status = ["active", "suspended", "removed"].includes(req.body?.status)
@@ -800,17 +775,11 @@ export function registerLawyerClientRoutes(
   );
 
   app.get("/api/notifications", async (req, res) => {
-    if (!config.features.clientNotifications) {
-      return res.status(404).json({ error: "Notifications are not enabled." });
-    }
     noStore(res);
     return res.json(await repository.listLawyerNotifications(ownership(req)));
   });
 
   app.get("/api/notifications/preferences", async (req, res) => {
-    if (!config.features.clientNotifications) {
-      return res.status(404).json({ error: "Notifications are not enabled." });
-    }
     noStore(res);
     return res.json(await repository.getNotificationPreferences(
       "lawyer",
@@ -823,9 +792,6 @@ export function registerLawyerClientRoutes(
     originGuard,
     requireClientCsrf,
     async (req, res) => {
-      if (!config.features.clientNotifications) {
-        return res.status(404).json({ error: "Notifications are not enabled." });
-      }
       if (typeof req.body?.inAppEnabled !== "boolean" || typeof req.body?.emailEnabled !== "boolean") {
         return res.status(400).json({ error: "Invalid notification preferences." });
       }
@@ -842,9 +808,6 @@ export function registerLawyerClientRoutes(
     originGuard,
     requireClientCsrf,
     async (req, res) => {
-      if (!config.features.clientNotifications) {
-        return res.status(404).json({ error: "Notifications are not enabled." });
-      }
       const id = validId(req.params.notificationId);
       if (!id) return res.status(400).json({ error: "Invalid notification." });
       const changed = await repository.markLawyerNotificationRead(ownership(req), id);
@@ -858,9 +821,6 @@ export function registerLawyerClientRoutes(
     originGuard,
     requireClientCsrf,
     async (req, res) => {
-      if (!config.features.clientNotifications) {
-        return res.status(404).json({ error: "Notifications are not enabled." });
-      }
       await repository.markAllLawyerNotificationsRead(ownership(req));
       return res.json({ read: true });
     },

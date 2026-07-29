@@ -11,12 +11,10 @@ export default function MatterCollaboration({
   matter,
   onUnreadChange,
   onOpenWorkProduct,
-  clientAccountsEnabled = false,
 }: {
   matter: Case;
   onUnreadChange: (count: number) => void;
   onOpenWorkProduct: (draftId: string) => void;
-  clientAccountsEnabled?: boolean;
 }) {
   const [data, setData] = useState<Data | null>(null);
   const [name, setName] = useState(matter.client_name || "");
@@ -141,7 +139,7 @@ export default function MatterCollaboration({
   if (!data.access) {
     return (
       <div className="mx-auto max-w-3xl space-y-8">
-        {clientAccountsEnabled && <MatterClientAccounts matterId={matter.id} />}
+        <MatterClientAccounts matterId={matter.id} />
         <div className="flex min-h-[45vh] items-center justify-center border-t pt-8">
         <form onSubmit={saveClient} className="w-full space-y-4 text-center">
           <UserPlus className="mx-auto h-8 w-8 text-zinc-300" />
@@ -162,7 +160,7 @@ export default function MatterCollaboration({
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
-      {clientAccountsEnabled && <MatterClientAccounts matterId={matter.id} />}
+      <MatterClientAccounts matterId={matter.id} />
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h3 className="text-sm font-semibold uppercase">{data.access.client_name}</h3>

@@ -1,37 +1,20 @@
+export type IntegrationStatus = "configured" | "not_configured";
+
 export interface PublicBrowserConfig {
-  features: {
-    publicLanding: boolean;
-    govInfo: boolean;
-    courtListener: boolean;
-    googleAccount: boolean;
-    googleDriveExport: boolean;
-    googleDriveImport: boolean;
-    clientAccounts: boolean;
-    clientDashboard: boolean;
-    clientNotifications: boolean;
-    clientDurableUploads: boolean;
-    transactionalEmail: boolean;
-    firmTeams: boolean;
-    privateStorage: boolean;
-    resourceLifecycle: boolean;
+  integrations: {
+    govInfo: { status: IntegrationStatus };
+    google: {
+      status: IntegrationStatus;
+      capabilities: readonly ("account" | "drive_export")[];
+    };
+    transactionalEmail: { status: IntegrationStatus };
   };
 }
 
-export const disabledPublicBrowserConfig: PublicBrowserConfig = {
-  features: {
-    publicLanding: false,
-    govInfo: false,
-    courtListener: false,
-    googleAccount: false,
-    googleDriveExport: false,
-    googleDriveImport: false,
-    clientAccounts: false,
-    clientDashboard: false,
-    clientNotifications: false,
-    clientDurableUploads: false,
-    transactionalEmail: false,
-    firmTeams: false,
-    privateStorage: false,
-    resourceLifecycle: false,
+export const unconfiguredPublicBrowserConfig: PublicBrowserConfig = {
+  integrations: {
+    govInfo: { status: "not_configured" },
+    google: { status: "not_configured", capabilities: [] },
+    transactionalEmail: { status: "not_configured" },
   },
 };

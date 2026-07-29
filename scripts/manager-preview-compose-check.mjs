@@ -16,10 +16,4 @@ function compose(args) {
 const webOnly = compose(["config", "--services"]);
 assert.deepEqual(webOnly, ["web"], "default Compose topology must contain only web");
 
-const ingestion = compose(["--profile", "ingestion", "config", "--services"]);
-assert.deepEqual(
-  [...ingestion].sort(),
-  ["clamav", "web", "worker"],
-  "ingestion profile must retain web, worker, and ClamAV",
-);
-console.log("Compose web-only validation passed: default=web; ingestion profile=web,worker,clamav.");
+console.log("Compose web-only validation passed: services=web.");

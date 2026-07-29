@@ -13,7 +13,6 @@ import { Case, Thread, Message, Citation, ResearchStep } from "../types";
 import FormattedMarkdown from "./FormattedMarkdown";
 import { browserFileIdentity, MAX_SELECTED_FILES } from "../hooks/useCumulativeFileSelection";
 import { assistantCitationsToDisplayText } from "../lib/assistantCitations";
-import type { PublicBrowserConfig } from "../lib/publicConfig";
 
 type TemporaryFile = {
   id: string;
@@ -33,7 +32,7 @@ interface AssistantViewProps {
   setActiveThreadId: (id: string | null) => void;
   onMessagesChange: (count: number) => void;
   onNavigateToDrafts: (draftId: string) => void;
-  featureFlags: PublicBrowserConfig["features"];
+  govInfoConfigured: boolean;
 }
 
 const STOP_WORDS = new Set([
@@ -135,7 +134,7 @@ export default function AssistantView({
   setActiveThreadId,
   onMessagesChange,
   onNavigateToDrafts,
-  featureFlags
+  govInfoConfigured
 }: AssistantViewProps) {
   const [threads, setThreads] = useState<Thread[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -151,7 +150,6 @@ export default function AssistantView({
   
   // Custom states for toggleable retrieval sources
   const [enableWebSearch, setEnableWebSearch] = useState(false);
-  const [enableCourtListener, setEnableCourtListener] = useState(false);
   const [enableGovInfo, setEnableGovInfo] = useState(false);
   const [filesAndSourcesOpen, setFilesAndSourcesOpen] = useState(false);
   const [temporaryFiles, setTemporaryFiles] = useState<TemporaryFile[]>([]);
@@ -369,7 +367,6 @@ export default function AssistantView({
           content: queryText,
           forceDeepResearch: deepResearchEnabled,
           enableWebSearch,
-          enableCourtListener,
           enableGovInfo,
           temporaryFiles: submittedTemporaryFiles
             .map(({ filename, text }) => ({ filename, text }))
@@ -633,7 +630,7 @@ export default function AssistantView({
       <form onSubmit={handleAsk} className="w-full relative flex flex-col select-none">
         <div className="w-full border border-zinc-200 focus-within:border-zinc-400 rounded-lg bg-white p-3 transition-all flex flex-col gap-2.5">
           {/* Selected Files / Sources Chips Bar at the top of the container */}
-          {(enableWebSearch || enableCourtListener || enableGovInfo || temporaryFiles.length > 0) && (
+          {(enableWebSearch || enableGovInfo || temporaryFiles.length > 0) && (
             <div className="flex flex-wrap gap-2 select-none pb-2 border-b border-zinc-100 animate-fade-in" id="attached-chips-row">
               {enableWebSearch && (
                 <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 bg-zinc-50 text-zinc-600 rounded-full text-xs font-mono border border-zinc-200 animate-fade-in">
@@ -642,14 +639,7 @@ export default function AssistantView({
                   <button type="button" onClick={() => setEnableWebSearch(false)} className="hover:text-zinc-900 font-bold ml-1 text-[10px] focus:outline-none cursor-pointer">✕</button>
                 </span>
               )}
-              {featureFlags.courtListener && enableCourtListener && (
-                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 bg-zinc-50 text-zinc-600 rounded-full text-xs font-mono border border-zinc-200 animate-fade-in">
-                  <Library className="h-3 w-3 shrink-0 text-zinc-450" />
-                  <span className="sr-only">Deferred legal source</span>
-                  <button type="button" onClick={() => setEnableCourtListener(false)} className="hover:text-zinc-900 font-bold ml-1 text-[10px] focus:outline-none cursor-pointer">✕</button>
-                </span>
-              )}
-              {featureFlags.govInfo && enableGovInfo && (
+              {govInfoConfigured && enableGovInfo && (
                 <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 bg-zinc-50 text-zinc-600 rounded-full text-xs font-mono border border-zinc-200 animate-fade-in">
                   <FileText className="h-3 w-3 shrink-0 text-zinc-450" />
                   <span>GovInfo</span>
@@ -755,7 +745,7 @@ export default function AssistantView({
                           </div>
                         </button>
 
-                        {featureFlags.govInfo && <button
+                        {govInfoConfigured && <button
                           type="button"
                           onClick={() => setEnableGovInfo(!enableGovInfo)}
                           className={`w-full flex items-center justify-between px-3 py-2 text-xs rounded-md border transition-all cursor-pointer ${
@@ -864,7 +854,7 @@ export default function AssistantView({
             {enableWebSearch && <Check className="h-3.5 w-3.5 ml-0.5 text-amber-700" />}
           </button>
 
-          {featureFlags.govInfo && <button
+          {govInfoConfigured && <button
             type="button"
             onClick={() => setEnableGovInfo(!enableGovInfo)}
             className={`flex items-center gap-2 px-3.5 py-2 rounded-full border text-xs font-semibold transition-all cursor-pointer ${
@@ -1000,7 +990,6 @@ export default function AssistantView({
                   setActiveThreadId(null);
                   setMessages([]);
                   setEnableWebSearch(false);
-                  setEnableCourtListener(false);
                   setEnableGovInfo(false);
                 }}
                 id="header-new-thread-btn"

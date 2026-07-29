@@ -12,17 +12,14 @@ type Notification = {
 };
 
 export default function NotificationCenter({
-  enabled,
   onNavigate,
 }: {
-  enabled: boolean;
   onNavigate: (path: string) => void;
 }) {
   const [items, setItems] = useState<Notification[]>([]);
   const [unread, setUnread] = useState(0);
   const [open, setOpen] = useState(false);
   const load = async () => {
-    if (!enabled) return;
     const response = await fetch("/api/notifications", { cache: "no-store" });
     if (!response.ok) return;
     const data = await response.json();
@@ -30,12 +27,10 @@ export default function NotificationCenter({
     setUnread(data.unread || 0);
   };
   useEffect(() => {
-    if (!enabled) return;
     void load();
     const interval = window.setInterval(() => void load(), 20_000);
     return () => window.clearInterval(interval);
-  }, [enabled]);
-  if (!enabled) return null;
+  }, []);
   const markRead = async (notification: Notification) => {
     if (!notification.read_at) {
       await secureFetch(`/api/notifications/${notification.id}/read`, { method: "PUT" });

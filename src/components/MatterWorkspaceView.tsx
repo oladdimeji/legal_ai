@@ -15,20 +15,14 @@ export default function MatterWorkspaceView({
   onMatterChange,
   initialDraftId,
   onClearInitialDraftId,
-  googleDriveExportEnabled,
-  googleDriveImportEnabled,
-  clientAccountsEnabled,
-  resourceLifecycleEnabled,
+  googleDriveExportAvailable,
 }: {
   matterId: string;
   onBack: () => void;
   onMatterChange: (matter: Case) => void;
   initialDraftId: string | null;
   onClearInitialDraftId: () => void;
-  googleDriveExportEnabled: boolean;
-  googleDriveImportEnabled: boolean;
-  clientAccountsEnabled: boolean;
-  resourceLifecycleEnabled: boolean;
+  googleDriveExportAvailable: boolean;
 }) {
   const [matter, setMatter] = useState<Case | null>(null);
   const [tab, setTab] = useState<(typeof tabs)[number]>("Overview");
@@ -88,12 +82,12 @@ export default function MatterWorkspaceView({
             <h2 className="text-lg font-bold">{matter.name}</h2>
             <p className="mt-1 text-[10px] font-mono uppercase text-zinc-400">{matter.client_name || "No client specified"} · {matter.status || "Open"}</p>
           </div>
-          {resourceLifecycleEnabled && <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2">
             <button onClick={() => window.open(`/api/cases/${matter.id}/export-package`, "_blank")} className="inline-flex items-center gap-1 rounded border px-3 py-2 text-[9px] font-mono font-bold uppercase"><Download className="h-3.5 w-3.5" />Export package</button>
             {matter.lifecycle_state === "archived"
               ? <button onClick={() => void setLifecycle("restore")} className="inline-flex items-center gap-1 rounded border px-3 py-2 text-[9px] font-mono font-bold uppercase"><RotateCcw className="h-3.5 w-3.5" />Restore</button>
               : <button onClick={() => void setLifecycle("archive")} className="inline-flex items-center gap-1 rounded border px-3 py-2 text-[9px] font-mono font-bold uppercase"><Archive className="h-3.5 w-3.5" />Archive</button>}
-          </div>}
+          </div>
         </div>
       </header>
       <nav className="flex gap-1 border-b px-8">
@@ -106,19 +100,18 @@ export default function MatterWorkspaceView({
       </nav>
       <main className={`flex-1 overflow-hidden ${tab === "Work Product" ? "p-0" : "overflow-y-auto p-8"}`}>
         {tab === "Overview" && <MatterOverview matter={matter} onChange={update} />}
-        {tab === "Sources" && <MatterSources matterId={matter.id} googleDriveImportEnabled={googleDriveImportEnabled} resourceLifecycleEnabled={resourceLifecycleEnabled} />}
-        {tab === "Matter Intelligence" && <MatterIntelligence matterId={matter.id} googleDriveExportEnabled={googleDriveExportEnabled} />}
+        {tab === "Sources" && <MatterSources matterId={matter.id} />}
+        {tab === "Matter Intelligence" && <MatterIntelligence matterId={matter.id} googleDriveExportAvailable={googleDriveExportAvailable} />}
         {tab === "Work Product" && (
           <DraftEditorView
             caseId={matter.id}
             initialDraftId={initialDraftId || collaborationDraftId}
             onClearInitialDraftId={clearDraftNavigation}
-            googleDriveExportEnabled={googleDriveExportEnabled}
-            resourceLifecycleEnabled={resourceLifecycleEnabled}
+            googleDriveExportAvailable={googleDriveExportAvailable}
           />
         )}
         {tab === "Collaboration" && (
-          <MatterCollaboration matter={matter} onUnreadChange={setUnread} onOpenWorkProduct={openWorkProduct} clientAccountsEnabled={clientAccountsEnabled} />
+          <MatterCollaboration matter={matter} onUnreadChange={setUnread} onOpenWorkProduct={openWorkProduct} />
         )}
       </main>
     </div>

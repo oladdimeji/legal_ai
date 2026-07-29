@@ -8,11 +8,10 @@ interface DraftEditorViewProps {
   initialDraftId: string | null;
   onClearInitialDraftId: () => void;
   caseId: string | null;
-  googleDriveExportEnabled?: boolean;
-  resourceLifecycleEnabled?: boolean;
+  googleDriveExportAvailable?: boolean;
 }
 
-export default function DraftEditorView({ initialDraftId, onClearInitialDraftId, caseId, googleDriveExportEnabled = false, resourceLifecycleEnabled = false }: DraftEditorViewProps) {
+export default function DraftEditorView({ initialDraftId, onClearInitialDraftId, caseId, googleDriveExportAvailable = false }: DraftEditorViewProps) {
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [activeDraft, setActiveDraft] = useState<Draft | null>(null);
   const [title, setTitle] = useState("");
@@ -52,10 +51,10 @@ export default function DraftEditorView({ initialDraftId, onClearInitialDraftId,
   }, [dirty]);
 
   useEffect(() => {
-    if (!resourceLifecycleEnabled || !dirty || !activeDraft || !caseId || saving) return;
+    if (!dirty || !activeDraft || !caseId || saving) return;
     const timer = window.setTimeout(() => void saveWorkProduct(true), 2_000);
     return () => window.clearTimeout(timer);
-  }, [resourceLifecycleEnabled, dirty, title, content, activeDraft?.id, caseId]);
+  }, [dirty, title, content, activeDraft?.id, caseId]);
 
   const fetchDrafts = async () => {
     if (!caseId) return setDrafts([]);
@@ -246,7 +245,7 @@ export default function DraftEditorView({ initialDraftId, onClearInitialDraftId,
           <>
             <div className="z-10 shrink-0 border-b border-zinc-100 bg-white px-8 py-4">
               <div className="min-w-0">
-                {resourceLifecycleEnabled && editMode
+                {editMode
                   ? <input value={title} onChange={(event) => setTitle(event.target.value)} aria-label="Work Product title" className="w-full border-b border-transparent text-sm font-bold uppercase tracking-tight text-zinc-900 outline-none focus:border-zinc-300" />
                   : <h2 className="whitespace-normal break-words text-sm font-bold uppercase tracking-tight text-zinc-900">{title}</h2>}
                 <p className="mt-0.5 text-[10px] font-mono uppercase text-zinc-400">
@@ -265,8 +264,8 @@ export default function DraftEditorView({ initialDraftId, onClearInitialDraftId,
                   {saveStatus === "saving" ? "Saving..." : saveStatus === "saved" ? "Saved" : "Save"}
                 </button>
                 <button onClick={() => caseId && window.open(`/api/drafts/${activeDraft.id}/export?caseId=${caseId}`, "_blank")} id="editor-export-btn" className="inline-flex items-center gap-1.5 rounded bg-zinc-950 px-3.5 py-1.5 text-[10px] font-mono font-bold uppercase text-white hover:bg-zinc-900"><Download className="h-3.5 w-3.5" />Export .docx</button>
-                {resourceLifecycleEnabled && <><button onClick={() => caseId && window.open(`/api/drafts/${activeDraft.id}/export/pdf?caseId=${caseId}`, "_blank")} className="inline-flex items-center gap-1.5 rounded border border-zinc-300 px-3.5 py-1.5 text-[10px] font-mono font-bold uppercase"><Download className="h-3.5 w-3.5" />PDF</button><button onClick={() => void loadVersions()} className="inline-flex items-center gap-1.5 rounded border border-zinc-300 px-3 py-1.5 text-[10px] font-mono font-bold uppercase"><History className="h-3.5 w-3.5" />History</button><button onClick={() => void addAsSource()} className="inline-flex items-center gap-1.5 rounded border border-zinc-300 px-3 py-1.5 text-[10px] font-mono font-bold uppercase"><Plus className="h-3.5 w-3.5" />Add as Source</button><button onClick={() => void archiveActive()} className="inline-flex items-center gap-1.5 rounded border border-zinc-300 px-3 py-1.5 text-[10px] font-mono font-bold uppercase"><Archive className="h-3.5 w-3.5" />Archive</button></>}
-                {googleDriveExportEnabled && <button onClick={() => void exportToDrive()} disabled={saving} className="inline-flex items-center gap-1.5 rounded border border-zinc-300 px-3.5 py-1.5 text-[10px] font-mono font-bold uppercase hover:bg-zinc-50 disabled:opacity-50"><Download className="h-3.5 w-3.5" />Export to Drive</button>}
+                <><button onClick={() => caseId && window.open(`/api/drafts/${activeDraft.id}/export/pdf?caseId=${caseId}`, "_blank")} className="inline-flex items-center gap-1.5 rounded border border-zinc-300 px-3.5 py-1.5 text-[10px] font-mono font-bold uppercase"><Download className="h-3.5 w-3.5" />PDF</button><button onClick={() => void loadVersions()} className="inline-flex items-center gap-1.5 rounded border border-zinc-300 px-3 py-1.5 text-[10px] font-mono font-bold uppercase"><History className="h-3.5 w-3.5" />History</button><button onClick={() => void addAsSource()} className="inline-flex items-center gap-1.5 rounded border border-zinc-300 px-3 py-1.5 text-[10px] font-mono font-bold uppercase"><Plus className="h-3.5 w-3.5" />Add as Source</button><button onClick={() => void archiveActive()} className="inline-flex items-center gap-1.5 rounded border border-zinc-300 px-3 py-1.5 text-[10px] font-mono font-bold uppercase"><Archive className="h-3.5 w-3.5" />Archive</button></>
+                {googleDriveExportAvailable && <button onClick={() => void exportToDrive()} disabled={saving} className="inline-flex items-center gap-1.5 rounded border border-zinc-300 px-3.5 py-1.5 text-[10px] font-mono font-bold uppercase hover:bg-zinc-50 disabled:opacity-50"><Download className="h-3.5 w-3.5" />Export to Drive</button>}
               </div>
             </div>
 

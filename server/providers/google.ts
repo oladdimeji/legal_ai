@@ -9,18 +9,13 @@ export const GOOGLE_OAUTH_SCOPES = [
 ] as const;
 
 export const GOOGLE_DRIVE_MIME_TYPES = {
-  pdf: "application/pdf",
   docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  text: "text/plain",
-  googleDoc: "application/vnd.google-apps.document",
 } as const;
 
-const GOOGLE_DOCX_EXPORT_MIME = GOOGLE_DRIVE_MIME_TYPES.docx;
 const AUTHORIZATION_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
 const USERINFO_ENDPOINT = "https://openidconnect.googleapis.com/v1/userinfo";
 const REVOCATION_ENDPOINT = "https://oauth2.googleapis.com/revoke";
-const DRIVE_API = "https://www.googleapis.com/drive/v3";
 const DRIVE_UPLOAD_API = "https://www.googleapis.com/upload/drive/v3/files";
 
 export type GoogleTokenResponse = {
@@ -36,25 +31,6 @@ export type GoogleIdentity = {
   email: string;
   emailVerified: boolean;
   name: string | null;
-};
-
-export type GoogleDriveFileMetadata = {
-  id: string;
-  name: string;
-  mimeType: string;
-  webViewLink: string | null;
-  modifiedTime: string | null;
-  md5Checksum: string | null;
-  headRevisionId: string | null;
-  parents: string[];
-  trashed: boolean;
-  size: number | null;
-};
-
-export type DownloadedGoogleDriveFile = {
-  bytes: Uint8Array;
-  filename: string;
-  contentType: string;
 };
 
 export class GoogleProviderError extends Error {
@@ -118,39 +94,6 @@ export function assertGoogleScopes(scopes: string[]): void {
   if (scopes.some((scope) => /gmail/i.test(scope))) {
     throw new GoogleProviderError("unauthorized", "Unexpected Google permissions were returned.");
   }
-}
-
-export function isSupportedGoogleDriveMime(mimeType: string): boolean {
-  return Object.values(GOOGLE_DRIVE_MIME_TYPES).includes(mimeType as never);
-}
-
-export function determineDriveSyncState(
-  tracked: {
-    importedParentIds: string[];
-    driveRevisionId: string | null;
-    driveChecksum: string | null;
-    driveModifiedTime: string | null;
-  },
-  current: GoogleDriveFileMetadata,
-): "deleted" | "moved_and_changed" | "moved" | "changed" | "current" {
-  if (current.trashed) return "deleted";
-  const importedParents = [...tracked.importedParentIds].sort();
-  const currentParents = [...current.parents].sort();
-  const moved = importedParents.length !== currentParents.length
-    || importedParents.some((value, index) => value !== currentParents[index]);
-  const changed = Boolean(
-    (tracked.driveRevisionId && current.headRevisionId && tracked.driveRevisionId !== current.headRevisionId)
-    || (tracked.driveChecksum && current.md5Checksum && tracked.driveChecksum !== current.md5Checksum)
-    || (
-      tracked.driveModifiedTime
-      && current.modifiedTime
-      && new Date(tracked.driveModifiedTime).getTime() !== new Date(current.modifiedTime).getTime()
-    ),
-  );
-  if (moved && changed) return "moved_and_changed";
-  if (moved) return "moved";
-  if (changed) return "changed";
-  return "current";
 }
 
 export class GoogleOAuthDriveProvider implements GoogleDriveProvider {
@@ -241,53 +184,6 @@ export class GoogleOAuthDriveProvider implements GoogleDriveProvider {
 
   async health(): Promise<ProviderHealth> {
     return { status: "ready" };
-  }
-
-  async getFileMetadata(fileId: string, accessToken: string): Promise<GoogleDriveFileMetadata> {
-    const fields = "id,name,mimeType,webViewLink,modifiedTime,md5Checksum,headRevisionId,parents,trashed,size";
-    const response = await this.fetchImpl(
-      `${DRIVE_API}/files/${encodeURIComponent(fileId)}?supportsAllDrives=true&fields=${encodeURIComponent(fields)}`,
-      { headers: { Authorization: `Bearer ${accessToken}` } },
-    );
-    if (!response.ok) throw driveError(response);
-    const value = await safeJson(response) as Record<string, unknown>;
-    if (typeof value.id !== "string" || typeof value.name !== "string" || typeof value.mimeType !== "string") {
-      throw new GoogleProviderError("invalid_response", "Google Drive file metadata is invalid.");
-    }
-    return {
-      id: value.id,
-      name: value.name,
-      mimeType: value.mimeType,
-      webViewLink: typeof value.webViewLink === "string" ? value.webViewLink : null,
-      modifiedTime: typeof value.modifiedTime === "string" ? value.modifiedTime : null,
-      md5Checksum: typeof value.md5Checksum === "string" ? value.md5Checksum : null,
-      headRevisionId: typeof value.headRevisionId === "string" ? value.headRevisionId : null,
-      parents: Array.isArray(value.parents) ? value.parents.filter((item): item is string => typeof item === "string") : [],
-      trashed: value.trashed === true,
-      size: typeof value.size === "string" || typeof value.size === "number" ? Number(value.size) : null,
-    };
-  }
-
-  async downloadFile(metadata: GoogleDriveFileMetadata, accessToken: string): Promise<DownloadedGoogleDriveFile> {
-    if (!isSupportedGoogleDriveMime(metadata.mimeType)) {
-      throw new GoogleProviderError("invalid_response", "Select a PDF, DOCX, TXT, or Google Doc file.");
-    }
-    const isGoogleDoc = metadata.mimeType === GOOGLE_DRIVE_MIME_TYPES.googleDoc;
-    const url = isGoogleDoc
-      ? `${DRIVE_API}/files/${encodeURIComponent(metadata.id)}/export?mimeType=${encodeURIComponent(GOOGLE_DOCX_EXPORT_MIME)}`
-      : `${DRIVE_API}/files/${encodeURIComponent(metadata.id)}?alt=media&supportsAllDrives=true`;
-    const response = await this.fetchImpl(url, { headers: { Authorization: `Bearer ${accessToken}` } });
-    if (!response.ok) throw driveError(response);
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (!bytes.length) throw new GoogleProviderError("invalid_response", "Google Drive file is empty.");
-    const filename = isGoogleDoc
-      ? `${metadata.name.replace(/\.docx$/i, "")}.docx`
-      : metadata.name;
-    return {
-      bytes,
-      filename,
-      contentType: isGoogleDoc ? GOOGLE_DOCX_EXPORT_MIME : metadata.mimeType,
-    };
   }
 
   async createFile(

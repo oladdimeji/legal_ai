@@ -16,13 +16,3 @@ export function assertGoogleLinkAllowed(
     throw new Error("google_connection_conflict");
   }
 }
-
-export function isDriveImportAccessible(
-  record: { firm_id: string; user_id: string; case_id: string | null },
-  context: OwnershipContext,
-  caseId: string | null,
-): boolean {
-  return record.firm_id === context.firmId
-    && record.user_id === context.userId
-    && record.case_id === caseId;
-}

@@ -1,7 +1,7 @@
 import express from "express";
 import type { NextFunction, Request, Response } from "express";
 import path from "path";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import multer from "multer";
 import { createServer as createViteServer } from "vite";
 import { registerProductionFrontend } from "./server/frontend.js";
@@ -17,17 +17,6 @@ import { markdownToDocxDocument } from "./server/docxMarkdown.js";
 import { cleanMatterIntelligenceContent } from "./server/matterIntelligenceContent.js";
 import { cleanClientAssistantContent, cleanGeneratedBoilerplate } from "./server/generatedContentCleanup.js";
 import { loadServerConfig, toPublicBrowserConfig } from "./server/config.js";
-import {
-  DOWNLOAD_TTL_SECONDS,
-  STORAGE_LIMITS,
-  SupabaseStorageProvider,
-  UPLOAD_AUTHORIZATION_TTL_MS,
-  assertUploadConfirmation,
-  buildObjectKey,
-  safeStorageFilename,
-  validateUploadFiles,
-  type UploadFileRequest,
-} from "./server/storage.js";
 import { canonicalizeAssistantCitations, rewriteGoogleGroundingCitations, stripInternalCitationsForWorkProduct } from "./src/lib/assistantCitations.js";
 import {
   SESSION_COOKIE_NAME,
@@ -40,19 +29,13 @@ import {
   sessionCookie,
   verifyPassword,
 } from "./server/auth.js";
-import { PgBossJobsProvider } from "./server/jobs.js";
-import { INGESTION_QUEUE } from "./server/ingestion.js";
 import {
   GOOGLE_DRIVE_MIME_TYPES,
   GoogleOAuthDriveProvider,
   GoogleProviderError,
   createPkcePair,
-  determineDriveSyncState,
-  isSupportedGoogleDriveMime,
-  type GoogleDriveFileMetadata,
 } from "./server/providers/google.js";
 import { decryptProviderSecret, encryptProviderSecret } from "./server/providerTokens.js";
-import { isDriveImportAccessible } from "./server/googleAuthorization.js";
 import {
   FIRM_ROLES,
   createAuthorizationMiddleware,
@@ -68,31 +51,19 @@ import {
 
 const config = loadServerConfig();
 const isProduction = config.environment === "production";
-const privateStorage = config.features.privateStorage
-  ? new SupabaseStorageProvider(
-      config.providers.objectStorage.supabaseUrl!,
-      config.providers.objectStorage.supabaseSecretKey!,
-      config.providers.objectStorage.bucket!,
-    )
-  : null;
-const jobs = config.features.asyncIngestion ? new PgBossJobsProvider(config.databaseUrl!) : null;
-const google = (
-  config.features.googleAccount
-  || config.features.googleDriveExport
-  || config.features.googleDriveImport
-)
+const google = config.integrations.google.configured
   ? new GoogleOAuthDriveProvider({
       clientId: config.providers.google.clientId!,
       clientSecret: config.providers.google.clientSecret!,
       redirectUri: config.providers.google.oauthRedirectUri!,
     })
   : null;
-const transactionalEmail = config.features.transactionalEmail
+const transactionalEmail = config.integrations.transactionalEmail.configured
   ? new BrevoTransactionalEmail({
       apiKey: config.providers.transactionalEmail.apiKey!,
       senderEmail: config.providers.transactionalEmail.senderEmail!,
-      senderName: config.providers.transactionalEmail.senderName || "Exepts",
-      apiBaseUrl: config.providers.transactionalEmail.apiBaseUrl,
+      senderName: config.providers.transactionalEmail.senderName!,
+      apiBaseUrl: config.providers.transactionalEmail.apiBaseUrl!,
     }, clientRepository)
   : new DisabledTransactionalEmail();
 
@@ -329,7 +300,6 @@ async function startServer() {
     await db.seedDemoDataIfEnabled();
     await db.migrateLegacyOwner();
     await db.migrateLegacyDrafts();
-    if (jobs) await jobs.start();
   } catch (err) {
     console.error("Database initialization or explicit demo seeding failed:", err);
     throw err;
@@ -346,11 +316,7 @@ async function startServer() {
     if (!db.isReady()) {
       return res.status(503).json({ status: "not_ready", checks: { database: "unavailable" } });
     }
-    const jobStatus = jobs ? (await jobs.health()).status : "disabled";
-    if (jobs && jobStatus !== "ready") {
-      return res.status(503).json({ status: "not_ready", checks: { database: "ready", jobs: jobStatus } });
-    }
-    return res.json({ status: "ready", checks: { database: "ready", jobs: jobStatus } });
+    return res.json({ status: "ready", checks: { database: "ready" } });
   });
 
   app.post("/api/auth/signup", async (req, res) => {
@@ -419,7 +385,6 @@ async function startServer() {
   });
 
   app.get("/api/team/invitations/:token", async (req, res) => {
-    if (!config.features.firmTeams) return res.status(404).json({ error: "Firm teams are not enabled." });
     const invitation = await db.getInvitationForAcceptance(sha256(req.params.token));
     if (!invitation || !invitationCanBeAccepted(invitation.status, invitation.expires_at)) {
       return res.status(410).json({ error: "This invitation is unavailable or expired." });
@@ -434,7 +399,6 @@ async function startServer() {
   });
 
   app.post("/api/team/invitations/:token/accept", async (req, res) => {
-    if (!config.features.firmTeams) return res.status(404).json({ error: "Firm teams are not enabled." });
     try {
       const tokenHash = sha256(req.params.token);
       const invitation = await db.getInvitationForAcceptance(tokenHash);
@@ -494,8 +458,8 @@ async function startServer() {
     context: OwnershipContext | null,
     res: Response,
   ) => {
-    if (!google || !config.features.googleAccount) {
-      return res.status(404).json({ error: "Google account features are not enabled." });
+    if (!google) {
+      return res.status(404).json({ error: "Google integration is not configured." });
     }
     const state = randomBytes(32).toString("base64url");
     const binding = randomBytes(32).toString("base64url");
@@ -518,8 +482,8 @@ async function startServer() {
   const refreshGoogleAccessToken = async (
     context: OwnershipContext,
   ): Promise<{ accessToken: string; connection: any }> => {
-    if (!google || !config.features.googleAccount) {
-      throw new Error("Google account features are not enabled.");
+    if (!google) {
+      throw new Error("Google integration is not configured.");
     }
     const connection = await db.getGoogleConnection(context);
     if (
@@ -557,153 +521,9 @@ async function startServer() {
     }
   };
 
-  const driveSyncState = (tracked: any, metadata: GoogleDriveFileMetadata): string => {
-    return determineDriveSyncState({
-      importedParentIds: Array.isArray(tracked.imported_parent_ids) ? tracked.imported_parent_ids : [],
-      driveRevisionId: tracked.drive_revision_id || null,
-      driveChecksum: tracked.drive_checksum || null,
-      driveModifiedTime: tracked.drive_modified_time || null,
-    }, metadata);
-  };
-
-  const refreshDriveImportState = async (
-    tracked: any,
-    context: OwnershipContext,
-    accessToken: string,
-  ) => {
-    try {
-      const metadata = await google!.getFileMetadata(tracked.drive_file_id, accessToken);
-      return await db.updateDriveImportSyncState(tracked.id, context, {
-        syncState: driveSyncState(tracked, metadata),
-        modifiedTime: metadata.modifiedTime,
-        revisionId: metadata.headRevisionId,
-        driveChecksum: metadata.md5Checksum,
-        canonicalUrl: metadata.webViewLink,
-        parentIds: metadata.parents,
-      });
-    } catch (error) {
-      const state = error instanceof GoogleProviderError && error.code === "permission_restricted"
-        ? "permission_restricted"
-        : error instanceof GoogleProviderError && error.code === "not_found"
-          ? "unavailable"
-          : "check_failed";
-      return db.updateDriveImportSyncState(tracked.id, context, {
-        syncState: state,
-        errorCode: error instanceof GoogleProviderError ? `google_${error.code}` : "google_check_failed",
-      });
-    }
-  };
-
-  const importDriveFile = async (
-    fileId: string,
-    context: OwnershipContext,
-    caseId: string | null,
-    existingImportId: string | null,
-  ) => {
-    if (!config.features.googleDriveImport || !google || !privateStorage || !jobs) {
-      throw new Error("Google Drive import is not enabled.");
-    }
-    const { accessToken, connection } = await refreshGoogleAccessToken(context);
-    const metadata = await google.getFileMetadata(fileId, accessToken);
-    if (metadata.trashed) {
-      if (existingImportId) {
-        await db.updateDriveImportSyncState(existingImportId, context, { syncState: "deleted" });
-      }
-      throw new Error("Google Drive file has been deleted.");
-    }
-    if (!isSupportedGoogleDriveMime(metadata.mimeType)) {
-      throw new Error("Select a PDF, DOCX, TXT, or Google Doc file.");
-    }
-    const existing = existingImportId
-      ? await db.getDriveImport(existingImportId, context)
-      : (await db.getDriveImports(context, caseId)).find((item) => item.drive_file_id === fileId) || null;
-    if (
-      existingImportId
-      && (
-        !existing
-        || !isDriveImportAccessible(existing, context, caseId)
-        || existing.drive_file_id !== fileId
-      )
-    ) {
-      throw new Error("Drive import not found.");
-    }
-    const downloaded = await google.downloadFile(metadata, accessToken);
-    if (downloaded.bytes.byteLength > STORAGE_LIMITS.maxFileBytes) {
-      throw new Error("Google Drive file exceeds the 50 MB storage limit.");
-    }
-    const storedChecksum = sha256(downloaded.bytes);
-    if (existing?.stored_checksum_sha256 === storedChecksum) {
-      return db.updateDriveImportSyncState(existing.id, context, {
-        syncState: "current",
-        modifiedTime: metadata.modifiedTime,
-        revisionId: metadata.headRevisionId,
-        driveChecksum: metadata.md5Checksum,
-        canonicalUrl: metadata.webViewLink,
-        parentIds: metadata.parents,
-      });
-    }
-
-    const documentId = existing?.document_id || `doc_${randomUUID()}`;
-    const versionId = `version_${randomUUID()}`;
-    const reservationId = existing ? `drive_reservation_${randomUUID()}` : documentId;
-    const batchId = `upload_batch_${randomUUID()}`;
-    const safeFilename = safeStorageFilename(downloaded.filename);
-    const objectKey = buildObjectKey(context.firmId, caseId, documentId, versionId, safeFilename);
-    const reserved = await db.reserveDriveImport({
-      context,
-      connectionId: connection.id,
-      caseId,
-      existingImportId: existing?.id || null,
-      driveFileId: metadata.id,
-      driveName: metadata.name,
-      mimeType: metadata.mimeType,
-      canonicalUrl: metadata.webViewLink,
-      modifiedTime: metadata.modifiedTime,
-      revisionId: metadata.headRevisionId,
-      driveChecksum: metadata.md5Checksum,
-      parentIds: metadata.parents,
-      storedChecksum,
-      byteSize: downloaded.bytes.byteLength,
-      contentType: downloaded.contentType,
-      originalFilename: downloaded.filename,
-      safeFilename,
-      documentId,
-      versionId,
-      reservationId,
-      batchId,
-      objectKey,
-      bucket: config.providers.objectStorage.bucket!,
-      expiresAt: new Date(Date.now() + UPLOAD_AUTHORIZATION_TTL_MS).toISOString(),
-      limits: STORAGE_LIMITS,
-    });
-    try {
-      await privateStorage.upload(objectKey, downloaded.bytes, downloaded.contentType, {
-        checksumSha256: storedChecksum,
-        source: "google-drive",
-      });
-      const document = await db.confirmPrivateUpload(versionId, context);
-      const imported = await db.completeDriveImport(
-        reserved.importId,
-        document.id,
-        versionId,
-        storedChecksum,
-        context,
-      );
-      const jobId = await jobs.enqueueIngestion({ versionId, firmId: context.firmId });
-      await db.attachIngestionJob(versionId, jobId, context);
-      return { ...imported, jobId };
-    } catch (error) {
-      await db.updateDriveImportSyncState(reserved.importId, context, {
-        syncState: "import_failed",
-        errorCode: "drive_import_failed",
-      });
-      throw error;
-    }
-  };
-
   app.get("/api/auth/google/start", async (_req, res) => {
-    if (!config.features.googleAccount) {
-      return res.status(404).json({ error: "Google account features are not enabled." });
+    if (!google) {
+      return res.status(404).json({ error: "Google integration is not configured." });
     }
     try {
       return await beginGoogleOAuth("signin", null, res);
@@ -718,7 +538,7 @@ async function startServer() {
     let mode: "link" | "signin" = "signin";
     res.setHeader("Set-Cookie", googleOAuthCookie("", isProduction, true));
     res.setHeader("Cache-Control", "no-store");
-    if (!config.features.googleAccount || !google || !state || !binding) {
+    if (!google || !state || !binding) {
       return res.redirect(303, safeGoogleRedirect(mode, "invalid_state"));
     }
     try {
@@ -965,13 +785,11 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
   });
 
   app.get("/api/team/members", async (req, res) => {
-    if (!config.features.firmTeams) return res.status(404).json({ error: "Firm teams are not enabled." });
     res.setHeader("Cache-Control", "no-store");
     return res.json(await db.getTeam(ownership(req)));
   });
 
   app.post("/api/team/invitations", async (req, res) => {
-    if (!config.features.firmTeams) return res.status(404).json({ error: "Firm teams are not enabled." });
     try {
       const email = typeof req.body.email === "string" ? req.body.email.trim().toLowerCase() : "";
       const role = typeof req.body.role === "string" ? req.body.role as FirmRole : null;
@@ -988,9 +806,25 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
         expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
         matterIds,
       });
+      const invitationUrl = `${config.appBaseUrl}/join/${encodeURIComponent(token)}`;
+      let delivery: "sent" | "failed" | "skipped" = "skipped";
+      if (config.integrations.transactionalEmail.configured) {
+        const result = await transactionalEmail.send({
+          firmId: ownership(req).firmId,
+          toEmail: email,
+          templateKey: "firm_invitation",
+          values: {
+            recipientName: email,
+            role,
+            actionUrl: invitationUrl,
+          },
+        });
+        delivery = result.status;
+      }
       return res.status(201).json({
         ...invitation,
-        invitationUrl: `/join/${encodeURIComponent(token)}`,
+        delivery,
+        ...(!config.integrations.transactionalEmail.configured ? { invitationUrl } : {}),
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Invitation could not be created.";
@@ -999,13 +833,11 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
   });
 
   app.delete("/api/team/invitations/:invitationId", async (req, res) => {
-    if (!config.features.firmTeams) return res.status(404).json({ error: "Firm teams are not enabled." });
     const revoked = await db.revokeFirmInvitation(req.params.invitationId, ownership(req));
     return revoked ? res.json({ status: "revoked" }) : res.status(404).json({ error: "Pending invitation not found." });
   });
 
   app.put("/api/team/members/:memberId/role", async (req, res) => {
-    if (!config.features.firmTeams) return res.status(404).json({ error: "Firm teams are not enabled." });
     const role = typeof req.body.role === "string" ? req.body.role as FirmRole : null;
     if (!role || !FIRM_ROLES.includes(role)) return res.status(400).json({ error: "A valid firm role is required." });
     try {
@@ -1020,7 +852,6 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
   });
 
   app.put("/api/team/members/:memberId/status", async (req, res) => {
-    if (!config.features.firmTeams) return res.status(404).json({ error: "Firm teams are not enabled." });
     const status = req.body.status === "active" || req.body.status === "suspended" ? req.body.status : null;
     if (!status) return res.status(400).json({ error: "Status must be active or suspended." });
     try {
@@ -1035,7 +866,6 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
   });
 
   app.put("/api/team/members/:memberId/assignments", async (req, res) => {
-    if (!config.features.firmTeams) return res.status(404).json({ error: "Firm teams are not enabled." });
     try {
       const matterIds = parseStringArray(req.body.matterIds);
       return res.json({
@@ -1051,7 +881,6 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
   });
 
   app.delete("/api/team/members/:memberId", async (req, res) => {
-    if (!config.features.firmTeams) return res.status(404).json({ error: "Firm teams are not enabled." });
     const reassignToUserId = typeof req.body.reassignToUserId === "string" ? req.body.reassignToUserId : "";
     if (!reassignToUserId) return res.status(400).json({ error: "A replacement owner is required." });
     try {
@@ -1067,8 +896,8 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
   });
 
   app.post("/api/google/oauth/start", async (req, res) => {
-    if (!config.features.googleAccount) {
-      return res.status(404).json({ error: "Google account features are not enabled." });
+    if (!google) {
+      return res.status(404).json({ error: "Google integration is not configured." });
     }
     try {
       return await beginGoogleOAuth("link", ownership(req), res);
@@ -1078,8 +907,8 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
   });
 
   app.get("/api/google/connection", async (req, res) => {
-    if (!google || !config.features.googleAccount) {
-      return res.status(404).json({ error: "Google account features are not enabled." });
+    if (!google) {
+      return res.status(404).json({ error: "Google integration is not configured." });
     }
     const connection = await db.getGoogleConnection(ownership(req));
     res.setHeader("Cache-Control", "no-store");
@@ -1095,8 +924,8 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
   });
 
   app.delete("/api/google/connection", async (req, res) => {
-    if (!google || !config.features.googleAccount) {
-      return res.status(404).json({ error: "Google account features are not enabled." });
+    if (!google) {
+      return res.status(404).json({ error: "Google integration is not configured." });
     }
     const context = ownership(req);
     const connection = await db.getGoogleConnection(context);
@@ -1123,8 +952,8 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
   });
 
   app.post("/api/google/connection/refresh", async (req, res) => {
-    if (!google || !config.features.googleAccount) {
-      return res.status(404).json({ error: "Google account features are not enabled." });
+    if (!google) {
+      return res.status(404).json({ error: "Google integration is not configured." });
     }
     try {
       const { connection } = await refreshGoogleAccessToken(ownership(req));
@@ -1141,110 +970,6 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
     }
   });
 
-  app.get("/api/google/drive/picker-session", async (req, res) => {
-    if (!google || !config.features.googleDriveImport) {
-      return res.status(404).json({ error: "Google Drive import is not enabled." });
-    }
-    try {
-      const { accessToken } = await refreshGoogleAccessToken(ownership(req));
-      res.setHeader("Cache-Control", "no-store");
-      return res.json({
-        accessToken,
-        apiKey: config.providers.google.pickerApiKey,
-        appId: config.providers.google.cloudProjectNumber,
-        mimeTypes: Object.values(GOOGLE_DRIVE_MIME_TYPES),
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Google account is unavailable.";
-      return res.status(401).json({ error: message });
-    }
-  });
-
-  app.get("/api/google/drive/imports", async (req, res) => {
-    if (!google || !config.features.googleDriveImport) {
-      return res.status(404).json({ error: "Google Drive import is not enabled." });
-    }
-    const caseId = requestedCaseId(req.query.caseId);
-    if (caseId && !(await db.getCaseById(caseId, ownership(req)))) {
-      return res.status(404).json({ error: "Matter not found." });
-    }
-    res.setHeader("Cache-Control", "no-store");
-    return res.json(await db.getDriveImports(ownership(req), caseId));
-  });
-
-  app.post("/api/google/drive/import", async (req, res) => {
-    if (!google || !config.features.googleDriveImport) {
-      return res.status(404).json({ error: "Google Drive import is not enabled." });
-    }
-    const caseId = requestedCaseId(req.body.caseId);
-    const fileIds: string[] = Array.isArray(req.body.fileIds)
-      ? Array.from(new Set(req.body.fileIds.filter((id: unknown): id is string =>
-          typeof id === "string" && id.trim().length > 0
-        ).map((id: string) => id.trim())))
-      : [];
-    if (fileIds.length === 0 || fileIds.length > STORAGE_LIMITS.maxFilesPerBatch) {
-      return res.status(400).json({ error: "Select between 1 and 25 Drive files." });
-    }
-    if (caseId && !(await db.getCaseById(caseId, ownership(req)))) {
-      return res.status(404).json({ error: "Matter not found." });
-    }
-    const imported = [];
-    const failures = [];
-    for (const fileId of fileIds) {
-      try {
-        imported.push(await importDriveFile(fileId, ownership(req), caseId, null));
-      } catch (error) {
-        failures.push({
-          fileId,
-          error: error instanceof Error ? error.message : "Drive file could not be imported.",
-        });
-      }
-    }
-    const status = imported.length === 0 ? 409 : 201;
-    return res.status(status).json({ imported, failures });
-  });
-
-  app.post("/api/google/drive/imports/refresh", async (req, res) => {
-    if (!google || !config.features.googleDriveImport) {
-      return res.status(404).json({ error: "Google Drive import is not enabled." });
-    }
-    const context = ownership(req);
-    const caseId = requestedCaseId(req.body.caseId);
-    try {
-      const { accessToken } = await refreshGoogleAccessToken(context);
-      const tracked = await db.getDriveImports(context, caseId);
-      const refreshed = [];
-      for (const item of tracked) {
-        refreshed.push(await refreshDriveImportState(item, context, accessToken));
-      }
-      return res.json({ imports: refreshed });
-    } catch (error) {
-      return res.status(401).json({
-        error: error instanceof Error ? error.message : "Drive status could not be refreshed.",
-      });
-    }
-  });
-
-  app.post("/api/google/drive/imports/:importId/reimport", async (req, res) => {
-    if (!google || !config.features.googleDriveImport) {
-      return res.status(404).json({ error: "Google Drive import is not enabled." });
-    }
-    const context = ownership(req);
-    const tracked = await db.getDriveImport(req.params.importId, context);
-    if (!tracked) return res.status(404).json({ error: "Drive import not found." });
-    try {
-      return res.status(201).json(await importDriveFile(
-        tracked.drive_file_id,
-        context,
-        tracked.case_id,
-        tracked.id,
-      ));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Drive file could not be re-imported.";
-      return res.status(/not found|deleted|unavailable/i.test(message) ? 404 : 409).json({ error: message });
-    }
-  });
-
   const exportDocxToDrive = async (input: {
     context: OwnershipContext;
     caseId: string;
@@ -1253,8 +978,8 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
     title: string;
     content: string;
   }) => {
-    if (!google || !config.features.googleDriveExport) {
-      throw new Error("Google Drive export is not enabled.");
+    if (!google) {
+      throw new Error("Google integration is not configured.");
     }
     const { accessToken, connection } = await refreshGoogleAccessToken(input.context);
     const buffer = await Packer.toBuffer(markdownToDocxDocument(input.title, input.content));
@@ -1282,8 +1007,8 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
   };
 
   app.post("/api/drafts/:id/export/drive", async (req, res) => {
-    if (!config.features.googleDriveExport) {
-      return res.status(404).json({ error: "Google Drive export is not enabled." });
+    if (!google) {
+      return res.status(404).json({ error: "Google integration is not configured." });
     }
     const caseId = requestedCaseId(req.body.caseId);
     if (!caseId) return res.status(400).json({ error: "Matter context is required." });
@@ -1306,8 +1031,8 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
   });
 
   app.post("/api/cases/:caseId/intelligence/export/drive", async (req, res) => {
-    if (!config.features.googleDriveExport) {
-      return res.status(404).json({ error: "Google Drive export is not enabled." });
+    if (!google) {
+      return res.status(404).json({ error: "Google integration is not configured." });
     }
     const context = ownership(req);
     const record = await db.getMatterIntelligence(req.params.caseId, context);
@@ -1326,138 +1051,6 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
       return res.status(503).json({
         error: error instanceof Error ? error.message : "Matter Intelligence could not be exported to Drive.",
       });
-    }
-  });
-
-  app.get("/api/uploads/capabilities", (_req, res) => {
-    res.setHeader("Cache-Control", "no-store");
-    return res.json({
-      enabled: Boolean(privateStorage),
-      limits: privateStorage ? STORAGE_LIMITS : null,
-    });
-  });
-
-  app.post("/api/uploads/authorize", async (req, res) => {
-    if (!privateStorage) return res.status(404).json({ error: "Private uploads are not enabled." });
-    try {
-      const context = ownership(req);
-      const caseId = requestedCaseId(req.body.caseId);
-      const uploadSource = caseId ? "Lawyer Matter Upload" : "Lawyer Firm Library Upload";
-      const files = Array.isArray(req.body.files) ? req.body.files as UploadFileRequest[] : [];
-      validateUploadFiles(files);
-      const expiresAt = new Date(Date.now() + UPLOAD_AUTHORIZATION_TTL_MS).toISOString();
-      const reserved = files.map((file) => {
-        const documentId = `doc_${randomUUID()}`;
-        const versionId = `version_${randomUUID()}`;
-        const safeFilename = safeStorageFilename(file.filename);
-        return {
-          documentId,
-          versionId,
-          originalFilename: file.filename,
-          safeFilename,
-          objectKey: buildObjectKey(context.firmId, caseId, documentId, versionId, safeFilename),
-          contentType: file.contentType || "application/octet-stream",
-          byteSize: file.size,
-          checksumSha256: file.checksumSha256.toLowerCase(),
-        };
-      });
-      const { batchId } = await db.authorizePrivateUploadBatch(
-        context,
-        caseId,
-        uploadSource,
-        config.providers.objectStorage.bucket!,
-        expiresAt,
-        reserved,
-        STORAGE_LIMITS,
-      );
-      const authorized = [];
-      for (const file of reserved) {
-        const signed = await privateStorage.createSignedUpload(file.objectKey);
-        authorized.push({
-          versionId: file.versionId,
-          objectKey: file.objectKey,
-          token: signed.token,
-          expiresAt: signed.expiresAt,
-          endpoint: privateStorage.resumableUrl,
-          metadata: {
-            bucketName: config.providers.objectStorage.bucket!,
-            objectName: file.objectKey,
-            contentType: file.contentType,
-            checksumSha256: file.checksumSha256,
-          },
-        });
-      }
-      res.setHeader("Cache-Control", "no-store");
-      return res.status(201).json({ batchId, files: authorized });
-    } catch (error: any) {
-      const message = error instanceof Error ? error.message : "Upload authorization failed.";
-      const status = error?.code === "23505" || /same checksum/i.test(message) ? 409
-        : /not found/i.test(message) ? 404 : 400;
-      return res.status(status).json({ error: message });
-    }
-  });
-
-  app.post("/api/uploads/:versionId/confirm", async (req, res) => {
-    if (!privateStorage) return res.status(404).json({ error: "Private uploads are not enabled." });
-    try {
-      const context = ownership(req);
-      const version = await db.getAuthorizedUploadVersion(req.params.versionId, context);
-      if (!version) return res.status(404).json({ error: "Upload not found." });
-      if (version.upload_state === "Uploaded") {
-        const document = await db.confirmPrivateUpload(version.id, context);
-        let jobId: string | null = version.ingestion_job_id || null;
-        if (jobs && !jobId && !["ready", "needs_ocr", "cancelled"].includes(version.processing_state)) {
-          jobId = await jobs.enqueueIngestion({ versionId: version.id, firmId: context.firmId });
-          await db.attachIngestionJob(version.id, jobId, context);
-        }
-        return res.json({ document, versionId: version.id, jobId });
-      }
-      const object = await privateStorage.stat(version.object_key);
-      assertUploadConfirmation(version, object);
-      const document = await db.confirmPrivateUpload(version.id, context);
-      let jobId: string | null = null;
-      if (jobs) {
-        jobId = await jobs.enqueueIngestion({ versionId: version.id, firmId: context.firmId });
-        await db.attachIngestionJob(version.id, jobId, context);
-      }
-      return res.status(201).json({ document, versionId: version.id, jobId });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Upload confirmation failed.";
-      const status = /expired/i.test(message) ? 410 : /not found/i.test(message) ? 404 : 409;
-      return res.status(status).json({ error: message });
-    }
-  });
-
-  app.get("/api/ingestion/jobs", async (req, res) => {
-    if (!jobs) return res.status(404).json({ error: "Async ingestion is not enabled." });
-    res.setHeader("Cache-Control", "no-store");
-    return res.json(await db.getIngestionVisibility(ownership(req)));
-  });
-
-  app.post("/api/ingestion/:versionId/cancel", async (req, res) => {
-    if (!jobs) return res.status(404).json({ error: "Async ingestion is not enabled." });
-    const version = await db.requestIngestionCancellation(req.params.versionId, ownership(req));
-    if (!version) return res.status(404).json({ error: "Active ingestion not found." });
-    if (version.ingestion_job_id) {
-      await jobs.boss.cancel(INGESTION_QUEUE, version.ingestion_job_id);
-    }
-    return res.json({ versionId: version.id, state: "cancelled" });
-  });
-
-  app.get("/api/document-versions/:versionId/original-download", async (req, res) => {
-    if (!privateStorage) return res.status(404).json({ error: "Private originals are not enabled." });
-    const original = await db.getOriginalDownload(req.params.versionId, ownership(req));
-    if (!original) return res.status(404).json({ error: "Original file not found." });
-    try {
-      const url = await privateStorage.createSignedDownload(
-        original.object_key,
-        DOWNLOAD_TTL_SECONDS,
-        original.original_filename,
-      );
-      res.setHeader("Cache-Control", "no-store");
-      return res.json({ url, expiresAt: new Date(Date.now() + DOWNLOAD_TTL_SECONDS * 1000).toISOString() });
-    } catch {
-      return res.status(503).json({ error: "Original download is temporarily unavailable." });
     }
   });
 
@@ -1504,7 +1097,7 @@ Raw prompt: "${prompt}"`;
 
   // Cases List and Create
   app.get("/api/cases", async (req, res) => {
-    const includeArchived = config.features.resourceLifecycle && req.query.includeArchived === "true";
+    const includeArchived = req.query.includeArchived === "true";
     res.json(await db.getCases(ownership(req), includeArchived));
   });
 
@@ -1581,7 +1174,6 @@ Raw prompt: "${prompt}"`;
   });
 
   app.post("/api/cases/:id/archive", async (req, res) => {
-    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
     try {
       return res.json(await db.setMatterLifecycle(req.params.id, "archived", ownership(req)));
     } catch (err: any) {
@@ -1590,7 +1182,6 @@ Raw prompt: "${prompt}"`;
   });
 
   app.post("/api/cases/:id/restore", async (req, res) => {
-    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
     try {
       return res.json(await db.setMatterLifecycle(req.params.id, "active", ownership(req)));
     } catch (err: any) {
@@ -1599,7 +1190,6 @@ Raw prompt: "${prompt}"`;
   });
 
   app.put("/api/cases/:id/retention", async (req, res) => {
-    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
     try {
       const state = req.body.state === "held" ? "held" : req.body.state === "standard" ? "standard" : null;
       if (!state) return res.status(400).json({ error: "Retention state must be standard or held." });
@@ -1614,7 +1204,6 @@ Raw prompt: "${prompt}"`;
   });
 
   app.get("/api/cases/:id/dependencies", async (req, res) => {
-    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
     try {
       return res.json(await db.getMatterDependencies(req.params.id, ownership(req)));
     } catch (err: any) {
@@ -1623,7 +1212,6 @@ Raw prompt: "${prompt}"`;
   });
 
   app.get("/api/cases/:id/export-package", async (req, res) => {
-    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
     try {
       const matterPackage = await db.exportMatterPackage(req.params.id, ownership(req));
       const safeName = String((matterPackage.matter as Case).name || "matter")
@@ -1634,24 +1222,6 @@ Raw prompt: "${prompt}"`;
     } catch (err: any) {
       return res.status(ownedErrorStatus(err)).json({ error: err.message });
     }
-  });
-
-  app.post("/api/cases/:id/permanent-deletion", async (req, res) => {
-    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
-    try {
-      const confirmation = typeof req.body.confirmation === "string" ? req.body.confirmation : "";
-      return res.status(202).json(
-        await db.requestPermanentDeletion("matter", req.params.id, req.params.id, confirmation, ownership(req)),
-      );
-    } catch (err: any) {
-      return res.status(/archive|retention|confirmation/i.test(err.message) ? 409 : ownedErrorStatus(err))
-        .json({ error: err.message });
-    }
-  });
-
-  app.post("/api/cases/:id/permanent-deletion/cancel", async (req, res) => {
-    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
-    return res.json(await db.cancelPermanentDeletion("matter", req.params.id, ownership(req)));
   });
 
   app.get("/api/cases/:id/sources", async (req, res) => {
@@ -1848,14 +1418,14 @@ ${sourceText}`;
       const request = await db.createCollaborationRequest(
         req.params.caseId, type, instruction, draftIds, context
       );
-      if (config.features.clientNotifications) {
+      {
         const recipients = await clientRepository.notifyMatterClients({
           context,
           caseId: req.params.caseId,
           type: "lawyer_request",
           title: "Your lawyer sent a new request",
         });
-        if (config.features.transactionalEmail) {
+        if (config.integrations.transactionalEmail.configured) {
           await Promise.all(recipients.map((recipient) => transactionalEmail.send({
             firmId: context.firmId,
             clientUserId: recipient.id,
@@ -1890,7 +1460,7 @@ ${sourceText}`;
   // Documents Library
   app.get("/api/documents", async (req, res) => {
     const caseId = requestedCaseId(req.query.caseId);
-    const includeArchived = config.features.resourceLifecycle && req.query.includeArchived === "true";
+    const includeArchived = req.query.includeArchived === "true";
     res.json(await db.getDocuments(ownership(req), caseId, includeArchived));
   });
 
@@ -1934,7 +1504,6 @@ ${sourceText}`;
   });
 
   app.put("/api/documents/:id", async (req, res) => {
-    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
     try {
       return res.json(await db.updateDocumentLifecycle(req.params.id, {
         title: typeof req.body.title === "string" ? req.body.title : undefined,
@@ -1951,7 +1520,6 @@ ${sourceText}`;
   });
 
   app.get("/api/documents/:id/dependencies", async (req, res) => {
-    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
     try {
       return res.json(await db.getDocumentDependencies(req.params.id, ownership(req)));
     } catch (err: any) {
@@ -1960,12 +1528,10 @@ ${sourceText}`;
   });
 
   app.get("/api/documents/:id/versions", async (req, res) => {
-    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
     return res.json(await db.getDocumentResourceVersions(req.params.id, ownership(req)));
   });
 
   app.post("/api/documents/:id/versions/:versionId/restore", async (req, res) => {
-    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
     try {
       return res.json(await db.restoreDocumentResourceVersion(
         req.params.id, req.params.versionId, ownership(req),
@@ -1975,25 +1541,7 @@ ${sourceText}`;
     }
   });
 
-  app.get("/api/documents/:id/original-download", async (req, res) => {
-    if (!config.features.resourceLifecycle || !privateStorage) {
-      return res.status(404).json({ error: "Private originals are not enabled." });
-    }
-    const original = await db.getLatestDocumentOriginal(req.params.id, ownership(req));
-    if (!original) return res.status(404).json({ error: "Original file not found." });
-    try {
-      const url = await privateStorage.createSignedDownload(
-        original.object_key, DOWNLOAD_TTL_SECONDS, original.original_filename,
-      );
-      res.setHeader("Cache-Control", "no-store");
-      return res.json({ url, expiresAt: new Date(Date.now() + DOWNLOAD_TTL_SECONDS * 1000).toISOString() });
-    } catch {
-      return res.status(503).json({ error: "Original download is temporarily unavailable." });
-    }
-  });
-
   app.post("/api/documents/:id/replace", upload.single("file"), async (req, res) => {
-    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
     try {
       const file = req.file as Express.Multer.File | undefined;
       const replacement = file ? (await extractUploads([file]))[0] : null;
@@ -2006,7 +1554,6 @@ ${sourceText}`;
   });
 
   app.post("/api/documents/:id/reindex", async (req, res) => {
-    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
     try {
       return res.status(202).json(await db.reindexDocument(req.params.id, ownership(req)));
     } catch {
@@ -2015,7 +1562,6 @@ ${sourceText}`;
   });
 
   app.post("/api/documents/bulk-lifecycle", async (req, res) => {
-    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
     const ids = Array.isArray(req.body.documentIds)
       ? req.body.documentIds.filter((id: unknown): id is string => typeof id === "string") : [];
     const lifecycleState = req.body.lifecycleState === "archived" ? "archived"
@@ -2027,32 +1573,13 @@ ${sourceText}`;
     }, ownership(req)));
   });
 
-  app.post("/api/documents/:id/permanent-deletion", async (req, res) => {
-    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
-    try {
-      const confirmation = typeof req.body.confirmation === "string" ? req.body.confirmation : "";
-      return res.status(202).json(
-        await db.requestPermanentDeletion("document", req.params.id,
-          requestedCaseId(req.query.caseId), confirmation, ownership(req)),
-      );
-    } catch (err: any) {
-      return res.status(/archive|dependencies|confirmation/i.test(err.message) ? 409 : ownedErrorStatus(err))
-        .json({ error: err.message });
-    }
-  });
-
-  app.post("/api/documents/:id/permanent-deletion/cancel", async (req, res) => {
-    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
-    return res.json(await db.cancelPermanentDeletion("document", req.params.id, ownership(req)));
-  });
-
   app.delete("/api/documents/:id", async (req, res) => {
     try {
       if (typeof req.query.caseId !== "string") {
         return res.status(400).json({ error: "Document context is required" });
       }
       const caseId = requestedCaseId(req.query.caseId);
-      if (config.features.resourceLifecycle && caseId === null) {
+      if (caseId === null) {
         await db.updateDocumentLifecycle(req.params.id, { lifecycleState: "archived" }, ownership(req));
       } else {
         const deleted = await db.deleteDocument(req.params.id, ownership(req), caseId);
@@ -2120,7 +1647,7 @@ ${sourceText}`;
   // Core Assistant Chat Endpoint
   app.post("/api/threads/:id/messages", async (req, res) => {
     const threadId = req.params.id;
-    const { content, forceDeepResearch, enableWebSearch, enableCourtListener, enableGovInfo } = req.body;
+    const { content, forceDeepResearch, enableWebSearch, enableGovInfo } = req.body;
     const temporaryFiles: Array<{ filename: string; text: string }> = Array.isArray(req.body.temporaryFiles)
       ? req.body.temporaryFiles
           .filter((file: any) => typeof file?.filename === "string" && typeof file?.text === "string")
@@ -2252,13 +1779,9 @@ Query: "${content}"`;
           // Connectors Query
           const legalSourceResults = await queryLegalSources(
             subQ,
-            config.features,
-            {
-              courtListener: enableCourtListener === true,
-              govInfo: enableGovInfo === true,
-            }
+            config.integrations.govInfo.configured,
+            enableGovInfo === true,
           );
-          const clResults = legalSourceResults.courtListener;
           govInfoStatus =
             legalSourceResults.govInfoStatus === "unavailable"
               ? "unavailable"
@@ -2268,7 +1791,7 @@ Query: "${content}"`;
                   ? "empty"
                   : govInfoStatus;
           let giResults = legalSourceResults.govInfo;
-          if (config.features.govInfo && enableGovInfo === true) {
+          if (config.integrations.govInfo.configured && enableGovInfo === true) {
             const storedRun = await db.storeGovInfoResearchRun(
               threadId,
               subQ.replace(/\s+/g, " ").trim().slice(0, 500),
@@ -2299,17 +1822,6 @@ Query: "${content}"`;
             stepCitations.push(`[${cit.id}] ${cit.title}`);
           }
 
-          clResults.forEach((r) => {
-            const cit = registerCitation({
-              type: "connector",
-              title: r.title,
-              url: r.url,
-              textSnippet: r.textSnippet,
-              sourceName: r.sourceName
-            });
-            stepCitations.push(`[${cit.id}] ${cit.title} (${cit.sourceName})`);
-          });
-
           giResults.forEach((r) => {
             const cit = registerCitation({
               type: "connector",
@@ -2338,7 +1850,7 @@ Query: "${content}"`;
           }
 
           // Generate sub-step note via AI (using cheaper/lighter model)
-          const contextText = localChunks.map(c => c.chunk_text).concat(clResults.map(r => r.textSnippet), giResults.map(r => r.textSnippet), temporaryFiles.map((f) => f.text.slice(0, 4000))).join("\n\n");
+          const contextText = localChunks.map(c => c.chunk_text).concat(giResults.map(r => r.textSnippet), temporaryFiles.map((f) => f.text.slice(0, 4000))).join("\n\n");
           let subNote = "";
           try {
             const noteResult = await callModel("summarize-subquestion", [
@@ -2439,17 +1951,13 @@ ${citationInstSearch}`;
           db.vectorSearch(retrievalQuery.slice(0, 4000), scope, requestOwnership, 3),
           queryLegalSources(
             content,
-            config.features,
-            {
-              courtListener: enableCourtListener === true,
-              govInfo: enableGovInfo === true,
-            }
+            config.integrations.govInfo.configured,
+            enableGovInfo === true,
           ),
         ]);
-        const clResults = legalSourceResults.courtListener;
         govInfoStatus = legalSourceResults.govInfoStatus;
         let giResults = legalSourceResults.govInfo;
-        if (config.features.govInfo && enableGovInfo === true) {
+        if (config.integrations.govInfo.configured && enableGovInfo === true) {
           const storedRun = await db.storeGovInfoResearchRun(
             threadId,
             content.replace(/\s+/g, " ").trim().slice(0, 500),
@@ -2478,16 +1986,6 @@ ${citationInstSearch}`;
             sourceName: thread.case_id ? "Matter Sources" : "Firm Library"
           });
         }
-
-        clResults.forEach((r) => {
-          registerCitation({
-            type: "connector",
-            title: r.title,
-            url: r.url,
-            textSnippet: r.textSnippet,
-            sourceName: r.sourceName
-          });
-        });
 
         giResults.forEach((r) => {
           registerCitation({
@@ -2636,7 +2134,7 @@ ${citationInstSearch}`;
     const drafts = await db.getDrafts(
       ownership(req),
       matter.id,
-      config.features.resourceLifecycle && req.query.includeArchived === "true",
+      req.query.includeArchived === "true",
     );
     return res.json(drafts.map((draft) => ({ ...draft, content: cleanWorkProductContent(draft.content) })));
   });
@@ -2754,13 +2252,11 @@ INSTRUCTIONS:
       const { content } = req.body;
       const caseId = requestedCaseId(req.query.caseId);
       if (!caseId) return res.status(400).json({ error: "Matter context is required" });
-      const updated = config.features.resourceLifecycle
-        ? await db.saveWorkProductVersion(req.params.id, caseId, {
-            title: typeof req.body.title === "string" ? req.body.title : undefined,
-            content: cleanWorkProductContent(content),
-            autosave: req.body.autosave === true,
-          }, ownership(req))
-        : await db.updateDraft(req.params.id, caseId, cleanWorkProductContent(content), ownership(req));
+      const updated = await db.saveWorkProductVersion(req.params.id, caseId, {
+        title: typeof req.body.title === "string" ? req.body.title : undefined,
+        content: cleanWorkProductContent(content),
+        autosave: req.body.autosave === true,
+      }, ownership(req));
       res.json({ ...updated, content: cleanWorkProductContent(updated.content) });
     } catch (err: any) {
       res.status(ownedErrorStatus(err)).json({ error: err.message });
@@ -2791,14 +2287,14 @@ INSTRUCTIONS:
       }
       const context = ownership(req);
       const draft = await db.setDraftSharing(req.params.id, caseId, req.body.shared, context);
-      if (req.body.shared && config.features.clientNotifications) {
+      if (req.body.shared) {
         const recipients = await clientRepository.notifyMatterClients({
           context,
           caseId,
           type: "document_shared",
           title: "Your lawyer shared Work Product",
         });
-        if (config.features.transactionalEmail) {
+        if (config.integrations.transactionalEmail.configured) {
           await Promise.all(recipients.map((recipient) => transactionalEmail.send({
             firmId: context.firmId,
             clientUserId: recipient.id,
@@ -2886,14 +2382,12 @@ INSTRUCTIONS:
   });
 
   app.get("/api/drafts/:id/versions", async (req, res) => {
-    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
     const caseId = requestedCaseId(req.query.caseId);
     if (!caseId) return res.status(400).json({ error: "Matter context is required" });
     return res.json(await db.getWorkProductVersions(req.params.id, caseId, ownership(req)));
   });
 
   app.post("/api/drafts/:id/versions/:versionId/restore", async (req, res) => {
-    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
     try {
       const caseId = requestedCaseId(req.query.caseId);
       if (!caseId) return res.status(400).json({ error: "Matter context is required" });
@@ -2907,26 +2401,22 @@ INSTRUCTIONS:
   });
 
   app.post("/api/drafts/:id/archive", async (req, res) => {
-    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
     const caseId = requestedCaseId(req.query.caseId);
     if (!caseId) return res.status(400).json({ error: "Matter context is required" });
     return res.json(await db.setWorkProductLifecycle(req.params.id, caseId, "archived", ownership(req)));
   });
 
   app.post("/api/drafts/:id/restore", async (req, res) => {
-    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
     const caseId = requestedCaseId(req.query.caseId);
     if (!caseId) return res.status(400).json({ error: "Matter context is required" });
     return res.json(await db.setWorkProductLifecycle(req.params.id, caseId, "active", ownership(req)));
   });
 
   app.get("/api/drafts/:id/dependencies", async (req, res) => {
-    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
     return res.json(await db.getWorkProductDependencies(req.params.id, ownership(req)));
   });
 
   app.post("/api/drafts/:id/add-as-source", async (req, res) => {
-    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
     try {
       const caseId = requestedCaseId(req.query.caseId);
       if (!caseId) return res.status(400).json({ error: "Matter context is required" });
@@ -2936,26 +2426,6 @@ INSTRUCTIONS:
     } catch (err: any) {
       return res.status(ownedErrorStatus(err)).json({ error: err.message });
     }
-  });
-
-  app.post("/api/drafts/:id/permanent-deletion", async (req, res) => {
-    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
-    try {
-      const caseId = requestedCaseId(req.query.caseId);
-      if (!caseId) return res.status(400).json({ error: "Matter context is required" });
-      const confirmation = typeof req.body.confirmation === "string" ? req.body.confirmation : "";
-      return res.status(202).json(
-        await db.requestPermanentDeletion("work_product", req.params.id, caseId, confirmation, ownership(req)),
-      );
-    } catch (err: any) {
-      return res.status(/archive|dependencies|confirmation/i.test(err.message) ? 409 : ownedErrorStatus(err))
-        .json({ error: err.message });
-    }
-  });
-
-  app.post("/api/drafts/:id/permanent-deletion/cancel", async (req, res) => {
-    if (!config.features.resourceLifecycle) return res.status(404).json({ error: "Resource lifecycle is not enabled." });
-    return res.json(await db.cancelPermanentDeletion("work_product", req.params.id, ownership(req)));
   });
 
   // --- VITE MIDDLEWARE SETUP ---

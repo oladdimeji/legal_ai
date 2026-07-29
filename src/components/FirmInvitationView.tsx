@@ -10,10 +10,8 @@ type Invitation = {
 };
 
 export default function FirmInvitationView({
-  enabled,
   onAccepted,
 }: {
-  enabled: boolean;
   onAccepted: (account: any) => void;
 }) {
   const { token } = useParams();
@@ -26,7 +24,7 @@ export default function FirmInvitationView({
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    if (!enabled || !token) {
+    if (!token) {
       setLoading(false);
       return;
     }
@@ -38,9 +36,8 @@ export default function FirmInvitationView({
       })
       .catch((loadError) => setError(loadError instanceof Error ? loadError.message : "Invitation is unavailable."))
       .finally(() => setLoading(false));
-  }, [enabled, token]);
+  }, [token]);
 
-  if (!enabled) return <ErrorState title="Firm invitations are not enabled" detail="Ask your firm administrator to confirm that team access has been activated." />;
   if (loading) return <LoadingState label="Checking invitation…" />;
   if (!invitation || !token) return <ErrorState title="Invitation unavailable" detail={error || "This invitation is invalid or expired."} />;
 

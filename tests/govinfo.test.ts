@@ -81,16 +81,11 @@ test("GovInfo retries 429 responses and returns honest empty/outage results", as
   });
 });
 
-test("GovInfo activation is configured while CourtListener remains rejected and hidden", async () => {
+test("GovInfo activates from its credential while unavailable legal sources remain absent", async () => {
   assert.equal(loadServerConfig({
     NODE_ENV: "test",
-    FEATURE_GOVINFO: "true",
     GOVINFO_API_KEY: "test-key",
-  }).features.govInfo, true);
-  assert.throws(
-    () => loadServerConfig({ NODE_ENV: "test", FEATURE_COURTLISTENER: "true" }),
-    /deferred in V1/
-  );
+  }).integrations.govInfo.status, "configured");
   const assistant = await readFile("src/components/AssistantView.tsx", "utf8");
   assert.doesNotMatch(assistant, /<span>CourtListener Case Law<\/span>/);
   assert.doesNotMatch(assistant, /<span>CourtListener<\/span>/);

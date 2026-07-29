@@ -5,10 +5,10 @@ import { Firm, FirmMembership, User } from "../types";
 interface AuthViewProps {
   mode: "login" | "signup";
   onAuthenticated: (account: { user: User; firm: Firm; membership: FirmMembership }) => void;
-  googleAccountEnabled: boolean;
+  googleAvailable: boolean;
 }
 
-export default function AuthView({ mode, onAuthenticated, googleAccountEnabled }: AuthViewProps) {
+export default function AuthView({ mode, onAuthenticated, googleAvailable }: AuthViewProps) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -135,7 +135,7 @@ export default function AuthView({ mode, onAuthenticated, googleAccountEnabled }
             {submitting ? "Please wait..." : mode === "login" ? "Log in" : "Sign up"}
           </button>
 
-          {mode === "login" && googleAccountEnabled && (
+          {mode === "login" && googleAvailable && (
             <>
               <div className="flex items-center gap-3 text-[9px] font-mono uppercase text-zinc-400"><span className="h-px flex-1 bg-zinc-200" />Or<span className="h-px flex-1 bg-zinc-200" /></div>
               <button type="button" onClick={() => void signInWithGoogle()} className="w-full rounded border border-zinc-300 bg-white px-4 py-2.5 text-xs font-mono font-semibold uppercase hover:border-zinc-900">

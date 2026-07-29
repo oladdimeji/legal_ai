@@ -2,141 +2,97 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { loadServerConfig, toPublicBrowserConfig } from "../server/config.js";
-import { CourtListenerAdapter } from "../server/connectors/courtlistener.js";
-import { GovInfoAdapter } from "../server/connectors/govinfo.js";
 import { queryLegalSources } from "../server/connectors/legalSources.js";
 
-test("all completion-phase feature flags default false independently", () => {
+const encryptionKey = Buffer.alloc(32, 7).toString("base64");
+
+test("optional integrations are unavailable without credentials and expose safe status only", () => {
   const config = loadServerConfig({ NODE_ENV: "test" });
-  assert.deepEqual(config.features, {
-    publicLanding: false,
-    asyncIngestion: false,
-    govInfo: false,
-    courtListener: false,
-    googleAccount: false,
-    googleDriveExport: false,
-    googleDriveImport: false,
-    gmailSend: false,
-    ocr: false,
-    clientAccounts: false,
-    clientDashboard: false,
-    clientNotifications: false,
-    clientDurableUploads: false,
-    transactionalEmail: false,
-    firmTeams: false,
-    privateStorage: false,
-    resourceLifecycle: false,
+  assert.equal(config.integrations.govInfo.status, "not_configured");
+  assert.equal(config.integrations.google.status, "not_configured");
+  assert.equal(config.integrations.transactionalEmail.status, "not_configured");
+  assert.deepEqual(toPublicBrowserConfig(config), {
+    integrations: {
+      govInfo: { status: "not_configured" },
+      google: { status: "not_configured", capabilities: [] },
+      transactionalEmail: { status: "not_configured" },
+    },
   });
 });
 
-test("missing provider configuration fails only when its feature is enabled", () => {
-  assert.doesNotThrow(() =>
-    loadServerConfig({
-      NODE_ENV: "production",
-      GOVINFO_API_KEY: "",
-      GOOGLE_CLIENT_SECRET: "",
-      APP_ENCRYPTION_KEY_BASE64: "",
-    })
-  );
-  assert.throws(
-    () => loadServerConfig({ NODE_ENV: "test", FEATURE_GOVINFO: "true" }),
-    /GOVINFO_API_KEY/
-  );
-  assert.throws(
-    () => loadServerConfig({ NODE_ENV: "test", FEATURE_GOOGLE_DRIVE: "true" }),
-    /GOOGLE_CLIENT_ID/
-  );
-});
-
-test("deferred V1 features cannot be enabled while GovInfo can be staged", () => {
-  const key = Buffer.alloc(32, 7).toString("base64");
-  assert.equal(loadServerConfig({
-    NODE_ENV: "test",
-    FEATURE_GOVINFO: "true",
-    GOVINFO_API_KEY: "test-key",
-  }).features.govInfo, true);
-  for (const flag of ["FEATURE_COURTLISTENER", "FEATURE_GMAIL_SEND", "FEATURE_OCR"]) {
-    assert.throws(
-      () => loadServerConfig({ NODE_ENV: "test", [flag]: "true", APP_ENCRYPTION_KEY_BASE64: key }),
-      /deferred in V1/
-    );
-  }
-});
-
-test("disabled legal adapters never return canned authority", async () => {
-  assert.deepEqual(await CourtListenerAdapter.query("employment privilege copyright"), []);
-  assert.deepEqual(await GovInfoAdapter.query("FTC fair use constitution"), []);
-});
-
-test("forged source selections do not call adapters while server flags are false", async () => {
-  let calls = 0;
-  const adapter = {
-    name: "test",
-    async query() {
-      calls += 1;
-      return [];
-    },
-  };
-  const result = await queryLegalSources(
-    "confidential query",
-    { courtListener: false, govInfo: false },
-    { courtListener: true, govInfo: true },
-    { courtListener: adapter, govInfo: adapter }
-  );
-  assert.deepEqual(result, { courtListener: [], govInfo: [], govInfoStatus: "empty" });
-  assert.equal(calls, 0);
-});
-
-test("public browser configuration has an explicit allow-list and cannot expose secrets", () => {
-  const secret = "server-only-secret-value";
+test("complete provider credentials activate integrations automatically", () => {
   const config = loadServerConfig({
     NODE_ENV: "test",
-    GEMINI_API_KEY: secret,
-    SUPABASE_DB_URL: `postgres://user:${secret}@db.example/test`,
-    GOOGLE_CLIENT_SECRET: secret,
-    GOVINFO_API_KEY: secret,
+    APP_BASE_URL: "https://exepts.example",
+    GOVINFO_API_KEY: "gov-key",
+    GOOGLE_CLIENT_ID: "google-id",
+    GOOGLE_CLIENT_SECRET: "google-secret",
+    GOOGLE_OAUTH_REDIRECT_URI: "https://exepts.example/api/auth/google/callback",
+    APP_ENCRYPTION_KEY_BASE64: encryptionKey,
+    BREVO_API_KEY: "brevo-key",
+    BREVO_SENDER_EMAIL: "notices@exepts.example",
+    BREVO_SENDER_NAME: "Exepts",
+    BREVO_API_BASE_URL: "https://api.brevo.com/v3",
   });
-  const publicConfig = toPublicBrowserConfig(config);
-  assert.deepEqual(Object.keys(publicConfig), ["features"]);
-  assert.deepEqual(Object.keys(publicConfig.features), [
-    "publicLanding",
-    "govInfo",
-    "courtListener",
-    "googleAccount",
-    "googleDriveExport",
-    "googleDriveImport",
-    "clientAccounts",
-    "clientDashboard",
-    "clientNotifications",
-    "clientDurableUploads",
-    "transactionalEmail",
-    "firmTeams",
-    "privateStorage",
-    "resourceLifecycle",
-  ]);
-  assert.doesNotMatch(JSON.stringify(publicConfig), new RegExp(secret));
+  assert.equal(config.integrations.govInfo.status, "configured");
+  assert.deepEqual(config.integrations.google.capabilities, ["account", "drive_export"]);
+  assert.equal(config.integrations.transactionalEmail.status, "configured");
 });
 
-test("configuration errors do not echo credentials and deferred controls are conditional", async () => {
-  const secret = "never-log-or-return-this";
-  let message = "";
-  try {
-    loadServerConfig({
+test("partial optional provider configuration fails with missing variable names but no secrets", () => {
+  assert.throws(
+    () => loadServerConfig({ NODE_ENV: "test", GOOGLE_CLIENT_ID: "secret-value" }),
+    /GOOGLE_CLIENT_SECRET.*GOOGLE_OAUTH_REDIRECT_URI.*APP_ENCRYPTION_KEY_BASE64/,
+  );
+  assert.throws(
+    () => loadServerConfig({
       NODE_ENV: "test",
-      FEATURE_GOOGLE_DRIVE: "true",
-      GOOGLE_CLIENT_SECRET: secret,
-    });
+      BREVO_API_KEY: "secret-value",
+      APP_BASE_URL: "https://exepts.example",
+    }),
+    /BREVO_SENDER_EMAIL.*BREVO_SENDER_NAME.*BREVO_API_BASE_URL/,
+  );
+  try {
+    loadServerConfig({ NODE_ENV: "test", GOOGLE_CLIENT_ID: "secret-value" });
   } catch (error) {
-    message = error instanceof Error ? error.message : String(error);
+    assert.doesNotMatch(String(error), /secret-value/);
   }
-  assert.ok(message);
-  assert.doesNotMatch(message, new RegExp(secret));
+});
 
-  const [assistant, server] = await Promise.all([
-    readFile("src/components/AssistantView.tsx", "utf8"),
+test("production startup requires core configuration and validates supplied values", () => {
+  assert.throws(() => loadServerConfig({ NODE_ENV: "production" }), /SUPABASE_DB_URL.*GEMINI_API_KEY.*APP_BASE_URL/);
+  assert.throws(() => loadServerConfig({ NODE_ENV: "test", PORT: "70000" }), /PORT/);
+  assert.throws(() => loadServerConfig({ NODE_ENV: "test", SUPABASE_DB_URL: "https://example.test" }), /postgres/);
+  assert.throws(() => loadServerConfig({ NODE_ENV: "test", APP_ENCRYPTION_KEY_BASE64: "bad" }), /32-byte key/);
+});
+
+test("unconfigured GovInfo ignores forged browser requests", async () => {
+  assert.deepEqual(await queryLegalSources("confidential query", false, true), {
+    govInfo: [],
+    govInfoStatus: "empty",
+  });
+});
+
+test("core routes are unconditional and removed product surfaces are absent", async () => {
+  const [serverSource, clientRoutes, app, configSource] = await Promise.all([
     readFile("server.ts", "utf8"),
+    readFile("server/clientRoutes.ts", "utf8"),
+    readFile("src/App.tsx", "utf8"),
+    readFile("server/config.ts", "utf8"),
   ]);
-  assert.match(assistant, /featureFlags\.govInfo && <button/);
-  assert.match(server, /app\.get\("\/api\/health\/live"/);
-  assert.match(server, /app\.get\("\/api\/health\/ready"/);
+  const server = `${serverSource}\n${clientRoutes}`;
+  for (const route of [
+    "/api/team/members",
+    "/api/team/invitations",
+    "/api/client/dashboard",
+    "/api/notifications",
+    "/api/cases/:id/archive",
+  ]) {
+    assert.match(server, new RegExp(route.replace(/[/:]/g, (value) => value === "/" ? "\\/" : value)));
+  }
+  assert.match(app, /<PublicLandingPage \/>/);
+  assert.doesNotMatch(server, /Google Drive import|\/api\/ingestion|\/api\/uploads\/authorize/);
+  assert.doesNotMatch(app, /ClientUnavailable|featureFlags/);
+  assert.doesNotMatch(configSource, new RegExp(`FEATURE${"_"}`));
+  assert.doesNotMatch(configSource, /parseBoolean|features:/);
 });

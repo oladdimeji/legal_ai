@@ -3,10 +3,8 @@ import { Database, Eye, FileText, FolderOpen, Search, Trash2, Upload, X } from "
 import { Document } from "../types";
 import SelectedFileList from "./SelectedFileList";
 import { useCumulativeFileSelection } from "../hooks/useCumulativeFileSelection";
-import { PRIVATE_UPLOAD_MAX_FILES, uploadPrivateFiles } from "../lib/durableUploads";
-import GoogleDrivePanel from "./GoogleDrivePanel";
 
-export default function FirmLibraryView({ googleDriveImportEnabled = false, resourceLifecycleEnabled = false }: { googleDriveImportEnabled?: boolean; resourceLifecycleEnabled?: boolean }) {
+export default function FirmLibraryView() {
   const [documents, setDocuments] = useState<Document[]>([]);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<string[]>([]);
@@ -18,10 +16,10 @@ export default function FirmLibraryView({ googleDriveImportEnabled = false, reso
   const [uploadError, setUploadError] = useState("");
   const [showArchived, setShowArchived] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const fileSelection = useCumulativeFileSelection(PRIVATE_UPLOAD_MAX_FILES);
+  const fileSelection = useCumulativeFileSelection();
 
   const load = async () => {
-    const response = await fetch(`/api/documents?caseId=null${resourceLifecycleEnabled && showArchived ? "&includeArchived=true" : ""}`);
+    const response = await fetch(`/api/documents?caseId=null${showArchived ? "&includeArchived=true" : ""}`);
     if (response.ok) setDocuments(await response.json());
   };
 
@@ -29,7 +27,7 @@ export default function FirmLibraryView({ googleDriveImportEnabled = false, reso
     void load();
     const interval = window.setInterval(() => void load(), 5_000);
     return () => window.clearInterval(interval);
-  }, [showArchived, resourceLifecycleEnabled]);
+  }, [showArchived]);
 
   const sections = useMemo(() => Array.from(new Set(documents.map((document) => document.section))).sort(), [documents]);
   const visible = documents.filter((document) => {
@@ -58,12 +56,6 @@ export default function FirmLibraryView({ googleDriveImportEnabled = false, reso
     setUploading(true);
     setUploadError("");
     try {
-      if (await uploadPrivateFiles(fileSelection.files, null)) {
-        setTitle("");
-        fileSelection.clearFiles();
-        await load();
-        return;
-      }
       const form = new FormData();
       if (fileSelection.files.length === 1 && title.trim()) form.append("title", title.trim());
       fileSelection.files.forEach((file) => form.append("files", file));
@@ -123,7 +115,7 @@ export default function FirmLibraryView({ googleDriveImportEnabled = false, reso
             <div className="flex items-center gap-2"><Database className="h-5 w-5" /><h2 className="text-lg font-bold uppercase">Firm Library</h2></div>
             <p className="mt-1 text-[11px] font-mono uppercase text-zinc-400">Reusable workspace documents and semantic search</p>
           </div>
-          <div className="flex items-center gap-3"><span className="text-[10px] font-mono uppercase text-zinc-500">{documents.length} documents</span>{resourceLifecycleEnabled && <label className="text-[9px] font-mono uppercase"><input type="checkbox" checked={showArchived} onChange={(event) => setShowArchived(event.target.checked)} className="mr-1" />Show archived</label>}</div>
+          <div className="flex items-center gap-3"><span className="text-[10px] font-mono uppercase text-zinc-500">{documents.length} documents</span><label className="text-[9px] font-mono uppercase"><input type="checkbox" checked={showArchived} onChange={(event) => setShowArchived(event.target.checked)} className="mr-1" />Show archived</label></div>
         </header>
 
         <form onSubmit={search} className="flex gap-2 rounded border border-zinc-200 bg-zinc-50 p-3">
@@ -141,10 +133,10 @@ export default function FirmLibraryView({ googleDriveImportEnabled = false, reso
           </aside>
 
           <section className="space-y-2">
-            {resourceLifecycleEnabled && selectedIds.length > 0 && <div className="flex flex-wrap items-center gap-2 rounded border bg-zinc-50 p-3 text-[9px] font-mono uppercase"><strong>{selectedIds.length} selected</strong><button onClick={() => { const folderPath = prompt("Move to folder", "/"); if (folderPath) void bulkUpdate({ folderPath }); }} className="rounded border bg-white px-2 py-1">Move</button><button onClick={() => { const tags = prompt("Tags, comma-separated"); if (tags) void bulkUpdate({ addTags: tags.split(",") }); }} className="rounded border bg-white px-2 py-1">Tag</button><button onClick={() => void bulkUpdate({ lifecycleState: "archived" })} className="rounded border bg-white px-2 py-1">Archive</button><button onClick={() => void bulkUpdate({ lifecycleState: "active" })} className="rounded border bg-white px-2 py-1">Restore</button></div>}
+            {selectedIds.length > 0 && <div className="flex flex-wrap items-center gap-2 rounded border bg-zinc-50 p-3 text-[9px] font-mono uppercase"><strong>{selectedIds.length} selected</strong><button onClick={() => { const folderPath = prompt("Move to folder", "/"); if (folderPath) void bulkUpdate({ folderPath }); }} className="rounded border bg-white px-2 py-1">Move</button><button onClick={() => { const tags = prompt("Tags, comma-separated"); if (tags) void bulkUpdate({ addTags: tags.split(",") }); }} className="rounded border bg-white px-2 py-1">Tag</button><button onClick={() => void bulkUpdate({ lifecycleState: "archived" })} className="rounded border bg-white px-2 py-1">Archive</button><button onClick={() => void bulkUpdate({ lifecycleState: "active" })} className="rounded border bg-white px-2 py-1">Restore</button></div>}
             {visible.length === 0 ? <div className="rounded border border-dashed border-zinc-300 p-10 text-center text-xs text-zinc-500">No Firm Library documents match this view.</div> : visible.map((document) => (
               <div key={document.id} className="flex items-start gap-3 rounded border border-zinc-200 p-4 hover:border-zinc-400">
-                {resourceLifecycleEnabled && <input type="checkbox" checked={selectedIds.includes(document.id)} onChange={(event) => setSelectedIds((current) => event.target.checked ? [...current, document.id] : current.filter((id) => id !== document.id))} />}
+                <input type="checkbox" checked={selectedIds.includes(document.id)} onChange={(event) => setSelectedIds((current) => event.target.checked ? [...current, document.id] : current.filter((id) => id !== document.id))} />
                 <FileText className="mt-0.5 h-4 w-4 text-zinc-400" />
                 <button onClick={() => setPreview(document)} className="min-w-0 flex-1 text-left cursor-pointer"><p className="truncate text-xs font-semibold">{document.title}</p><p className="mt-1 text-[10px] font-mono uppercase text-zinc-400">{document.section} · {new Date(document.uploaded_at).toLocaleDateString()} · {(document.processing_state || "ready").replaceAll("_", " ")}</p></button>
                 <button onClick={() => setPreview(document)} title="Preview" className="rounded p-1 hover:bg-zinc-100 cursor-pointer"><Eye className="h-4 w-4 text-zinc-500" /></button>
@@ -167,12 +159,11 @@ export default function FirmLibraryView({ googleDriveImportEnabled = false, reso
             {uploadError && <p className="text-xs text-red-700">{uploadError}</p>}
             <button disabled={uploading || fileSelection.files.length === 0} className="w-full rounded bg-zinc-950 px-3 py-2 text-[10px] font-mono font-bold uppercase text-white disabled:cursor-not-allowed disabled:opacity-40">{uploading ? "Uploading..." : "Upload for processing"}</button>
           </form>
-          {googleDriveImportEnabled && <GoogleDrivePanel caseId={null} onImported={load} compact />}
           </div>
         </div>
       </div>
 
-      {preview && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-6"><div className="flex max-h-[85vh] w-full max-w-3xl flex-col rounded border border-zinc-300 bg-white shadow-xl"><header className="flex items-center justify-between border-b p-4"><div><h3 className="text-sm font-semibold">{preview.title}</h3><p className="text-[10px] font-mono uppercase text-zinc-400">Firm Library · {preview.section} · {preview.folder_path || "/"}</p>{resourceLifecycleEnabled && <p className="mt-1 text-[9px] font-mono uppercase text-zinc-500">{preview.tags?.join(", ") || "No tags"} · {preview.lifecycle_state || "active"}</p>}</div><div className="flex gap-2">{resourceLifecycleEnabled && <><button onClick={() => void editDocument(preview)} className="rounded border px-2 py-1 text-[9px] font-mono uppercase">Rename</button><button onClick={() => void editDocument(preview, preview.lifecycle_state === "archived" ? "active" : "archived")} className="rounded border px-2 py-1 text-[9px] font-mono uppercase">{preview.lifecycle_state === "archived" ? "Restore" : "Archive"}</button></>}<button onClick={() => setPreview(null)} className="rounded p-1 hover:bg-zinc-100"><X className="h-4 w-4" /></button></div></header><div className="overflow-y-auto whitespace-pre-wrap p-6 text-sm leading-relaxed text-zinc-700">{preview.extracted_text}</div></div></div>}
+      {preview && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-6"><div className="flex max-h-[85vh] w-full max-w-3xl flex-col rounded border border-zinc-300 bg-white shadow-xl"><header className="flex items-center justify-between border-b p-4"><div><h3 className="text-sm font-semibold">{preview.title}</h3><p className="text-[10px] font-mono uppercase text-zinc-400">Firm Library · {preview.section} · {preview.folder_path || "/"}</p><p className="mt-1 text-[9px] font-mono uppercase text-zinc-500">{preview.tags?.join(", ") || "No tags"} · {preview.lifecycle_state || "active"}</p></div><div className="flex gap-2"><button onClick={() => void editDocument(preview)} className="rounded border px-2 py-1 text-[9px] font-mono uppercase">Rename</button><button onClick={() => void editDocument(preview, preview.lifecycle_state === "archived" ? "active" : "archived")} className="rounded border px-2 py-1 text-[9px] font-mono uppercase">{preview.lifecycle_state === "archived" ? "Restore" : "Archive"}</button><button onClick={() => setPreview(null)} className="rounded p-1 hover:bg-zinc-100"><X className="h-4 w-4" /></button></div></header><div className="overflow-y-auto whitespace-pre-wrap p-6 text-sm leading-relaxed text-zinc-700">{preview.extracted_text}</div></div></div>}
     </div>
   );
 }

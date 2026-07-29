@@ -9,7 +9,6 @@ import {
   ClientLoginView,
   ClientResetPasswordView,
   ClientVerifyView,
-  ClientUnavailable,
 } from "./components/ClientAccountViews";
 import FirmLibraryView from "./components/FirmLibraryView";
 import FirmInvitationView from "./components/FirmInvitationView";
@@ -23,7 +22,7 @@ import SettingsView from "./components/SettingsView";
 import NotificationCenter from "./components/NotificationCenter";
 import Sidebar from "./components/Sidebar";
 import { ErrorState, LoadingState } from "./components/ui/States";
-import { disabledPublicBrowserConfig, type PublicBrowserConfig } from "./lib/publicConfig";
+import { unconfiguredPublicBrowserConfig, type PublicBrowserConfig } from "./lib/publicConfig";
 import { Case, Firm, FirmMembership, User } from "./types";
 
 type Account = { user: User; firm: Firm; membership: FirmMembership };
@@ -32,10 +31,10 @@ export default function App() {
   const [cases, setCases] = useState<Case[]>([]);
   const [account, setAccount] = useState<Account | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
-  const [publicConfig, setPublicConfig] = useState<PublicBrowserConfig>(disabledPublicBrowserConfig);
+  const [publicConfig, setPublicConfig] = useState<PublicBrowserConfig>(unconfiguredPublicBrowserConfig);
 
   useEffect(() => {
-    fetch("/api/config").then((response) => response.ok ? response.json() : Promise.reject()).then(setPublicConfig).catch(() => setPublicConfig(disabledPublicBrowserConfig));
+    fetch("/api/config").then((response) => response.ok ? response.json() : Promise.reject()).then(setPublicConfig).catch(() => setPublicConfig(unconfiguredPublicBrowserConfig));
     fetch("/api/auth/me").then(async (response) => {
       if (response.ok) setAccount(await response.json());
     }).catch(() => undefined).finally(() => setAuthLoading(false));
@@ -60,23 +59,23 @@ export default function App() {
   return <Routes>
     <Route element={<PublicLayout />}>
       <Route index element={<PublicLandingPage />} />
-      <Route path="login" element={account ? <Navigate to="/app" replace /> : <AuthView mode="login" onAuthenticated={setAccount} googleAccountEnabled={publicConfig.features.googleAccount} />} />
-      <Route path="signup" element={account ? <Navigate to="/app" replace /> : <AuthView mode="signup" onAuthenticated={setAccount} googleAccountEnabled={false} />} />
+      <Route path="login" element={account ? <Navigate to="/app" replace /> : <AuthView mode="login" onAuthenticated={setAccount} googleAvailable={publicConfig.integrations.google.status === "configured"} />} />
+      <Route path="signup" element={account ? <Navigate to="/app" replace /> : <AuthView mode="signup" onAuthenticated={setAccount} googleAvailable={false} />} />
     </Route>
     <Route path="join/:token" element={<PublicLayout />}>
-      <Route index element={<FirmInvitationView enabled={publicConfig.features.firmTeams} onAccepted={setAccount} />} />
+      <Route index element={<FirmInvitationView onAccepted={setAccount} />} />
     </Route>
 
     <Route path="app/*" element={account
-      ? <LawyerWorkspace account={account} cases={cases} fetchCases={fetchCases} logout={logout} featureFlags={publicConfig.features} />
+      ? <LawyerWorkspace account={account} cases={cases} fetchCases={fetchCases} logout={logout} integrations={publicConfig.integrations} />
       : <Navigate to="/login" replace />} />
 
     <Route path="client" element={<ClientLayout />}>
-      <Route path="login" element={<ClientLoginView enabled={publicConfig.features.clientAccounts} />} />
-      <Route path="dashboard" element={publicConfig.features.clientDashboard ? <ClientDashboardView enabled /> : <ClientUnavailable />} />
-      <Route path="invitations/:token" element={<ClientInvitationView enabled={publicConfig.features.clientAccounts} />} />
-      <Route path="verify/:token" element={<ClientVerifyView enabled={publicConfig.features.clientAccounts} />} />
-      <Route path="reset-password/:token" element={<ClientResetPasswordView enabled={publicConfig.features.clientAccounts} />} />
+      <Route path="login" element={<ClientLoginView />} />
+      <Route path="dashboard" element={<ClientDashboardView />} />
+      <Route path="invitations/:token" element={<ClientInvitationView />} />
+      <Route path="verify/:token" element={<ClientVerifyView />} />
+      <Route path="reset-password/:token" element={<ClientResetPasswordView />} />
     </Route>
     <Route path="client/:token" element={<LegacyPortalRoute />} />
     <Route path="*" element={<div className="mx-auto max-w-lg p-8 pt-24"><ErrorState title="Page not found" detail="The requested page does not exist or has moved." /></div>} />
@@ -93,10 +92,10 @@ interface LawyerWorkspaceProps {
   cases: Case[];
   fetchCases: () => Promise<void>;
   logout: () => Promise<void>;
-  featureFlags: PublicBrowserConfig["features"];
+  integrations: PublicBrowserConfig["integrations"];
 }
 
-function LawyerWorkspace({ account, cases, fetchCases, logout, featureFlags }: LawyerWorkspaceProps) {
+function LawyerWorkspace({ account, cases, fetchCases, logout, integrations }: LawyerWorkspaceProps) {
   const navigate = useNavigate();
   const location = useLocation();
   const [activeCaseId, setActiveCaseId] = useState<string | null>(null);
@@ -112,15 +111,15 @@ function LawyerWorkspace({ account, cases, fetchCases, logout, featureFlags }: L
     <a href="#lawyer-content" className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:bg-white focus:p-3">Skip to workspace</a>
     <Sidebar activeTab={activeTab} setActiveTab={goTo} firmName={account.firm.name} userName={account.user.name} userEmail={account.user.email} onLogout={() => void logout().then(() => navigate("/login"))} isCollapsed={isSidebarCollapsed} setIsCollapsed={setIsSidebarCollapsed} onStartNewThread={startAssistant} />
     <main id="lawyer-content" className="relative flex h-full min-w-0 flex-1 flex-col overflow-hidden">
-      <NotificationCenter enabled={featureFlags.clientNotifications} onNavigate={navigate} />
+      <NotificationCenter onNavigate={navigate} />
       <Routes>
-        <Route index element={<AssistantView cases={cases} activeCaseId={activeCaseId} setActiveCaseId={setActiveCaseId} activeThreadId={activeThreadId} setActiveThreadId={setActiveThreadId} onMessagesChange={() => undefined} onNavigateToDrafts={(draftId) => { setInitialDraftId(draftId); if (activeCaseId) navigate(`/app/matters/${activeCaseId}`); }} featureFlags={featureFlags} />} />
+        <Route index element={<AssistantView cases={cases} activeCaseId={activeCaseId} setActiveCaseId={setActiveCaseId} activeThreadId={activeThreadId} setActiveThreadId={setActiveThreadId} onMessagesChange={() => undefined} onNavigateToDrafts={(draftId) => { setInitialDraftId(draftId); if (activeCaseId) navigate(`/app/matters/${activeCaseId}`); }} govInfoConfigured={integrations.govInfo.status === "configured"} />} />
         <Route path="assistant" element={<Navigate to="/app" replace />} />
-        <Route path="matters" element={<MattersView matters={cases} onRefresh={fetchCases} onOpenMatter={(matterId) => { setActiveCaseId(matterId); setActiveThreadId(null); navigate(`/app/matters/${matterId}`); }} resourceLifecycleEnabled={featureFlags.resourceLifecycle} />} />
-        <Route path="matters/:matterId" element={<MatterRoute cases={cases} onBack={() => navigate("/app/matters")} onMatterChange={(matter) => { setActiveCaseId(matter.id); void fetchCases(); }} initialDraftId={initialDraftId} clearDraft={() => setInitialDraftId(null)} googleDriveExportEnabled={featureFlags.googleDriveExport} googleDriveImportEnabled={featureFlags.googleDriveImport} clientAccountsEnabled={featureFlags.clientAccounts} resourceLifecycleEnabled={featureFlags.resourceLifecycle} />} />
-        <Route path="library" element={<FirmLibraryView googleDriveImportEnabled={featureFlags.googleDriveImport} resourceLifecycleEnabled={featureFlags.resourceLifecycle} />} />
+        <Route path="matters" element={<MattersView matters={cases} onRefresh={fetchCases} onOpenMatter={(matterId) => { setActiveCaseId(matterId); setActiveThreadId(null); navigate(`/app/matters/${matterId}`); }} />} />
+        <Route path="matters/:matterId" element={<MatterRoute cases={cases} onBack={() => navigate("/app/matters")} onMatterChange={(matter) => { setActiveCaseId(matter.id); void fetchCases(); }} initialDraftId={initialDraftId} clearDraft={() => setInitialDraftId(null)} googleDriveExportAvailable={integrations.google.capabilities.includes("drive_export")} />} />
+        <Route path="library" element={<FirmLibraryView />} />
         <Route path="history" element={<HistoryView cases={cases} activeThreadId={activeThreadId} onSelectThread={(thread) => { setActiveCaseId(thread.case_id); setActiveThreadId(thread.id); navigate("/app"); }} />} />
-        <Route path="settings" element={<SettingsView user={account.user} membership={account.membership} matters={cases} onLogout={() => void logout().then(() => navigate("/login"))} googleAccountEnabled={featureFlags.googleAccount} googleDriveExportEnabled={featureFlags.googleDriveExport} firmTeamsEnabled={featureFlags.firmTeams} />} />
+        <Route path="settings" element={<SettingsView user={account.user} membership={account.membership} matters={cases} onLogout={() => void logout().then(() => navigate("/login"))} integrations={integrations} />} />
       <Route path="*" element={<Navigate to="/app" replace />} />
       </Routes>
     </main>
@@ -128,11 +127,11 @@ function LawyerWorkspace({ account, cases, fetchCases, logout, featureFlags }: L
   </div>;
 }
 
-function MatterRoute({ cases, onBack, onMatterChange, initialDraftId, clearDraft, googleDriveExportEnabled, googleDriveImportEnabled, clientAccountsEnabled, resourceLifecycleEnabled }: { cases: Case[]; onBack: () => void; onMatterChange: (matter: Case) => void; initialDraftId: string | null; clearDraft: () => void; googleDriveExportEnabled: boolean; googleDriveImportEnabled: boolean; clientAccountsEnabled: boolean; resourceLifecycleEnabled: boolean }) {
+function MatterRoute({ cases, onBack, onMatterChange, initialDraftId, clearDraft, googleDriveExportAvailable }: { cases: Case[]; onBack: () => void; onMatterChange: (matter: Case) => void; initialDraftId: string | null; clearDraft: () => void; googleDriveExportAvailable: boolean }) {
   const { matterId } = useParams();
   useEffect(() => {
     if (matterId && cases.some((matter) => matter.id === matterId)) return;
   }, [cases, matterId]);
   if (!matterId) return <ErrorState title="Matter unavailable" />;
-  return <MatterWorkspaceView matterId={matterId} onBack={onBack} onMatterChange={onMatterChange} initialDraftId={initialDraftId} onClearInitialDraftId={clearDraft} googleDriveExportEnabled={googleDriveExportEnabled} googleDriveImportEnabled={googleDriveImportEnabled} clientAccountsEnabled={clientAccountsEnabled} resourceLifecycleEnabled={resourceLifecycleEnabled} />;
+  return <MatterWorkspaceView matterId={matterId} onBack={onBack} onMatterChange={onMatterChange} initialDraftId={initialDraftId} onClearInitialDraftId={clearDraft} googleDriveExportAvailable={googleDriveExportAvailable} />;
 }

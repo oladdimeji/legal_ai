@@ -53,9 +53,11 @@ test("Docker deployment is production-only and checks the existing health route"
   assert.match(dockerfile, /npm prune --omit=dev/);
   assert.match(dockerfile, /COPY --from=build --chown=node:node \/app\/node_modules \.\/node_modules/);
   assert.match(dockerfile, /USER node/);
+  assert.doesNotMatch(dockerfile, /worker/);
   assert.match(compose, /env_file:\s*\n\s*- \.env/);
   assert.match(compose, /NODE_ENV: production/);
   assert.match(compose, /\/api\/health/);
+  assert.doesNotMatch(compose, new RegExp(["profiles:", "work" + "er:", "clama" + "v:"].join("|"), "i"));
   assert.match(dockerignore, /^\.env$/m);
   assert.match(dockerignore, /^node_modules$/m);
   assert.match(dockerignore, /^tests$/m);

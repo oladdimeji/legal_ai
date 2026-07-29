@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import type { Request, Response } from "express";
-import { loadServerConfig } from "../server/config.js";
 import {
   ProgressiveRateLimiter,
   clientSessionCookie,
@@ -17,31 +16,6 @@ import {
   type EmailDeliveryRecord,
 } from "../server/transactionalEmail.js";
 import { classifyProtectedRequest, decideAuthorization } from "../server/authorization.js";
-
-test("manager preview flags are independent, safe by default, and deferred uploads fail closed", () => {
-  const defaults = loadServerConfig({ NODE_ENV: "test" });
-  assert.equal(defaults.features.clientAccounts, false);
-  assert.equal(defaults.features.clientDashboard, false);
-  assert.equal(defaults.features.clientNotifications, false);
-  assert.equal(defaults.features.clientDurableUploads, false);
-  assert.equal(defaults.features.transactionalEmail, false);
-  assert.throws(
-    () => loadServerConfig({
-      NODE_ENV: "test",
-      APP_BASE_URL: "https://preview.example.test",
-      FEATURE_CLIENT_DURABLE_UPLOADS: "true",
-    }),
-    /deferred/,
-  );
-  assert.throws(
-    () => loadServerConfig({
-      NODE_ENV: "test",
-      APP_BASE_URL: "https://preview.example.test",
-      FEATURE_CLIENT_DASHBOARD: "true",
-    }),
-    /FEATURE_CLIENT_ACCOUNTS/,
-  );
-});
 
 test("client session and CSRF cookies have release-safe attributes", () => {
   assert.match(clientSessionCookie("raw-session", true), /HttpOnly/);

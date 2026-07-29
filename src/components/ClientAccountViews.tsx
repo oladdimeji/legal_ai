@@ -11,15 +11,13 @@ async function responseData(response: Response): Promise<any> {
   if (!response.ok) throw new Error(data.error || "Request failed.");
   return data;
 }
-
-export function ClientLoginView({ enabled }: { enabled: boolean }) {
+export function ClientLoginView() {
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [mode, setMode] = useState<"login" | "reset" | "verify">("login");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
-  if (!enabled) return <ClientUnavailable />;
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -81,7 +79,7 @@ export function ClientLoginView({ enabled }: { enabled: boolean }) {
   </div>;
 }
 
-export function ClientInvitationView({ enabled }: { enabled: boolean }) {
+export function ClientInvitationView() {
   const { token } = useParams();
   const navigate = useNavigate();
   const [invitation, setInvitation] = useState<any | null>(null);
@@ -90,14 +88,13 @@ export function ClientInvitationView({ enabled }: { enabled: boolean }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(true);
   useEffect(() => {
-    if (!enabled || !token) return;
+    if (!token) return;
     fetch(`/api/client/invitations/${encodeURIComponent(token)}`, { cache: "no-store" })
       .then(responseData)
       .then((data) => { setInvitation(data); setName(data.clientName || ""); })
       .catch((loadError) => setError(loadError.message))
       .finally(() => setBusy(false));
-  }, [enabled, token]);
-  if (!enabled) return <ClientUnavailable />;
+  }, [token]);
   if (!token) return <Navigate to="/client/login" replace />;
   if (busy) return <LoadingState label="Loading invitation…" />;
   if (!invitation) return <ErrorState title="Invitation unavailable" detail={error} />;
@@ -151,29 +148,27 @@ export function ClientInvitationView({ enabled }: { enabled: boolean }) {
   </div>;
 }
 
-export function ClientVerifyView({ enabled }: { enabled: boolean }) {
+export function ClientVerifyView() {
   const { token } = useParams();
   const navigate = useNavigate();
   const [state, setState] = useState<"working" | "failed">("working");
   const [error, setError] = useState("");
   useEffect(() => {
-    if (!enabled || !token) return;
+    if (!token) return;
     void secureFetch(`/api/client/verify/${encodeURIComponent(token)}`, { method: "POST" })
       .then(responseData)
       .then(() => navigate("/client/dashboard", { replace: true }))
       .catch((verifyError) => { setError(verifyError.message); setState("failed"); });
-  }, [enabled, token]);
-  if (!enabled) return <ClientUnavailable />;
+  }, [token]);
   return state === "working" ? <LoadingState label="Verifying client account…" />
     : <ErrorState title="Verification unavailable" detail={error} />;
 }
 
-export function ClientResetPasswordView({ enabled }: { enabled: boolean }) {
+export function ClientResetPasswordView() {
   const { token } = useParams();
   const navigate = useNavigate();
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
-  if (!enabled) return <ClientUnavailable />;
   if (!token) return <Navigate to="/client/login" replace />;
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -194,7 +189,7 @@ export function ClientResetPasswordView({ enabled }: { enabled: boolean }) {
 type Matter = { id: string; name: string; description: string; status: string; firm_name: string };
 type SharedDocument = { id: string; case_id: string; title: string; content: string; revision_type: string; updated_at: string };
 
-export function ClientDashboardView({ enabled }: { enabled: boolean }) {
+export function ClientDashboardView() {
   const navigate = useNavigate();
   const [data, setData] = useState<any | null>(null);
   const [account, setAccount] = useState<any | null>(null);
@@ -223,7 +218,7 @@ export function ClientDashboardView({ enabled }: { enabled: boolean }) {
       setError(loadError instanceof Error ? loadError.message : "Dashboard could not be loaded.");
     }
   };
-  useEffect(() => { if (enabled) void load(); }, [enabled]);
+  useEffect(() => { void load(); }, []);
   const documents = useMemo(
     () => (data?.sharedDocuments || []).filter((document: SharedDocument) => document.case_id === selectedMatterId),
     [data, selectedMatterId],
@@ -232,7 +227,6 @@ export function ClientDashboardView({ enabled }: { enabled: boolean }) {
     () => (data?.requests || []).filter((request: any) => request.case_id === selectedMatterId),
     [data, selectedMatterId],
   );
-  if (!enabled) return <ClientUnavailable />;
   if (!data && !error) return <LoadingState label="Loading client dashboard…" />;
   if (!data) return <div className="mx-auto max-w-lg py-16"><ErrorState title="Client dashboard unavailable" detail={error} /><Link className="mt-4 inline-block text-xs underline" to="/client/login">Return to login</Link></div>;
   if (data.accessState === "suspended") return <ErrorState title="Client access suspended" detail="Contact your lawyer if you believe this is unexpected." />;
@@ -277,6 +271,3 @@ export function ClientDashboardView({ enabled }: { enabled: boolean }) {
   </div>;
 }
 
-export function ClientUnavailable() {
-  return <div className="mx-auto max-w-lg py-16"><EmptyState title="Client accounts are not available yet" detail="Use the secure invitation link supplied by your lawyer. Existing legacy invitation links continue to work." /></div>;
-}
