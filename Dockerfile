@@ -17,7 +17,7 @@ RUN npm prune --omit=dev
 FROM node:22-bookworm-slim AS runtime
 
 ENV NODE_ENV=production
-ENV PORT=3000
+ENV PORT=3004
 
 WORKDIR /app
 
@@ -28,6 +28,6 @@ COPY --from=build --chown=node:node /app/scripts/start-production.mjs ./scripts/
 
 USER node
 
-EXPOSE 3000
+EXPOSE 3004
 
 CMD ["npm", "start"]

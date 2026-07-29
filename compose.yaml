@@ -8,14 +8,14 @@ services:
     environment:
       NODE_ENV: production
     ports:
-      - "${PORT:-3000}:${PORT:-3000}"
+      - "${PORT:-3004}:${PORT:-3004}"
     restart: unless-stopped
     healthcheck:
       test:
         - CMD
         - node
         - -e
-        - "fetch('http://127.0.0.1:' + (process.env.PORT || '3000') + '/api/health').then((response) => { if (!response.ok) process.exit(1); }).catch(() => process.exit(1));"
+        - "fetch('http://127.0.0.1:' + (process.env.PORT || '3004') + '/api/health').then((response) => { if (!response.ok) process.exit(1); }).catch(() => process.exit(1));"
       interval: 30s
       timeout: 5s
       retries: 3
