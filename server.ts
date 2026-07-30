@@ -22,6 +22,7 @@ import { extractUploads, MAX_FILE_COUNT, MAX_FILE_SIZE_BYTES } from "./server/fi
 import { markdownToDocxDocument } from "./server/docxMarkdown.js";
 import { cleanMatterIntelligenceContent } from "./server/matterIntelligenceContent.js";
 import { cleanClientAssistantContent, cleanGeneratedBoilerplate } from "./server/generatedContentCleanup.js";
+import { tryGenerateConversationTitle } from "./server/conversationTitle.js";
 import { extractGeneratedSubject, extractSummaryHeading } from "./server/extractGeneratedSubject.js";
 import { getWorkProductFormatInstructions, isWorkProductFormat } from "./server/workProductFormat.js";
 import { canonicalizeAssistantCitations, rewriteGoogleGroundingCitations, stripInternalCitationsForWorkProduct } from "./src/lib/assistantCitations.js";
@@ -1232,6 +1233,19 @@ ${sourceText}`;
         null,
         temporaryAttachmentMetadata(temporaryFiles)
       );
+      const isFirstUserMessage = !priorHistory.some((message) => message.role === "user");
+      if (isFirstUserMessage) {
+        void tryGenerateConversationTitle(
+          content,
+          (generatedTitle) => db.updateThreadTitleForFirstMessage(
+            threadId,
+            userMessage.id,
+            thread.title,
+            generatedTitle,
+            requestOwnership
+          )
+        );
+      }
       const conversationHistory = boundedConversation([...priorHistory, userMessage], 12000);
       const conversationContext = conversationHistory
         .map((message) => `${message.role.toUpperCase()}: ${message.content}`)

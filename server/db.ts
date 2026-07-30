@@ -1578,6 +1578,47 @@ class DatabaseService {
     };
   }
 
+  public async updateThreadTitleForFirstMessage(
+    threadId: string,
+    firstMessageId: string,
+    expectedCurrentTitle: string,
+    generatedTitle: string,
+    context: OwnershipContext
+  ): Promise<boolean> {
+    const rows = await this.query(
+      `UPDATE threads t
+       SET title = $1
+       WHERE t.id = $2 AND t.user_id = $3 AND t.title = $4
+         AND (
+           t.case_id IS NULL OR EXISTS (
+             SELECT 1 FROM cases c WHERE c.id = t.case_id AND c.firm_id = $5
+           )
+         )
+         AND EXISTS (
+           SELECT 1 FROM messages first_message
+           WHERE first_message.id = $6
+             AND first_message.thread_id = t.id
+             AND first_message.role = 'user'
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM messages other_user_message
+           WHERE other_user_message.thread_id = t.id
+             AND other_user_message.role = 'user'
+             AND other_user_message.id <> $6
+         )
+       RETURNING t.id`,
+      [
+        generatedTitle,
+        threadId,
+        context.userId,
+        expectedCurrentTitle,
+        context.firmId,
+        firstMessageId,
+      ]
+    );
+    return rows.length === 1;
+  }
+
   public async deleteThread(id: string, context: OwnershipContext): Promise<boolean> {
     const rows = await this.query(
       `DELETE FROM threads t

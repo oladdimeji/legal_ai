@@ -771,3 +771,29 @@ Verification:
 - `npm run lint`: passed.
 - `npm test`: passed, 104/104 tests.
 - `npm run build`: passed with the existing Vite environment and large-chunk warnings.
+
+## Intelligent One-Time Conversation Titles
+
+Status: Complete.
+
+Implemented:
+
+- Added best-effort AI titles for the first user message in newly started General and Matter Assistant conversations, using the existing fast Gemini model path and the complete request.
+- Sanitized generated titles and conditionally stored them in the existing thread title field only while the saved message remains the thread's sole user message.
+- Preserved the existing first-message title as the fallback for invalid output, timeouts, model failures, or ownership-safe update failures.
+- Kept History as a reader of stored titles with its existing General Assistant and Matter grouping, open, delete, date, count, and layout behavior.
+
+Schema changes:
+
+- None.
+
+Dependencies added or changed:
+
+- None.
+
+Verification:
+
+- Focused conversation-title tests: passed, 5/5.
+- `npm run lint`: passed.
+- `npm test`: passed, 109/109 tests.
+- `npm run build`: passed with the existing Vite environment and large-chunk warnings.

@@ -483,6 +483,7 @@ export default function AssistantView({
       if (data.error) {
         throw new Error(data.error);
       }
+      void fetchThreads();
       if (!componentMountedRef.current) return;
       if (workingActivityTimerRef.current !== null) {
         window.clearTimeout(workingActivityTimerRef.current);
