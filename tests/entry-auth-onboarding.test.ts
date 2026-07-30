@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { parseRoute } from "../src/lib/routes.js";
 
-test("route parser covers public, onboarding, product, Matter, and Client Portal routes", () => {
+test("route parser covers public, onboarding, product, Matter, and Client Workspace routes", () => {
   assert.deepEqual(parseRoute("/"), { kind: "landing" });
   assert.deepEqual(parseRoute("/auth"), { kind: "auth" });
   assert.deepEqual(parseRoute("/login"), { kind: "auth" });
@@ -14,7 +14,9 @@ test("route parser covers public, onboarding, product, Matter, and Client Portal
   assert.deepEqual(parseRoute("/library"), { kind: "library" });
   assert.deepEqual(parseRoute("/history"), { kind: "history" });
   assert.deepEqual(parseRoute("/settings"), { kind: "settings" });
-  assert.deepEqual(parseRoute("/client/portal-token"), { kind: "client", token: "portal-token" });
+  assert.deepEqual(parseRoute("/client/assistant"), { kind: "clientAssistant" });
+  assert.deepEqual(parseRoute("/client/shared-matters"), { kind: "clientSharedMatters" });
+  assert.deepEqual(parseRoute("/client/portal-token"), { kind: "unknown" });
   assert.deepEqual(parseRoute("/not-a-route"), { kind: "unknown" });
 });
 

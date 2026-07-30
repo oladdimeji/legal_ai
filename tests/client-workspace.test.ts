@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
+  createCollaborationToken,
   createOAuthState,
-  extractCollaborationToken,
   oauthAccountTypeFromCookie,
+  parseCollaborationToken,
 } from "../server/auth.js";
 import { parseRoute } from "../src/lib/routes.js";
 
@@ -28,13 +29,17 @@ test("OAuth account mode is carried in the state cookie and defaults safely to l
   assert.equal(oauthAccountTypeFromCookie(null), "lawyer");
 });
 
-test("collaboration token parser accepts a raw token and complete link only", () => {
-  const token = "a".repeat(43);
-  assert.equal(extractCollaborationToken(token), token);
-  assert.equal(extractCollaborationToken(`https://app.exepts.test/client/${token}`), token);
-  assert.equal(extractCollaborationToken(`https://app.exepts.test/client/${token}/extra`), null);
-  assert.equal(extractCollaborationToken("javascript:alert(1)"), null);
-  assert.equal(extractCollaborationToken("short"), null);
+test("collaboration tokens are opaque, hash-only values and URL input is rejected", () => {
+  const first = createCollaborationToken();
+  const second = createCollaborationToken();
+  assert.match(first.token, /^MAT-(?:[A-F0-9]{4}-){7}[A-F0-9]{4}$/);
+  assert.equal(first.token.includes("://"), false);
+  assert.equal(first.token === second.token, false);
+  assert.equal(first.token.includes(first.tokenHash), false);
+  assert.equal(parseCollaborationToken(`  ${first.token}  `), first.token);
+  assert.equal(parseCollaborationToken(`https://app.exepts.test/client/${first.token}`), null);
+  assert.equal(parseCollaborationToken("javascript:alert(1)"), null);
+  assert.equal(parseCollaborationToken("short"), null);
 });
 
 test("new auth accounts use requested mode while existing accounts are never retyped", async () => {
@@ -56,7 +61,7 @@ test("new auth accounts use requested mode while existing accounts are never ret
 
 test("server has reusable account guards and keeps client APIs outside the lawyer API gate", async () => {
   const server = await readFile("server.ts", "utf8");
-  const clientRoutes = server.indexOf('app.post(\n    "/api/client/collaborations/claim"');
+  const clientRoutes = server.indexOf('app.post(\n    "/api/client/shared-matters/redeem"');
   const lawyerGate = server.indexOf(
     'app.use("/api", requireAuth, requireLawyerAccount, requireCompletedOnboarding)'
   );
@@ -108,7 +113,7 @@ test("client conversations are case-free, user-owned, and excluded from lawyer h
   assert.match(database, /other_user_message\.id <> \$5/);
 });
 
-test("client Assistant route uses only client conversation messages and no retrieval source", async () => {
+test("client Assistant uses only authorized selected shared documents and client history", async () => {
   const server = await readFile("server.ts", "utf8");
   const route = server.slice(
     server.indexOf('"/api/client/assistant/messages"'),
@@ -118,10 +123,13 @@ test("client Assistant route uses only client conversation messages and no retri
   assert.match(route, /db\.addClientMessage/);
   assert.match(route, /tryGenerateConversationTitle/);
   assert.match(route, /You do not have access to Shared Matters/);
+  assert.match(route, /getAuthorizedClientAssistantDocuments/);
+  assert.match(route, /retrieveClientDocumentPassages/);
+  assert.match(route, /AUTHORIZED DOCUMENT EVIDENCE/);
   assert.doesNotMatch(route, /vectorSearch|Firm Library Document|googleSearch: true/);
 });
 
-test("client routes cover the persistent workspace and preserve legacy claim links", () => {
+test("client routes cover the persistent workspace and disable token deep links", () => {
   assert.deepEqual(parseRoute("/client/assistant"), { kind: "clientAssistant" });
   assert.deepEqual(parseRoute("/client/shared-matters"), { kind: "clientSharedMatters" });
   assert.deepEqual(parseRoute("/client/shared-matters/access_1"), {
@@ -130,10 +138,7 @@ test("client routes cover the persistent workspace and preserve legacy claim lin
   });
   assert.deepEqual(parseRoute("/client/history"), { kind: "clientHistory" });
   assert.deepEqual(parseRoute("/client/settings"), { kind: "clientSettings" });
-  assert.deepEqual(parseRoute("/client/existing-token"), {
-    kind: "client",
-    token: "existing-token",
-  });
+  assert.deepEqual(parseRoute("/client/existing-token"), { kind: "unknown" });
 });
 
 test("App uses the small account branch and clients bypass lawyer onboarding and Matter loading", async () => {
@@ -171,7 +176,7 @@ test("Shared Matters has add, card/list, safe metadata, two detail tabs, preview
   assert.doesNotMatch(view, /preliminary_objectives|Matter Intelligence|Firm Library/);
 });
 
-test("Client Assistant has persistent chat UX without Matter or source controls", async () => {
+test("Client Assistant has persistent chat UX and an authorized document picker", async () => {
   const assistant = await readFile("src/components/ClientAssistantView.tsx", "utf8");
   assert.match(assistant, /New Chat/);
   assert.match(assistant, /scrollIntoView/);
@@ -179,6 +184,9 @@ test("Client Assistant has persistent chat UX without Matter or source controls"
   assert.match(assistant, /revealAssistantMessage/);
   assert.match(assistant, /<FormattedMarkdown/);
   assert.match(assistant, /\/api\/client\/assistant\/messages/);
+  assert.match(assistant, /Attach documents/);
+  assert.match(assistant, /documentIds: documentIdsForMessage/);
+  assert.match(assistant, /selectedDocuments/);
   assert.doesNotMatch(
     assistant,
     /Matter selector|Deep Research|Web Search|Work Product creation|file source/

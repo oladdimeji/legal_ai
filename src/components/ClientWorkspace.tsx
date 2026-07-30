@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import {
   Briefcase,
   History,
@@ -111,15 +111,7 @@ export default function ClientWorkspace({
       </aside>
 
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        {route.kind === "client" ? (
-          <ClientClaimView
-            token={route.token}
-            onClaimed={(id) =>
-              navigate(`/client/shared-matters/${encodeURIComponent(id)}`, true)
-            }
-            onCancel={() => navigate("/client/shared-matters", true)}
-          />
-        ) : route.kind === "clientSharedMatters" ? (
+        {route.kind === "clientSharedMatters" ? (
           <ClientSharedMattersView
             onOpenMatter={(id) =>
               navigate(`/client/shared-matters/${encodeURIComponent(id)}`)
@@ -145,75 +137,6 @@ export default function ClientWorkspace({
           />
         )}
       </main>
-    </div>
-  );
-}
-
-function ClientClaimView({
-  token,
-  onClaimed,
-  onCancel,
-}: {
-  token: string;
-  onClaimed: (id: string) => void;
-  onCancel: () => void;
-}) {
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    let cancelled = false;
-    setError("");
-    void fetch("/api/client/collaborations/claim", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token }),
-    })
-      .then(async (response) => {
-        const data = await response.json();
-        if (!response.ok) {
-          throw new Error(
-            data.error ||
-              "This collaboration link is invalid, unavailable, or already connected to another account."
-          );
-        }
-        if (!cancelled) onClaimed(String(data.id));
-      })
-      .catch((caught) => {
-        if (!cancelled) {
-          setError(
-            caught instanceof Error
-              ? caught.message
-              : "This collaboration link is invalid, unavailable, or already connected to another account."
-          );
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [token]);
-
-  return (
-    <div className="flex flex-1 items-center justify-center px-6 py-16">
-      {error ? (
-        <div className="max-w-md text-center">
-          <h1 className="text-lg font-semibold">Shared Matter unavailable</h1>
-          <p role="alert" className="mt-2 text-sm leading-6 text-zinc-500">{error}</p>
-          <button
-            type="button"
-            onClick={onCancel}
-            className="mt-5 rounded border border-zinc-300 px-4 py-2 text-xs font-semibold hover:border-zinc-950"
-          >
-            View Shared Matters
-          </button>
-        </div>
-      ) : (
-        <div className="text-center">
-          <span className="mx-auto block h-2 w-2 animate-pulse rounded-full bg-zinc-900" />
-          <p className="mt-4 text-xs font-mono uppercase text-zinc-500">
-            Connecting Shared Matter…
-          </p>
-        </div>
-      )}
     </div>
   );
 }

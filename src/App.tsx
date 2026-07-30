@@ -20,7 +20,6 @@ const protectedRouteKinds = new Set([
   "library",
   "history",
   "settings",
-  "client",
   "clientAssistant",
   "clientSharedMatters",
   "clientSharedMatter",
@@ -29,7 +28,6 @@ const protectedRouteKinds = new Set([
 ]);
 
 const clientRouteKinds = new Set([
-  "client",
   "clientAssistant",
   "clientSharedMatters",
   "clientSharedMatter",
@@ -187,9 +185,6 @@ export default function App() {
     }
   };
 
-  // Legacy entry compatibility was rendered as:
-  // if (route.kind === "client") return <ClientPortalView token={route.token} />;
-  // It now authenticates and claims into ClientWorkspace instead.
   if (authLoading) {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-white text-xs font-mono uppercase text-zinc-500">

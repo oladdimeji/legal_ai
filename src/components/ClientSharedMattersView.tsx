@@ -70,24 +70,27 @@ function SharedMattersList({ onOpenMatter }: { onOpenMatter: (id: string) => voi
   const [error, setError] = useState("");
   const [layout, setLayout] = useState<"card" | "list">("card");
   const [adding, setAdding] = useState(false);
-  const [link, setLink] = useState("");
+  const [token, setToken] = useState("");
   const [claiming, setClaiming] = useState(false);
   const [claimError, setClaimError] = useState("");
+  const [success, setSuccess] = useState("");
 
-  const load = async () => {
-    setLoading(true);
-    setError("");
+  const load = async (quiet = false) => {
+    if (!quiet) setLoading(true);
+    if (!quiet) setError("");
     try {
       const response = await fetch("/api/client/shared-matters");
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Shared Matters could not be loaded.");
       setMatters(data as SharedMatterListItem[]);
     } catch (caught) {
-      setError(
-        caught instanceof Error ? caught.message : "Shared Matters could not be loaded."
-      );
+      if (!quiet) {
+        setError(
+          caught instanceof Error ? caught.message : "Shared Matters could not be loaded."
+        );
+      }
     } finally {
-      setLoading(false);
+      if (!quiet) setLoading(false);
     }
   };
 
@@ -97,21 +100,37 @@ function SharedMattersList({ onOpenMatter }: { onOpenMatter: (id: string) => voi
 
   const claim = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!link.trim() || claiming) return;
+    const submittedToken = token.trim();
+    if (!submittedToken || claiming) return;
     setClaiming(true);
     setClaimError("");
     try {
-      const response = await fetch("/api/client/collaborations/claim", {
+      const response = await fetch("/api/client/shared-matters/redeem", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ link: link.trim() }),
+        body: JSON.stringify({ token: submittedToken }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "The Shared Matter could not be added.");
+      setMatters((current) =>
+        current.some((matter) => matter.id === String(data.id))
+          ? current
+          : [
+              {
+                id: String(data.id),
+                matter_name: String(data.matterName),
+                firm_name: data.firmName ? String(data.firmName) : null,
+                active_request_count: 0,
+                shared_document_count: 0,
+                last_shared_activity_at: new Date().toISOString(),
+              },
+              ...current,
+            ]
+      );
       setAdding(false);
-      setLink("");
-      await load();
-      onOpenMatter(String(data.id));
+      setToken("");
+      setSuccess(`${String(data.matterName)} was added to Shared Matters.`);
+      void load(true);
     } catch (caught) {
       setClaimError(
         caught instanceof Error ? caught.message : "The Shared Matter could not be added."
@@ -155,6 +174,7 @@ function SharedMattersList({ onOpenMatter }: { onOpenMatter: (id: string) => voi
               onClick={() => {
                 setAdding(true);
                 setClaimError("");
+                setSuccess("");
               }}
               className="flex items-center gap-2 rounded bg-zinc-950 px-4 py-2.5 text-[10px] font-mono font-semibold uppercase text-white hover:bg-zinc-800"
             >
@@ -165,6 +185,11 @@ function SharedMattersList({ onOpenMatter }: { onOpenMatter: (id: string) => voi
       </header>
 
       <div className="mx-auto max-w-6xl px-6 py-8 sm:px-8">
+        {success && (
+          <div role="status" className="mb-5 rounded border border-zinc-300 bg-zinc-50 px-4 py-3 text-xs">
+            {success}
+          </div>
+        )}
         {loading ? (
           <p className="py-16 text-center text-xs font-mono uppercase text-zinc-400">
             Loading Shared Matters…
@@ -181,11 +206,14 @@ function SharedMattersList({ onOpenMatter }: { onOpenMatter: (id: string) => voi
             <FileText className="mx-auto h-8 w-8 text-zinc-300" />
             <h2 className="mt-4 text-sm font-semibold">No Shared Matters yet</h2>
             <p className="mx-auto mt-2 max-w-md text-xs leading-5 text-zinc-500">
-              Add a secure collaboration link provided by your lawyer.
+              Add a secure collaboration token provided by your lawyer.
             </p>
             <button
               type="button"
-              onClick={() => setAdding(true)}
+              onClick={() => {
+                setAdding(true);
+                setSuccess("");
+              }}
               className="mt-5 rounded border border-zinc-300 px-4 py-2 text-xs font-semibold hover:border-zinc-950"
             >
               Add Shared Matter
@@ -238,7 +266,7 @@ function SharedMattersList({ onOpenMatter }: { onOpenMatter: (id: string) => voi
               <div>
                 <h2 className="text-base font-semibold">Add Shared Matter</h2>
                 <p className="mt-1 text-xs leading-5 text-zinc-500">
-                  Paste the collaboration link your lawyer provided.
+                  Enter the collaboration token your lawyer provided.
                 </p>
               </div>
               <button
@@ -251,11 +279,11 @@ function SharedMattersList({ onOpenMatter }: { onOpenMatter: (id: string) => voi
               </button>
             </div>
             <input
-              value={link}
-              onChange={(event) => setLink(event.target.value)}
+              value={token}
+              onChange={(event) => setToken(event.target.value)}
               autoFocus
-              placeholder="Collaboration link"
-              aria-label="Lawyer-provided collaboration link"
+              placeholder="Collaboration token"
+              aria-label="Lawyer-provided collaboration token"
               className="mt-5 w-full rounded border border-zinc-300 px-3 py-2.5 text-sm outline-none focus:border-zinc-950"
             />
             {claimError && <p role="alert" className="mt-3 text-xs text-red-700">{claimError}</p>}
@@ -269,7 +297,7 @@ function SharedMattersList({ onOpenMatter }: { onOpenMatter: (id: string) => voi
               </button>
               <button
                 type="submit"
-                disabled={!link.trim() || claiming}
+                disabled={!token.trim() || claiming}
                 className="rounded bg-zinc-950 px-4 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {claiming ? "Adding…" : "Add Matter"}

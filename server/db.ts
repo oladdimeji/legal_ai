@@ -1282,6 +1282,66 @@ class DatabaseService {
     );
   }
 
+  public async getClientAssistantDocuments(clientUserId: string): Promise<any[]> {
+    return await this.query(
+      `SELECT DISTINCT d.id, d.title, c.name AS matter_name,
+         'Ready'::text AS processing_state, 'Work Product'::text AS file_type
+       FROM matter_client_access ca
+       JOIN cases c ON c.id = ca.case_id
+       JOIN drafts d ON d.case_id = ca.case_id
+       WHERE ca.claimed_by_user_id = $1
+         AND ca.invitation_status = 'Active'
+         AND ca.revoked_at IS NULL
+         AND ca.token_hash IS NOT NULL
+         AND (
+           d.shared_with_client = TRUE OR EXISTS (
+             SELECT 1
+             FROM collaboration_request_documents request_document
+             JOIN collaboration_requests request
+               ON request.id = request_document.request_id
+             WHERE request_document.draft_id = d.id
+               AND request.case_id = ca.case_id
+           )
+         )
+       ORDER BY c.name, d.title, d.id`,
+      [clientUserId]
+    );
+  }
+
+  public async getAuthorizedClientAssistantDocuments(
+    clientUserId: string,
+    documentIds: string[]
+  ): Promise<Array<{ id: string; title: string; matter_name: string; content: string }>> {
+    if (documentIds.length === 0) return [];
+    const rows = await this.query(
+      `SELECT DISTINCT d.id, d.title, c.name AS matter_name, d.content
+       FROM matter_client_access ca
+       JOIN cases c ON c.id = ca.case_id
+       JOIN drafts d ON d.case_id = ca.case_id
+       WHERE ca.claimed_by_user_id = $1
+         AND ca.invitation_status = 'Active'
+         AND ca.revoked_at IS NULL
+         AND ca.token_hash IS NOT NULL
+         AND d.id = ANY($2::text[])
+         AND (
+           d.shared_with_client = TRUE OR EXISTS (
+             SELECT 1
+             FROM collaboration_request_documents request_document
+             JOIN collaboration_requests request
+               ON request.id = request_document.request_id
+             WHERE request_document.draft_id = d.id
+               AND request.case_id = ca.case_id
+           )
+         )`,
+      [clientUserId, documentIds]
+    );
+    if (rows.length !== documentIds.length) {
+      throw new Error("CLIENT_ASSISTANT_DOCUMENT_UNAVAILABLE");
+    }
+    const byId = new Map(rows.map((row) => [String(row.id), row]));
+    return documentIds.map((id) => byId.get(id)!);
+  }
+
   public async resolveClientSharedMatter(
     accessId: string,
     clientUserId: string
@@ -1965,28 +2025,29 @@ class DatabaseService {
     threadId: string,
     clientUserId: string,
     role: "user" | "assistant",
-    content: string
+    content: string,
+    metadata: Record<string, unknown> = {}
   ): Promise<Message> {
     const id = `msg_${randomUUID()}`;
     const createdAt = new Date().toISOString();
     const rows = await this.query(
       `INSERT INTO messages
         (id, thread_id, role, content, citations, steps, created_at, metadata)
-       SELECT $1, t.id, $4, $5, '[]'::jsonb, NULL, $6, '{}'::jsonb
+       SELECT $1, t.id, $4, $5, '[]'::jsonb, NULL, $6, $7::jsonb
        FROM threads t
        WHERE t.id = $2
          AND t.user_id = $3
          AND t.scope = 'client'
          AND t.case_id IS NULL
        RETURNING *`,
-      [id, threadId, clientUserId, role, content, createdAt]
+      [id, threadId, clientUserId, role, content, createdAt, JSON.stringify(metadata)]
     );
     if (!rows[0]) throw new Error("Client conversation not found");
     return {
       ...rows[0],
       citations: [],
       steps: null,
-      metadata: {},
+      metadata,
     };
   }
 

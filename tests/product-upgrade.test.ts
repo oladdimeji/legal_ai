@@ -115,14 +115,15 @@ test("migration 007 stores one simple Matter Intelligence version and Source sna
   assert.match(migrations, /version INTEGER NOT NULL DEFAULT 1/);
 });
 
-test("Phase 8 collaboration invite stores only a token hash and supports revocation", async () => {
+test("Phase 8 collaboration token stores only a token hash and supports revocation", async () => {
   const [server, database] = await Promise.all([
     readFile("server.ts", "utf8"),
     readFile("server/db.ts", "utf8"),
   ]);
-  assert.match(server, /const \{ token, tokenHash \} = createSessionToken\(\)/);
+  assert.match(server, /const \{ token, tokenHash \} = createCollaborationToken\(\)/);
   assert.match(server, /activateClientInvite\(req\.params\.caseId, tokenHash/);
-  assert.match(server, /invitePath: `\/client\/\$\{encodeURIComponent\(token\)\}`/);
+  assert.match(server, /return res\.json\(\{ access, token \}\)/);
+  assert.doesNotMatch(server, /invitePath: `\/client\//);
   assert.match(database, /SET token_hash = NULL, invitation_status = 'Revoked'/);
   assert.doesNotMatch(database, /INSERT INTO matter_client_access[\s\S]{0,200}\btoken\b(?!_hash)/);
 });
@@ -143,15 +144,15 @@ test("migration 008 adds one-client collaboration records without an external ac
   assert.match(migrations, /client_responses/);
 });
 
-test("Phase 9 portal token routes precede and remain separate from lawyer sessions", async () => {
+test("legacy portal APIs remain guarded while token deep-link rendering is disabled", async () => {
   const [server, app] = await Promise.all([
     readFile("server.ts", "utf8"),
     readFile("src/App.tsx", "utf8"),
   ]);
   assert.ok(server.indexOf('app.get("/api/portal/:token"') < server.indexOf('app.use("/api", requireAuth, requireCompletedOnboarding)'));
   assert.match(server, /portalTokenHash = \(token: string\) => hashSessionToken/);
-  assert.match(app, /route\.kind === "client"/);
-  assert.match(app, /<ClientPortalView token=\{route\.token\}/);
+  assert.doesNotMatch(app, /route\.kind === "client"/);
+  assert.doesNotMatch(app, /<ClientPortalView token=\{route\.token\}/);
 });
 
 test("Phase 9 portal SQL allow-lists shared, requested, revision, and client-submission content", async () => {
@@ -447,24 +448,25 @@ test("Phase 12 generated draft prompt uses actual Matter account and date metada
 
 test("Phase 13 Collaboration empty state hides normal sections until collaborator exists", async () => {
   const view = await readFile("src/components/MatterCollaboration.tsx", "utf8");
-  assert.match(view, /Create Collaborator & Invite/);
+  assert.match(view, /Create Collaborator & Generate Token/);
   assert.match(view, /if \(!data\.access\)/);
   const emptyBlock = view.slice(view.indexOf("if (!data.access)"), view.indexOf("return (", view.indexOf("return (") + 1));
   assert.doesNotMatch(emptyBlock, /Shared Documents|Requests and Responses|Send Request/);
 });
 
-test("Phase 13 invite copy rotates token and remains hash-only", async () => {
+test("Phase 13 token generation rotates the hash and copies only plaintext token", async () => {
   const [server, database, view] = await Promise.all([
     readFile("server.ts", "utf8"),
     readFile("server/db.ts", "utf8"),
     readFile("src/components/MatterCollaboration.tsx", "utf8"),
   ]);
-  assert.match(server, /const \{ token, tokenHash \} = createSessionToken\(\)/);
+  assert.match(server, /const \{ token, tokenHash \} = createCollaborationToken\(\)/);
   assert.match(server, /activateClientInvite\(req\.params\.caseId, tokenHash/);
   assert.match(database, /SET token_hash = \$1, invitation_status = 'Active'/);
   assert.doesNotMatch(database, /RETURNING[\s\S]{0,100}\btoken\b(?!_hash)/);
-  assert.match(view, /Fresh invite link copied\. Older links are now invalid\./);
-  assert.match(view, /rotateAndCopyInvite/);
+  assert.match(view, /Older tokens are now invalid/);
+  assert.match(view, /navigator\.clipboard\.writeText\(collaborationToken\)/);
+  assert.doesNotMatch(view, /location\.origin|invitePath/);
 });
 
 test("Phase 13 lawyer request instruction is optional and document selection remains required", async () => {

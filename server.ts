@@ -23,6 +23,10 @@ import { markdownToDocxDocument } from "./server/docxMarkdown.js";
 import { cleanMatterIntelligenceContent } from "./server/matterIntelligenceContent.js";
 import { cleanClientAssistantContent, cleanGeneratedBoilerplate } from "./server/generatedContentCleanup.js";
 import { tryGenerateConversationTitle } from "./server/conversationTitle.js";
+import {
+  formatClientDocumentEvidence,
+  retrieveClientDocumentPassages,
+} from "./server/clientDocumentRetrieval.js";
 import { extractGeneratedSubject, extractSummaryHeading } from "./server/extractGeneratedSubject.js";
 import { getWorkProductFormatInstructions, isWorkProductFormat } from "./server/workProductFormat.js";
 import { canonicalizeAssistantCitations, rewriteGoogleGroundingCitations, stripInternalCitationsForWorkProduct } from "./src/lib/assistantCitations.js";
@@ -33,10 +37,10 @@ import {
   OTP_TTL_MS,
   clearSessionCookie,
   clearOAuthStateCookie,
+  createCollaborationToken,
   createOAuthState,
   createOtpHash,
   createSessionToken,
-  extractCollaborationToken,
   generateOtp,
   hashSessionToken,
   isValidEmail,
@@ -44,6 +48,7 @@ import {
   normalizeEmail,
   oauthAccountTypeFromCookie,
   oauthStateCookie,
+  parseCollaborationToken,
   parseCookie,
   safeInternalPath,
   sessionCookie,
@@ -193,6 +198,24 @@ function parsePortalDraftIds(value: unknown): string[] {
   }).filter(Boolean);
   if (new Set(ids).size !== ids.length) throw new Error("Select each Work Product only once");
   return ids;
+}
+
+function parseClientAssistantDocumentIds(value: unknown): string[] | null {
+  if (value == null) return [];
+  if (!Array.isArray(value) || value.length > 8) return null;
+  const ids: string[] = [];
+  for (const valueId of value) {
+    if (
+      typeof valueId !== "string" ||
+      !valueId ||
+      valueId.length > 200 ||
+      valueId.trim() !== valueId
+    ) {
+      return null;
+    }
+    ids.push(valueId);
+  }
+  return new Set(ids).size === ids.length ? ids : null;
 }
 
 function portalResponseErrorStatus(error: unknown) {
@@ -642,15 +665,14 @@ async function startServer() {
   const portalTokenHash = (token: string) => hashSessionToken(decodeURIComponent(token));
 
   const clientCollaborationError =
-    "This collaboration link is invalid, unavailable, or already connected to another account.";
+    "This collaboration token is invalid, unavailable, or already connected to another account.";
 
   app.post(
-    "/api/client/collaborations/claim",
+    "/api/client/shared-matters/redeem",
     requireAuth,
     requireClientAccount,
     async (req: AuthenticatedRequest, res) => {
-      const supplied = req.body?.link ?? req.body?.token;
-      const token = extractCollaborationToken(supplied);
+      const token = parseCollaborationToken(req.body?.token);
       if (!token) return res.status(400).json({ error: clientCollaborationError });
       try {
         const claimed = await db.claimClientCollaboration(
@@ -659,9 +681,18 @@ async function startServer() {
           req.auth!.user.email
         );
         res.setHeader("Cache-Control", "no-store");
-        return res.status(201).json(claimed);
-      } catch {
-        return res.status(404).json({ error: clientCollaborationError });
+        return res.status(200).json(claimed);
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message === "CLIENT_COLLABORATION_UNAVAILABLE"
+        ) {
+          return res.status(404).json({ error: clientCollaborationError });
+        }
+        console.error("Collaboration token redemption failed.");
+        return res.status(500).json({
+          error: "The Shared Matter could not be added right now.",
+        });
       }
     }
   );
@@ -938,6 +969,23 @@ async function startServer() {
     }
   );
 
+  app.get(
+    "/api/client/assistant/documents",
+    requireAuth,
+    requireClientAccount,
+    async (req: AuthenticatedRequest, res) => {
+      try {
+        res.setHeader("Cache-Control", "no-store");
+        return res.json(await db.getClientAssistantDocuments(req.auth!.user.id));
+      } catch {
+        console.error("Client Assistant document list failed.");
+        return res.status(500).json({
+          error: "Shared documents could not be loaded right now.",
+        });
+      }
+    }
+  );
+
   app.post(
     "/api/client/assistant/conversations",
     requireAuth,
@@ -989,6 +1037,7 @@ async function startServer() {
       const threadId =
         typeof req.body.conversationId === "string" ? req.body.conversationId : "";
       const content = typeof req.body.content === "string" ? req.body.content.trim() : "";
+      const documentIds = parseClientAssistantDocumentIds(req.body.documentIds);
       if (!threadId || !content) {
         return res.status(400).json({
           error: "Conversation and message content are required.",
@@ -997,9 +1046,23 @@ async function startServer() {
       if (content.length > 12000) {
         return res.status(400).json({ error: "Message is too long." });
       }
+      if (!documentIds) {
+        return res.status(400).json({ error: "Selected documents are invalid." });
+      }
       const thread = await db.getClientConversation(threadId, req.auth!.user.id);
       if (!thread) return res.status(404).json({ error: "Conversation not found." });
       try {
+        const selectedDocuments = await db.getAuthorizedClientAssistantDocuments(
+          req.auth!.user.id,
+          documentIds
+        );
+        const passages = retrieveClientDocumentPassages(
+          content,
+          selectedDocuments.map((document) => ({
+            ...document,
+            content: cleanWorkProductContent(document.content),
+          }))
+        );
         const priorMessages = await db.getClientMessages(
           threadId,
           req.auth!.user.id,
@@ -1009,7 +1072,16 @@ async function startServer() {
           threadId,
           req.auth!.user.id,
           "user",
-          content
+          content,
+          selectedDocuments.length
+            ? {
+                selectedDocuments: selectedDocuments.map((document) => ({
+                  id: document.id,
+                  title: document.title,
+                  matterName: document.matter_name,
+                })),
+              }
+            : {}
         );
         if (!priorMessages.some((message) => message.role === "user")) {
           void tryGenerateConversationTitle(content, (generatedTitle) =>
@@ -1025,26 +1097,50 @@ async function startServer() {
         const history = boundedConversation([...priorMessages, userMessage], 12000)
           .map((message) => `${message.role.toUpperCase()}: ${message.content}`)
           .join("\n\n");
-        const clientSystemInstruction =
-          "You are the client-facing assistant for Exepts. Provide clear, practical, general information. Do not claim access to a lawyer's private Matter files or internal legal work. Do not present yourself as the client's lawyer. Encourage the client to consult their lawyer for case-specific legal advice.";
-        const prompt = `Use only this client's conversation below. You do not have access to Shared Matters, collaboration documents, lawyer requests, Work Products, Matter Sources, Firm Library content, lawyer conversations, or private Matter information.
+        const clientSystemInstruction = selectedDocuments.length
+          ? "You are the client-facing assistant for Exepts. Provide clear, practical information grounded only in the supplied authorized document evidence. Cite supporting documents by their supplied title. If the evidence is insufficient, say so clearly. Do not invent document content, page numbers, clauses, or sections. Do not claim access to any other Matter files or internal legal work. Do not present yourself as the client's lawyer. Encourage the client to consult their lawyer for case-specific legal advice."
+          : "You are the client-facing assistant for Exepts. Provide clear, practical, general information. Do not claim access to a lawyer's private Matter files or internal legal work. Do not present yourself as the client's lawyer. Encourage the client to consult their lawyer for case-specific legal advice.";
+        const prompt = selectedDocuments.length
+          ? `Answer the latest client message using only the authorized evidence below and the conversation for conversational continuity. References must use document titles only; page or section metadata is not available.
+
+CLIENT CONVERSATION:
+${history}
+
+AUTHORIZED DOCUMENT EVIDENCE:
+${formatClientDocumentEvidence(passages)}`
+          : `Use only this client's conversation below. You do not have access to Shared Matters, collaboration documents, lawyer requests, Work Products, Matter Sources, Firm Library content, lawyer conversations, or private Matter information.
 
 CLIENT CONVERSATION:
 ${history}`;
-        const result = await callModel(
-          "client-assistant",
-          [{ role: "user", content: prompt }],
-          { temperature: 0.2, systemInstruction: clientSystemInstruction }
-        );
+        const assistantContent =
+          selectedDocuments.length && passages.length === 0
+            ? "The selected documents do not contain enough information to answer that question. Please ask your lawyer for case-specific guidance."
+            : cleanClientAssistantContent(
+                (
+                  await callModel(
+                    "client-assistant",
+                    [{ role: "user", content: prompt }],
+                    { temperature: 0.2, systemInstruction: clientSystemInstruction }
+                  )
+                ).text
+              );
         const assistantMessage = await db.addClientMessage(
           threadId,
           req.auth!.user.id,
           "assistant",
-          cleanClientAssistantContent(result.text)
+          assistantContent
         );
         res.setHeader("Cache-Control", "no-store");
         return res.json({ userMessage, assistantMessage });
-      } catch {
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message === "CLIENT_ASSISTANT_DOCUMENT_UNAVAILABLE"
+        ) {
+          return res.status(404).json({
+            error: "One or more selected documents are no longer available.",
+          });
+        }
         console.error("Client Assistant response failed.");
         return res.status(500).json({ error: "The Assistant could not respond right now." });
       }
@@ -1604,12 +1700,12 @@ ${sourceText}`;
     }
   });
 
-  app.post("/api/cases/:caseId/collaboration/invite", async (req, res) => {
+  app.post("/api/cases/:caseId/collaboration/token", async (req, res) => {
     try {
-      const { token, tokenHash } = createSessionToken();
+      const { token, tokenHash } = createCollaborationToken();
       const access = await db.activateClientInvite(req.params.caseId, tokenHash, ownership(req));
       res.setHeader("Cache-Control", "no-store");
-      return res.json({ access, invitePath: `/client/${encodeURIComponent(token)}` });
+      return res.json({ access, token });
     } catch (err: any) {
       return res.status(ownedErrorStatus(err)).json({ error: err.message });
     }

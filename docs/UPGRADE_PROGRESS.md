@@ -865,3 +865,34 @@ Verification:
 Known limitations:
 
 - Client profile editing, notifications, billing, account deletion, and email invitation delivery remain intentionally outside this phase.
+
+## Client Collaboration Tokens and Assistant Documents
+
+Status: Complete.
+
+Implemented:
+
+- Replaced active collaboration-link generation and deep-link claiming with 128-bit opaque `MAT-…` collaboration tokens. Lawyers see the plaintext only when it is generated, copy only that token, and continue to store only its SHA-256 hash on the existing collaboration record.
+- Added token-only redemption inside Add Shared Matter. Redemption trims outer whitespace, rejects URLs, locks and validates the existing collaboration transactionally, remains idempotent for its claimed client, and updates the Shared Matters list without a page reload.
+- Preserved active pre-feature invitation records: their existing raw token remains hash-compatible for redemption, while complete URLs and browser deep-link claiming are no longer accepted by the active Client Workspace.
+- Added a client Assistant document picker grouped by Shared Matter, with removable per-message selections and stored selection metadata.
+- Added session-derived document allow-listing and per-message reauthorization. Only Work Products explicitly shared with the client or attached to a lawyer request in an active claimed collaboration can supply content.
+- Added bounded relevant-passage selection and grounded Gemini prompting through the existing client Assistant model path, document-title references where supported, and an explicit insufficient-evidence response.
+- Preserved the existing authenticated Client Workspace, shared-document previews/downloads, requests/responses/uploads, lawyer collaboration management, token rotation, and immediate stop-sharing revocation.
+
+Schema changes:
+
+- None. Migration 022, `authenticated_client_workspace`, already provides the nullable claimed client, unique collaboration token hash, active/revoked state, and one-collaboration-per-Matter relationship required by both features.
+
+Dependencies added or changed:
+
+- None.
+
+Verification:
+
+- Focused collaboration-token and client-document tests: passed, 22/22.
+- Full lint, test, and production build results are recorded in the completing commit report.
+
+Known limitations:
+
+- Collaboration-token expiration is not part of the existing product schema, so tokens remain valid until rotation, revocation, or claim by the intended client.

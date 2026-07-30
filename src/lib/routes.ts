@@ -8,7 +8,6 @@ export type AppRoute =
   | { kind: "library" }
   | { kind: "history" }
   | { kind: "settings" }
-  | { kind: "client"; token: string }
   | { kind: "clientAssistant" }
   | { kind: "clientSharedMatters" }
   | { kind: "clientSharedMatter"; accessId: string }
@@ -53,11 +52,6 @@ export function parseRoute(pathname: string): AppRoute {
     const matterId = decodeSegment(matterMatch[1]);
     return matterId ? { kind: "matter", matterId } : { kind: "unknown" };
   }
-  const clientMatch = path.match(/^\/client\/([^/]+)$/);
-  if (clientMatch) {
-    const token = decodeSegment(clientMatch[1]);
-    return token ? { kind: "client", token } : { kind: "unknown" };
-  }
   return { kind: "unknown" };
 }
 
@@ -76,7 +70,6 @@ export function safeReturnTo(value: string | null, fallback = "/assistant"): str
       "library",
       "history",
       "settings",
-      "client",
       "clientAssistant",
       "clientSharedMatters",
       "clientSharedMatter",
@@ -92,7 +85,6 @@ export function safeReturnTo(value: string | null, fallback = "/assistant"): str
 
 export function routePath(route: AppRoute): string {
   if (route.kind === "matter") return `/matters/${encodeURIComponent(route.matterId)}`;
-  if (route.kind === "client") return `/client/${encodeURIComponent(route.token)}`;
   if (route.kind === "clientAssistant") return "/client/assistant";
   if (route.kind === "clientSharedMatters") return "/client/shared-matters";
   if (route.kind === "clientSharedMatter") {

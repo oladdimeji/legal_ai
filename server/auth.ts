@@ -85,6 +85,12 @@ export function createSessionToken(): { token: string; tokenHash: string } {
   return { token, tokenHash: hashSessionToken(token) };
 }
 
+export function createCollaborationToken(): { token: string; tokenHash: string } {
+  const random = randomBytes(16).toString("hex").toUpperCase();
+  const token = `MAT-${random.match(/.{1,4}/g)!.join("-")}`;
+  return { token, tokenHash: hashSessionToken(token) };
+}
+
 export function hashSessionToken(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex");
 }
@@ -150,8 +156,7 @@ export function safeInternalPath(value: unknown, fallback = "/assistant"): strin
       /^\/(?:assistant|matters|library|history|settings)\/?(?:[?#].*)?$/.test(path) ||
       /^\/matters\/[^/?#]+(?:[?#].*)?$/.test(path) ||
       /^\/client\/(?:assistant|shared-matters|history|settings)\/?(?:[?#].*)?$/.test(path) ||
-      /^\/client\/shared-matters\/[^/?#]+(?:[?#].*)?$/.test(path) ||
-      /^\/client\/[A-Za-z0-9_-]{32,256}(?:[?#].*)?$/.test(path);
+      /^\/client\/shared-matters\/[^/?#]+(?:[?#].*)?$/.test(path);
     return isProtectedPath ? path : fallback;
   } catch {
     return fallback;
@@ -208,34 +213,17 @@ export function oauthAccountTypeFromCookie(
   }
 }
 
-export function extractCollaborationToken(value: unknown): string | null {
+export function parseCollaborationToken(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const candidate = value.trim();
-  if (!candidate || candidate.length > 2048 || /[\u0000-\u001f]/.test(candidate)) return null;
-
-  const validateToken = (token: string): string | null => {
-    try {
-      const decoded = decodeURIComponent(token).trim();
-      return /^[A-Za-z0-9_-]{32,256}$/.test(decoded) ? decoded : null;
-    } catch {
-      return null;
-    }
-  };
-
-  if (!candidate.includes("/") && !candidate.includes(":")) {
-    return validateToken(candidate);
-  }
-
-  try {
-    const parsed = new URL(candidate);
-    if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) {
-      return null;
-    }
-    const match = parsed.pathname.replace(/\/+$/, "").match(/^\/client\/([^/]+)$/);
-    return match ? validateToken(match[1]) : null;
-  } catch {
+  if (!candidate || candidate.length > 256 || /[\u0000-\u001f/:\\]/.test(candidate)) {
     return null;
   }
+  return /^(?:MAT-(?:[A-F0-9]{4}-){7}[A-F0-9]{4}|[A-Za-z0-9_-]{32,256})$/.test(
+    candidate
+  )
+    ? candidate
+    : null;
 }
 
 export function validateOAuthState(

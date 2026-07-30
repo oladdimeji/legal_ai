@@ -1,11 +1,19 @@
-import React, { useEffect, useRef, useState } from "react";
-import { ArrowUp, MessageSquarePlus } from "lucide-react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowUp, ChevronDown, FileText, MessageSquarePlus, Paperclip, X } from "lucide-react";
 import { Message } from "../types";
 import FormattedMarkdown from "./FormattedMarkdown";
 
 interface ClientAssistantViewProps {
   activeConversationId: string | null;
   onConversationChange: (id: string | null) => void;
+}
+
+interface ClientAssistantDocument {
+  id: string;
+  title: string;
+  matter_name: string;
+  processing_state: "Ready";
+  file_type: "Work Product";
 }
 
 const workingStages = [
@@ -24,6 +32,11 @@ export default function ClientAssistantView({
   const [sending, setSending] = useState(false);
   const [workingStage, setWorkingStage] = useState(0);
   const [error, setError] = useState("");
+  const [documents, setDocuments] = useState<ClientAssistantDocument[]>([]);
+  const [selectedDocumentIds, setSelectedDocumentIds] = useState<string[]>([]);
+  const [documentPickerOpen, setDocumentPickerOpen] = useState(false);
+  const [documentsLoading, setDocumentsLoading] = useState(false);
+  const [documentsError, setDocumentsError] = useState("");
   const endRef = useRef<HTMLDivElement>(null);
   const revealTimerRef = useRef<number | null>(null);
 
@@ -99,6 +112,40 @@ export default function ClientAssistantView({
     }, 18);
   };
 
+  const loadDocuments = async () => {
+    setDocumentsLoading(true);
+    setDocumentsError("");
+    try {
+      const response = await fetch("/api/client/assistant/documents");
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Shared documents could not be loaded.");
+      const available = data as ClientAssistantDocument[];
+      setDocuments(available);
+      const availableIds = new Set(available.map((document) => document.id));
+      setSelectedDocumentIds((current) => current.filter((id) => availableIds.has(id)));
+    } catch (caught) {
+      setDocumentsError(
+        caught instanceof Error ? caught.message : "Shared documents could not be loaded."
+      );
+    } finally {
+      setDocumentsLoading(false);
+    }
+  };
+
+  const groupedDocuments = useMemo(() => {
+    const groups = new Map<string, ClientAssistantDocument[]>();
+    for (const document of documents) {
+      const group = groups.get(document.matter_name) || [];
+      group.push(document);
+      groups.set(document.matter_name, group);
+    }
+    return Array.from(groups.entries());
+  }, [documents]);
+
+  const selectedDocuments = selectedDocumentIds
+    .map((id) => documents.find((document) => document.id === id))
+    .filter((document): document is ClientAssistantDocument => Boolean(document));
+
   const createConversation = async () => {
     const response = await fetch("/api/client/assistant/conversations", { method: "POST" });
     const data = await response.json();
@@ -110,10 +157,13 @@ export default function ClientAssistantView({
   const send = async () => {
     const content = draft.trim();
     if (!content || sending) return;
+    const documentIdsForMessage = [...selectedDocumentIds];
+    const documentsForMessage = [...selectedDocuments];
     setDraft("");
     setError("");
     setSending(true);
     setWorkingStage(0);
+    setDocumentPickerOpen(false);
     const optimistic: Message = {
       id: `pending_${Date.now()}`,
       thread_id: activeConversationId || "",
@@ -122,6 +172,15 @@ export default function ClientAssistantView({
       citations: [],
       steps: null,
       created_at: new Date().toISOString(),
+      metadata: documentsForMessage.length
+        ? {
+            selectedDocuments: documentsForMessage.map((document) => ({
+              id: document.id,
+              title: document.title,
+              matterName: document.matter_name,
+            })),
+          }
+        : {},
     };
     setMessages((current) => [...current, optimistic]);
     try {
@@ -129,7 +188,11 @@ export default function ClientAssistantView({
       const response = await fetch("/api/client/assistant/messages", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversationId, content }),
+        body: JSON.stringify({
+          conversationId,
+          content,
+          documentIds: documentIdsForMessage,
+        }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "The Assistant could not respond.");
@@ -139,6 +202,7 @@ export default function ClientAssistantView({
           .concat(data.userMessage as Message)
       );
       revealAssistantMessage(data.assistantMessage as Message);
+      setSelectedDocumentIds([]);
     } catch (caught) {
       setMessages((current) => current.filter((message) => message.id !== optimistic.id));
       setDraft(content);
@@ -154,11 +218,35 @@ export default function ClientAssistantView({
     setMessages([]);
     setDraft("");
     setError("");
+    setSelectedDocumentIds([]);
+    setDocumentPickerOpen(false);
     onConversationChange(null);
   };
 
   const composer = (
-    <div className="rounded-xl border border-zinc-300 bg-white p-3 shadow-sm">
+    <div className="relative rounded-xl border border-zinc-300 bg-white p-3 shadow-sm">
+      {selectedDocuments.length > 0 && (
+        <div className="mb-2 flex flex-wrap gap-1.5 px-1">
+          {selectedDocuments.map((document) => (
+            <span key={document.id} className="flex max-w-full items-center gap-1.5 rounded-full bg-zinc-100 px-2.5 py-1 text-[10px]">
+              <FileText className="h-3 w-3 shrink-0" />
+              <span className="max-w-48 truncate">{document.title}</span>
+              <button
+                type="button"
+                onClick={() =>
+                  setSelectedDocumentIds((current) =>
+                    current.filter((id) => id !== document.id)
+                  )
+                }
+                aria-label={`Remove ${document.title}`}
+                className="rounded-full p-0.5 hover:bg-zinc-200"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
       <textarea
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
@@ -174,6 +262,84 @@ export default function ClientAssistantView({
         className="w-full resize-none bg-transparent px-2 py-1 text-sm outline-none placeholder:text-zinc-400"
       />
       <div className="mt-2 flex items-center justify-between gap-3 border-t border-zinc-100 pt-2">
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => {
+              const opening = !documentPickerOpen;
+              setDocumentPickerOpen(opening);
+              if (opening) void loadDocuments();
+            }}
+            aria-expanded={documentPickerOpen}
+            disabled={sending}
+            className="flex items-center gap-1.5 rounded px-2 py-1.5 text-[10px] font-mono font-semibold uppercase text-zinc-600 hover:bg-zinc-100"
+          >
+            <Paperclip className="h-3.5 w-3.5" />
+            Attach documents
+            <ChevronDown className={`h-3 w-3 transition-transform ${documentPickerOpen ? "rotate-180" : ""}`} />
+          </button>
+          {documentPickerOpen && (
+            <div className="absolute bottom-full left-0 z-30 mb-2 max-h-72 w-[min(22rem,calc(100vw-5rem))] overflow-y-auto rounded border border-zinc-200 bg-white p-3 shadow-xl">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-[10px] font-mono font-semibold uppercase text-zinc-500">
+                  Shared documents
+                </p>
+                <button type="button" onClick={() => setDocumentPickerOpen(false)} aria-label="Close document picker" className="rounded p-1 hover:bg-zinc-100">
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              {documentsLoading ? (
+                <p className="py-8 text-center text-xs text-zinc-400">Loading documents…</p>
+              ) : documentsError ? (
+                <div role="alert" className="py-5 text-xs text-red-700">
+                  <p>{documentsError}</p>
+                  <button type="button" onClick={() => void loadDocuments()} className="mt-2 underline">
+                    Try again
+                  </button>
+                </div>
+              ) : groupedDocuments.length === 0 ? (
+                <p className="py-8 text-center text-xs text-zinc-500">
+                  No shared documents are available.
+                </p>
+              ) : (
+                <div className="mt-3 space-y-4">
+                  {groupedDocuments.map(([matterName, matterDocuments]) => (
+                    <fieldset key={matterName}>
+                      <legend className="mb-1.5 text-[9px] font-mono font-semibold uppercase text-zinc-400">
+                        {matterName}
+                      </legend>
+                      <div className="space-y-1">
+                        {matterDocuments.map((document) => (
+                          <label key={document.id} className="flex cursor-pointer items-start gap-2 rounded px-2 py-2 text-xs hover:bg-zinc-50">
+                            <input
+                              type="checkbox"
+                              disabled={sending}
+                              checked={selectedDocumentIds.includes(document.id)}
+                              onChange={(event) =>
+                                setSelectedDocumentIds((current) =>
+                                  event.target.checked
+                                    ? [...current, document.id]
+                                    : current.filter((id) => id !== document.id)
+                                )
+                              }
+                              className="mt-0.5"
+                            />
+                            <span className="min-w-0">
+                              <span className="block truncate font-medium">{document.title}</span>
+                              <span className="mt-0.5 block text-[9px] font-mono uppercase text-zinc-400">
+                                {document.file_type} · {document.processing_state}
+                              </span>
+                            </span>
+                          </label>
+                        ))}
+                      </div>
+                    </fieldset>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
         <p className="text-[10px] leading-4 text-zinc-400">
           For Matter-specific advice, contact your lawyer.
         </p>
@@ -219,8 +385,8 @@ export default function ClientAssistantView({
                 How can I help?
               </h2>
               <p className="mx-auto mt-3 max-w-lg text-sm leading-6 text-zinc-500">
-                Ask for clear, practical, general information. Your Shared Matters are not
-                used in this chat.
+                Ask for clear, practical information. Shared documents are used only when
+                you attach them to a message.
               </p>
             </div>
             {composer}
@@ -248,7 +414,18 @@ export default function ClientAssistantView({
                     {message.role === "assistant" ? (
                       <FormattedMarkdown content={message.content} />
                     ) : (
-                      message.content
+                      <div>
+                        <p>{message.content}</p>
+                        {Array.isArray(message.metadata?.selectedDocuments) && (
+                          <div className="mt-2 flex flex-wrap gap-1">
+                            {(message.metadata.selectedDocuments as Array<{ id: string; title: string }>).map((document) => (
+                              <span key={document.id} className="rounded-full border border-zinc-200 bg-white px-2 py-0.5 text-[9px] text-zinc-500">
+                                {document.title}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                     )}
                   </div>
                 ))

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { ChevronDown, Clipboard, FileText, Link, Send, UserPlus, XCircle } from "lucide-react";
+import { ChevronDown, Clipboard, FileText, KeyRound, Send, UserPlus, XCircle } from "lucide-react";
 import { Case, ClientAccess, CollaborationRequest, Draft } from "../types";
 
 interface SharedDraft extends Draft { client_comments?: Array<{ id: string; content: string; created_at: string }>; }
@@ -23,6 +23,7 @@ export default function MatterCollaboration({
   const [draftIds, setDraftIds] = useState<string[]>([]);
   const [busy, setBusy] = useState<"creating" | "invite" | "revoke" | "send" | null>(null);
   const [notice, setNotice] = useState("");
+  const [collaborationToken, setCollaborationToken] = useState("");
   const [sharedOpen, setSharedOpen] = useState(false);
 
   const load = async () => {
@@ -48,7 +49,7 @@ export default function MatterCollaboration({
       const next = await response.json();
       if (!response.ok) throw new Error(next.error || "Client could not be saved");
       setBusy("invite");
-      await rotateAndCopyInvite();
+      await generateToken();
       await load();
     } catch (error) {
       alert(error instanceof Error ? error.message : "Client could not be saved");
@@ -57,24 +58,34 @@ export default function MatterCollaboration({
     }
   };
 
-  const rotateAndCopyInvite = async () => {
-    const response = await fetch(`/api/cases/${matter.id}/collaboration/invite`, { method: "POST" });
+  const generateToken = async () => {
+    const response = await fetch(`/api/cases/${matter.id}/collaboration/token`, { method: "POST" });
     const next = await response.json();
-    if (!response.ok) throw new Error(next.error || "Invite link could not be generated");
-    await navigator.clipboard.writeText(`${location.origin}${next.invitePath}`);
-    setNotice("Fresh invite link copied. Older links are now invalid.");
+    if (!response.ok) throw new Error(next.error || "Collaboration token could not be generated");
+    setCollaborationToken(String(next.token));
+    setNotice("A fresh collaboration token was generated. Older tokens are now invalid.");
   };
 
-  const copyInvite = async () => {
+  const generateTokenClick = async () => {
     if (busy) return;
     setBusy("invite");
     try {
-      await rotateAndCopyInvite();
+      await generateToken();
       await load();
     } catch (error) {
-      alert(error instanceof Error ? error.message : "Invite link could not be copied");
+      alert(error instanceof Error ? error.message : "Collaboration token could not be generated");
     } finally {
       setBusy(null);
+    }
+  };
+
+  const copyToken = async () => {
+    if (!collaborationToken) return;
+    try {
+      await navigator.clipboard.writeText(collaborationToken);
+      setNotice("Collaboration token copied.");
+    } catch {
+      alert("Collaboration token could not be copied.");
     }
   };
 
@@ -85,6 +96,7 @@ export default function MatterCollaboration({
       const response = await fetch(`/api/cases/${matter.id}/collaboration/revoke`, { method: "POST" });
       const next = response.ok ? null : await response.json();
       if (!response.ok) throw new Error(next?.error || "Access could not be revoked");
+      setCollaborationToken("");
       setNotice("Client access revoked.");
       await load();
     } catch (error) {
@@ -147,7 +159,7 @@ export default function MatterCollaboration({
           <input value={name} onChange={(e) => setName(e.target.value)} className="w-full rounded border px-3 py-2 text-sm" placeholder="Client name" />
           <input value={email} onChange={(e) => setEmail(e.target.value)} className="w-full rounded border px-3 py-2 text-sm" placeholder="Client email" />
           <button disabled={busy !== null || !name.trim() || !email.trim()} className="w-full rounded bg-zinc-950 px-4 py-2 text-[10px] font-mono font-bold uppercase text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50">
-            {busy === "creating" ? "Creating..." : busy === "invite" ? "Generating invite..." : "Create Collaborator & Invite"}
+            {busy === "creating" ? "Creating..." : busy === "invite" ? "Generating token..." : "Create Collaborator & Generate Token"}
           </button>
         </form>
       </div>
@@ -163,10 +175,29 @@ export default function MatterCollaboration({
           {notice && <p className="mt-1 text-xs text-zinc-500">{notice}</p>}
         </div>
         <div className="flex gap-2">
-          <button onClick={() => void copyInvite()} disabled={busy !== null} className="flex items-center gap-1 rounded border px-3 py-2 text-[10px] font-mono font-bold uppercase hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"><Clipboard className="h-3.5 w-3.5" />{busy === "invite" ? "Copying..." : "Copy Invite Link"}</button>
+          <button onClick={() => void generateTokenClick()} disabled={busy !== null} className="flex items-center gap-1 rounded border px-3 py-2 text-[10px] font-mono font-bold uppercase hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"><KeyRound className="h-3.5 w-3.5" />{busy === "invite" ? "Generating..." : data.access.invitation_status === "Active" ? "Regenerate Token" : "Generate Token"}</button>
           <button onClick={() => void revoke()} disabled={busy !== null} className="flex items-center gap-1 rounded border px-3 py-2 text-[10px] font-mono font-bold uppercase text-red-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"><XCircle className="h-3.5 w-3.5" />{busy === "revoke" ? "Revoking..." : "Revoke Access"}</button>
         </div>
       </header>
+
+      {collaborationToken && (
+        <section className="rounded border border-zinc-300 bg-zinc-50 p-4">
+          <p className="text-[9px] font-mono font-bold uppercase tracking-[0.12em] text-zinc-500">
+            Collaboration token
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-3">
+            <code className="min-w-0 flex-1 break-all rounded bg-white px-3 py-2 text-sm font-semibold tracking-wide">
+              {collaborationToken}
+            </code>
+            <button type="button" onClick={() => void copyToken()} className="flex items-center gap-1 rounded border border-zinc-300 bg-white px-3 py-2 text-[10px] font-mono font-bold uppercase hover:border-zinc-950">
+              <Clipboard className="h-3.5 w-3.5" /> Copy token
+            </button>
+          </div>
+          <p className="mt-2 text-xs text-zinc-500">
+            Share this token with the client. For security, it is shown only until you leave this page.
+          </p>
+        </section>
+      )}
 
       <section className="space-y-3">
         <h3 className="text-sm font-semibold uppercase">Send Request</h3>
