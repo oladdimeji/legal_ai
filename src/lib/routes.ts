@@ -9,6 +9,11 @@ export type AppRoute =
   | { kind: "history" }
   | { kind: "settings" }
   | { kind: "client"; token: string }
+  | { kind: "clientAssistant" }
+  | { kind: "clientSharedMatters" }
+  | { kind: "clientSharedMatter"; accessId: string }
+  | { kind: "clientHistory" }
+  | { kind: "clientSettings" }
   | { kind: "unknown" };
 
 function decodeSegment(value: string): string | null {
@@ -30,6 +35,18 @@ export function parseRoute(pathname: string): AppRoute {
   if (path === "/library") return { kind: "library" };
   if (path === "/history") return { kind: "history" };
   if (path === "/settings") return { kind: "settings" };
+  if (path === "/client" || path === "/client/assistant") {
+    return { kind: "clientAssistant" };
+  }
+  if (path === "/client/shared-matters") return { kind: "clientSharedMatters" };
+  if (path === "/client/history") return { kind: "clientHistory" };
+  if (path === "/client/settings") return { kind: "clientSettings" };
+
+  const sharedMatterMatch = path.match(/^\/client\/shared-matters\/([^/]+)$/);
+  if (sharedMatterMatch) {
+    const accessId = decodeSegment(sharedMatterMatch[1]);
+    return accessId ? { kind: "clientSharedMatter", accessId } : { kind: "unknown" };
+  }
 
   const matterMatch = path.match(/^\/matters\/([^/]+)$/);
   if (matterMatch) {
@@ -52,7 +69,20 @@ export function safeReturnTo(value: string | null, fallback = "/assistant"): str
     const url = new URL(value, window.location.origin);
     if (url.origin !== window.location.origin) return fallback;
     const route = parseRoute(url.pathname);
-    return ["assistant", "matters", "matter", "library", "history", "settings"].includes(route.kind)
+    return [
+      "assistant",
+      "matters",
+      "matter",
+      "library",
+      "history",
+      "settings",
+      "client",
+      "clientAssistant",
+      "clientSharedMatters",
+      "clientSharedMatter",
+      "clientHistory",
+      "clientSettings",
+    ].includes(route.kind)
       ? `${url.pathname}${url.search}${url.hash}`
       : fallback;
   } catch {
@@ -63,6 +93,13 @@ export function safeReturnTo(value: string | null, fallback = "/assistant"): str
 export function routePath(route: AppRoute): string {
   if (route.kind === "matter") return `/matters/${encodeURIComponent(route.matterId)}`;
   if (route.kind === "client") return `/client/${encodeURIComponent(route.token)}`;
+  if (route.kind === "clientAssistant") return "/client/assistant";
+  if (route.kind === "clientSharedMatters") return "/client/shared-matters";
+  if (route.kind === "clientSharedMatter") {
+    return `/client/shared-matters/${encodeURIComponent(route.accessId)}`;
+  }
+  if (route.kind === "clientHistory") return "/client/history";
+  if (route.kind === "clientSettings") return "/client/settings";
   if (route.kind === "landing") return "/";
   if (route.kind === "unknown") return "/";
   return `/${route.kind}`;

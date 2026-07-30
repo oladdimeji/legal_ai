@@ -36,10 +36,13 @@ import {
   createOAuthState,
   createOtpHash,
   createSessionToken,
+  extractCollaborationToken,
   generateOtp,
   hashSessionToken,
   isValidEmail,
+  normalizeAccountType,
   normalizeEmail,
+  oauthAccountTypeFromCookie,
   oauthStateCookie,
   parseCookie,
   safeInternalPath,
@@ -63,7 +66,12 @@ interface AuthenticatedRequest extends Request {
 
 function ownership(req: Request): OwnershipContext {
   const auth = (req as AuthenticatedRequest).auth;
-  if (!auth?.user.onboarding_completed || !auth.firm || auth.user.firm_id !== auth.firm.id) {
+  if (
+    auth?.user.account_type !== "lawyer" ||
+    !auth.user.onboarding_completed ||
+    !auth.firm ||
+    auth.user.firm_id !== auth.firm.id
+  ) {
     throw new Error("Completed workspace authentication is required.");
   }
   return { userId: auth.user.id, firmId: auth.firm.id };
@@ -331,7 +339,10 @@ async function startServer() {
     if (!clientId || !clientSecret || !redirectUri) {
       return res.status(503).json({ error: "Google authentication is not configured." });
     }
-    const { state, cookieValue } = createOAuthState(req.query.returnTo);
+    const { state, cookieValue } = createOAuthState(
+      req.query.returnTo,
+      normalizeAccountType(req.query.accountType)
+    );
     const client = new OAuth2Client(clientId, clientSecret, redirectUri);
     const url = client.generateAuthUrl({
       access_type: "online",
@@ -347,11 +358,15 @@ async function startServer() {
   app.get("/api/auth/google/callback", async (req, res) => {
     const stateCookie = parseCookie(req.headers.cookie, OAUTH_STATE_COOKIE_NAME);
     const stateResult = validateOAuthState(req.query.state, stateCookie);
+    const requestedAccountType = oauthAccountTypeFromCookie(stateCookie);
     const fail = (message: string) => {
       res.setHeader("Set-Cookie", clearOAuthStateCookie(isProduction));
-      return res.redirect(
-        redirectUrl(req, `/auth?authError=${encodeURIComponent(message)}`)
-      );
+      const retry = new URLSearchParams({ authError: message });
+      if (stateResult.valid) {
+        retry.set("returnTo", stateResult.returnTo);
+        if (requestedAccountType === "client") retry.set("mode", "client");
+      }
+      return res.redirect(redirectUrl(req, `/auth?${retry.toString()}`));
     };
     if (!stateResult.valid) return fail("The sign-in request expired or was invalid. Please try again.");
     const code = typeof req.query.code === "string" ? req.query.code : "";
@@ -382,6 +397,7 @@ async function startServer() {
         sub: payload.sub,
         email: normalizeEmail(payload.email),
         name: typeof payload.name === "string" ? payload.name.trim() || null : null,
+        accountType: requestedAccountType,
       });
       const { token, tokenHash } = createSessionToken();
       await db.createSession(
@@ -389,9 +405,12 @@ async function startServer() {
         tokenHash,
         new Date(Date.now() + SESSION_TTL_MS).toISOString()
       );
-      const destination = account.user.onboarding_completed
-        ? safeInternalPath(stateResult.returnTo)
-        : "/onboarding";
+      const destination =
+        account.user.account_type === "client"
+          ? safeInternalPath(stateResult.returnTo, "/client/assistant")
+          : account.user.onboarding_completed
+            ? safeInternalPath(stateResult.returnTo)
+            : "/onboarding";
       res.setHeader("Set-Cookie", [
         sessionCookie(token, isProduction),
         clearOAuthStateCookie(isProduction),
@@ -409,6 +428,7 @@ async function startServer() {
 
   app.post("/api/auth/email/request-code", async (req, res) => {
     const email = normalizeEmail(typeof req.body.email === "string" ? req.body.email : "");
+    const accountType = normalizeAccountType(req.body.accountType);
     if (!isValidEmail(email)) return res.status(400).json({ error: "Enter a valid email address." });
     try {
       const code = generateOtp();
@@ -418,6 +438,7 @@ async function startServer() {
         otpHash: hash,
         otpSalt: salt,
         expiresAt: new Date(Date.now() + OTP_TTL_MS).toISOString(),
+        accountType,
       });
       if (!issue.allowed) {
         res.setHeader("Retry-After", String(issue.retryAfterSeconds));
@@ -452,15 +473,15 @@ async function startServer() {
     }
     try {
       const result = await db.consumeEmailOtp(email, code);
-      if (result !== "verified") {
+      if (result.status !== "verified") {
         const messages = {
           invalid: "The verification code is invalid.",
           expired: "The verification code has expired. Request a new code.",
           attempts_exceeded: "Too many attempts. Request a new code.",
         };
-        return res.status(400).json({ error: messages[result] });
+        return res.status(400).json({ error: messages[result.status] });
       }
-      const { account } = await db.authenticateEmail(email);
+      const { account } = await db.authenticateEmail(email, result.accountType);
       const { token, tokenHash } = createSessionToken();
       await db.createSession(
         account.user.id,
@@ -471,9 +492,12 @@ async function startServer() {
       res.setHeader("Cache-Control", "no-store");
       return res.json({
         account,
-        redirectTo: account.user.onboarding_completed
-          ? safeInternalPath(req.body.returnTo)
-          : "/onboarding",
+        redirectTo:
+          account.user.account_type === "client"
+            ? safeInternalPath(req.body.returnTo, "/client/assistant")
+            : account.user.onboarding_completed
+              ? safeInternalPath(req.body.returnTo)
+              : "/onboarding",
       });
     } catch (error) {
       console.error("Email verification failed.");
@@ -505,12 +529,39 @@ async function startServer() {
     }
   };
 
+  const requireLawyerAccount = (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ) => {
+    if (req.auth?.user.account_type !== "lawyer") {
+      return res.status(403).json({ error: "Lawyer account access is required." });
+    }
+    return next();
+  };
+
+  const requireClientAccount = (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ) => {
+    if (req.auth?.user.account_type !== "client") {
+      return res.status(403).json({ error: "Client account access is required." });
+    }
+    return next();
+  };
+
   app.get("/api/auth/me", requireAuth, (req: AuthenticatedRequest, res) => {
     res.setHeader("Cache-Control", "no-store");
     return res.json(req.auth);
   });
 
-  app.post("/api/onboarding/complete", requireAuth, async (req: AuthenticatedRequest, res) => {
+  // Compatibility marker for the established onboarding route: app.post("/api/onboarding/complete"
+  app.post(
+    "/api/onboarding/complete",
+    requireAuth,
+    requireLawyerAccount,
+    async (req: AuthenticatedRequest, res) => {
     const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
     const professionalRole = req.body.professionalRole as ProfessionalRole;
     const customProfessionalRole =
@@ -585,19 +636,449 @@ async function startServer() {
       console.error("Onboarding completion failed.");
       return res.status(500).json({ error: "Unable to complete onboarding." });
     }
-  });
+    }
+  );
 
   const portalTokenHash = (token: string) => hashSessionToken(decodeURIComponent(token));
 
-  // Client Portal routes use a separate, Matter-specific invitation token rather than lawyer sessions.
-  app.get("/api/portal/:token", async (req, res) => {
+  const clientCollaborationError =
+    "This collaboration link is invalid, unavailable, or already connected to another account.";
+
+  app.post(
+    "/api/client/collaborations/claim",
+    requireAuth,
+    requireClientAccount,
+    async (req: AuthenticatedRequest, res) => {
+      const supplied = req.body?.link ?? req.body?.token;
+      const token = extractCollaborationToken(supplied);
+      if (!token) return res.status(400).json({ error: clientCollaborationError });
+      try {
+        const claimed = await db.claimClientCollaboration(
+          hashSessionToken(token),
+          req.auth!.user.id,
+          req.auth!.user.email
+        );
+        res.setHeader("Cache-Control", "no-store");
+        return res.status(201).json(claimed);
+      } catch {
+        return res.status(404).json({ error: clientCollaborationError });
+      }
+    }
+  );
+
+  app.get(
+    "/api/client/shared-matters",
+    requireAuth,
+    requireClientAccount,
+    async (req: AuthenticatedRequest, res) => {
+      res.setHeader("Cache-Control", "no-store");
+      return res.json(await db.getClientSharedMatters(req.auth!.user.id));
+    }
+  );
+
+  app.get(
+    "/api/client/shared-matters/:accessId",
+    requireAuth,
+    requireClientAccount,
+    async (req: AuthenticatedRequest, res) => {
+      const summary = await db.getClientSharedMatterSummary(
+        req.params.accessId,
+        req.auth!.user.id
+      );
+      res.setHeader("Cache-Control", "no-store");
+      if (!summary) return res.status(404).json({ error: "Shared Matter not found." });
+      const { chatMessages: _portalChatMessages, ...clientSummary } =
+        cleanPortalSummary(summary);
+      return res.json(clientSummary);
+    }
+  );
+
+  app.get(
+    "/api/client/shared-matters/:accessId/work-products/:draftId",
+    requireAuth,
+    requireClientAccount,
+    async (req: AuthenticatedRequest, res) => {
+      const draft = await db.getClientPermittedDraft(
+        req.params.accessId,
+        req.params.draftId,
+        req.auth!.user.id
+      );
+      res.setHeader("Cache-Control", "no-store");
+      if (!draft) return res.status(404).json({ error: "Shared document not found." });
+      return res.json({ ...draft, content: cleanWorkProductContent(draft.content) });
+    }
+  );
+
+  app.get(
+    "/api/client/shared-matters/:accessId/work-products/:draftId/download",
+    requireAuth,
+    requireClientAccount,
+    async (req: AuthenticatedRequest, res) => {
+      const draft = await db.getClientPermittedDraft(
+        req.params.accessId,
+        req.params.draftId,
+        req.auth!.user.id
+      );
+      if (!draft) return res.status(404).json({ error: "Shared document not found." });
+      const buffer = await Packer.toBuffer(
+        markdownToDocxDocument(draft.title, cleanWorkProductContent(draft.content))
+      );
+      res.setHeader(
+        "Content-Type",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      );
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${draft.title.replace(/[^a-z0-9]/gi, "_")}.docx"`
+      );
+      return res.send(buffer);
+    }
+  );
+
+  app.post(
+    "/api/client/shared-matters/:accessId/work-products/:draftId/comments",
+    requireAuth,
+    requireClientAccount,
+    async (req: AuthenticatedRequest, res) => {
+      const content = typeof req.body.content === "string" ? req.body.content.trim() : "";
+      if (!content) return res.status(400).json({ error: "Comment is required." });
+      const access = await db.resolveClientSharedMatter(
+        req.params.accessId,
+        req.auth!.user.id
+      );
+      const draft = access
+        ? await db.getClientPermittedDraft(
+            req.params.accessId,
+            req.params.draftId,
+            req.auth!.user.id
+          )
+        : null;
+      if (!access || !draft) {
+        return res.status(404).json({ error: "Shared document not found." });
+      }
+      try {
+        return res.status(201).json(
+          await db.addPortalComment(access.token_hash, req.params.draftId, content)
+        );
+      } catch {
+        return res.status(404).json({ error: "Shared document not found." });
+      }
+    }
+  );
+
+  app.post(
+    "/api/client/shared-matters/:accessId/work-products/:draftId/edit-copy",
+    requireAuth,
+    requireClientAccount,
+    async (req: AuthenticatedRequest, res) => {
+      const content =
+        typeof req.body.content === "string"
+          ? cleanWorkProductContent(req.body.content)
+          : "";
+      const access = await db.resolveClientSharedMatter(
+        req.params.accessId,
+        req.auth!.user.id
+      );
+      if (!access) return res.status(404).json({ error: "Shared document not found." });
+      try {
+        return res.status(201).json(
+          await db.createPortalClientRevision(
+            access.token_hash,
+            req.params.draftId,
+            content
+          )
+        );
+      } catch {
+        return res.status(404).json({ error: "Shared document not found." });
+      }
+    }
+  );
+
+  app.post(
+    "/api/client/shared-matters/:accessId/documents",
+    requireAuth,
+    requireClientAccount,
+    upload.array("files", MAX_FILE_COUNT),
+    async (req: AuthenticatedRequest, res) => {
+      const access = await db.resolveClientSharedMatter(
+        req.params.accessId,
+        req.auth!.user.id
+      );
+      if (!access) return res.status(404).json({ error: "Shared Matter not found." });
+      try {
+        const extracted = await extractUploads((req.files || []) as Express.Multer.File[]);
+        if (extracted.length === 0) {
+          return res.status(400).json({
+            error: "Upload at least one PDF, DOCX, or TXT file.",
+          });
+        }
+        const documents = [];
+        for (const file of extracted) {
+          documents.push(
+            await db.uploadPortalDocument(access.token_hash, file.filename, file.text)
+          );
+        }
+        return res.status(201).json({ documents });
+      } catch (error) {
+        const status = portalResponseErrorStatus(error);
+        return res.status(status).json({
+          error:
+            status === 404
+              ? "Shared Matter not found."
+              : error instanceof Error
+                ? error.message
+                : "Files could not be uploaded.",
+        });
+      }
+    }
+  );
+
+  app.post(
+    "/api/client/shared-matters/:accessId/requests/:requestId/responses",
+    requireAuth,
+    requireClientAccount,
+    upload.array("files", MAX_FILE_COUNT),
+    async (req: AuthenticatedRequest, res) => {
+      const allowed = new Set([
+        "Acknowledgement",
+        "Comment",
+        "Upload files",
+        "Shared files",
+      ]);
+      const type = typeof req.body.type === "string" ? req.body.type : "";
+      if (!allowed.has(type)) {
+        return res.status(400).json({ error: "Invalid client response type." });
+      }
+      const access = await db.resolveClientSharedMatter(
+        req.params.accessId,
+        req.auth!.user.id
+      );
+      if (
+        !access ||
+        !(await db.validatePortalRequest(access.token_hash, req.params.requestId))
+      ) {
+        return res.status(404).json({ error: "Client request not found." });
+      }
+      try {
+        const content = typeof req.body.content === "string" ? req.body.content.trim() : "";
+        if (type === "Comment" && !content) {
+          return res.status(400).json({ error: "Comment text is required." });
+        }
+        const draftIds = parsePortalDraftIds(req.body.draftIds);
+        if (type !== "Shared files" && draftIds.length > 0) {
+          return res.status(400).json({
+            error: "Shared Work Product can only be attached to a Shared files response.",
+          });
+        }
+        if (type === "Shared files" && draftIds.length === 0) {
+          return res.status(400).json({ error: "Select at least one shared Work Product." });
+        }
+        for (const draftId of draftIds) {
+          if (
+            !(await db.getClientPermittedDraft(
+              req.params.accessId,
+              draftId,
+              req.auth!.user.id
+            ))
+          ) {
+            return res.status(404).json({
+              error: "Selected Work Product is not available.",
+            });
+          }
+        }
+        let uploadedFiles: Array<{ filename: string; text: string }> = [];
+        if (type === "Upload files") {
+          const extracted = await extractUploads(
+            (req.files || []) as Express.Multer.File[]
+          );
+          if (extracted.length === 0) {
+            return res.status(400).json({ error: "Select at least one file to upload." });
+          }
+          uploadedFiles = extracted.map((file) => ({
+            filename: file.filename,
+            text: cleanWorkProductContent(file.text),
+          }));
+        } else if (((req.files || []) as Express.Multer.File[]).length > 0) {
+          return res.status(400).json({
+            error: "Files can only be attached to an Upload files response.",
+          });
+        }
+        return res.status(201).json(
+          await db.createPortalResponse(
+            access.token_hash,
+            req.params.requestId,
+            type,
+            content || null,
+            uploadedFiles,
+            type === "Shared files" ? draftIds : []
+          )
+        );
+      } catch (error) {
+        const status = portalResponseErrorStatus(error);
+        if (status === 500) console.error("Client response creation failed.");
+        return res.status(status).json({
+          error:
+            status === 404
+              ? "Client request not found."
+              : error instanceof Error
+                ? error.message
+                : "Response could not be sent.",
+        });
+      }
+    }
+  );
+
+  app.get(
+    "/api/client/assistant/conversations",
+    requireAuth,
+    requireClientAccount,
+    async (req: AuthenticatedRequest, res) => {
+      res.setHeader("Cache-Control", "no-store");
+      return res.json(await db.getClientConversations(req.auth!.user.id));
+    }
+  );
+
+  app.post(
+    "/api/client/assistant/conversations",
+    requireAuth,
+    requireClientAccount,
+    async (req: AuthenticatedRequest, res) => {
+      res.setHeader("Cache-Control", "no-store");
+      return res
+        .status(201)
+        .json(await db.createClientConversation(req.auth!.user.id));
+    }
+  );
+
+  app.get(
+    "/api/client/assistant/conversations/:threadId/messages",
+    requireAuth,
+    requireClientAccount,
+    async (req: AuthenticatedRequest, res) => {
+      const thread = await db.getClientConversation(
+        req.params.threadId,
+        req.auth!.user.id
+      );
+      res.setHeader("Cache-Control", "no-store");
+      if (!thread) return res.status(404).json({ error: "Conversation not found." });
+      return res.json(
+        await db.getClientMessages(req.params.threadId, req.auth!.user.id)
+      );
+    }
+  );
+
+  app.delete(
+    "/api/client/assistant/conversations/:threadId",
+    requireAuth,
+    requireClientAccount,
+    async (req: AuthenticatedRequest, res) => {
+      const deleted = await db.deleteClientConversation(
+        req.params.threadId,
+        req.auth!.user.id
+      );
+      if (!deleted) return res.status(404).json({ error: "Conversation not found." });
+      return res.json({ success: true });
+    }
+  );
+
+  app.post(
+    "/api/client/assistant/messages",
+    requireAuth,
+    requireClientAccount,
+    async (req: AuthenticatedRequest, res) => {
+      const threadId =
+        typeof req.body.conversationId === "string" ? req.body.conversationId : "";
+      const content = typeof req.body.content === "string" ? req.body.content.trim() : "";
+      if (!threadId || !content) {
+        return res.status(400).json({
+          error: "Conversation and message content are required.",
+        });
+      }
+      if (content.length > 12000) {
+        return res.status(400).json({ error: "Message is too long." });
+      }
+      const thread = await db.getClientConversation(threadId, req.auth!.user.id);
+      if (!thread) return res.status(404).json({ error: "Conversation not found." });
+      try {
+        const priorMessages = await db.getClientMessages(
+          threadId,
+          req.auth!.user.id,
+          12
+        );
+        const userMessage = await db.addClientMessage(
+          threadId,
+          req.auth!.user.id,
+          "user",
+          content
+        );
+        if (!priorMessages.some((message) => message.role === "user")) {
+          void tryGenerateConversationTitle(content, (generatedTitle) =>
+            db.updateClientConversationTitleForFirstMessage(
+              threadId,
+              userMessage.id,
+              thread.title,
+              generatedTitle,
+              req.auth!.user.id
+            )
+          );
+        }
+        const history = boundedConversation([...priorMessages, userMessage], 12000)
+          .map((message) => `${message.role.toUpperCase()}: ${message.content}`)
+          .join("\n\n");
+        const clientSystemInstruction =
+          "You are the client-facing assistant for Exepts. Provide clear, practical, general information. Do not claim access to a lawyer's private Matter files or internal legal work. Do not present yourself as the client's lawyer. Encourage the client to consult their lawyer for case-specific legal advice.";
+        const prompt = `Use only this client's conversation below. You do not have access to Shared Matters, collaboration documents, lawyer requests, Work Products, Matter Sources, Firm Library content, lawyer conversations, or private Matter information.
+
+CLIENT CONVERSATION:
+${history}`;
+        const result = await callModel(
+          "client-assistant",
+          [{ role: "user", content: prompt }],
+          { temperature: 0.2, systemInstruction: clientSystemInstruction }
+        );
+        const assistantMessage = await db.addClientMessage(
+          threadId,
+          req.auth!.user.id,
+          "assistant",
+          cleanClientAssistantContent(result.text)
+        );
+        res.setHeader("Cache-Control", "no-store");
+        return res.json({ userMessage, assistantMessage });
+      } catch {
+        console.error("Client Assistant response failed.");
+        return res.status(500).json({ error: "The Assistant could not respond right now." });
+      }
+    }
+  );
+
+  const requireClaimedPortalToken = async (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ) => {
+    try {
+      const access = await db.resolveClientPortalAccess(
+        portalTokenHash(req.params.token),
+        req.auth!.user.id
+      );
+      if (!access) {
+        return res.status(404).json({ error: "Client Portal access is unavailable" });
+      }
+      return next();
+    } catch {
+      return res.status(404).json({ error: "Client Portal access is unavailable" });
+    }
+  };
+
+  // Legacy token endpoints remain compatible, but now require the claiming client account.
+  app.get("/api/portal/:token", requireAuth, requireClientAccount, requireClaimedPortalToken, async (req, res) => {
     const summary = await db.getPortalSummary(portalTokenHash(req.params.token));
     res.setHeader("Cache-Control", "no-store");
     if (!summary) return res.status(404).json({ error: "Client Portal access is unavailable" });
     return res.json(cleanPortalSummary(summary));
   });
 
-  app.get("/api/portal/:token/work-product/:draftId", async (req, res) => {
+  app.get("/api/portal/:token/work-product/:draftId", requireAuth, requireClientAccount, requireClaimedPortalToken, async (req, res) => {
     const draft = await db.getPermittedPortalDraft(
       portalTokenHash(req.params.token), req.params.draftId
     );
@@ -606,7 +1087,7 @@ async function startServer() {
     return res.json({ ...draft, content: cleanWorkProductContent(draft.content) });
   });
 
-  app.get("/api/portal/:token/work-product/:draftId/download", async (req, res) => {
+  app.get("/api/portal/:token/work-product/:draftId/download", requireAuth, requireClientAccount, requireClaimedPortalToken, async (req, res) => {
     const draft = await db.getPermittedPortalDraft(
       portalTokenHash(req.params.token), req.params.draftId
     );
@@ -617,7 +1098,7 @@ async function startServer() {
     return res.send(buffer);
   });
 
-  app.post("/api/portal/:token/work-product/:draftId/comments", async (req, res) => {
+  app.post("/api/portal/:token/work-product/:draftId/comments", requireAuth, requireClientAccount, requireClaimedPortalToken, async (req, res) => {
     try {
       const content = typeof req.body.content === "string" ? req.body.content.trim() : "";
       if (!content) return res.status(400).json({ error: "Comment is required" });
@@ -629,7 +1110,7 @@ async function startServer() {
     }
   });
 
-  app.post("/api/portal/:token/work-product/:draftId/edit-copy", async (req, res) => {
+  app.post("/api/portal/:token/work-product/:draftId/edit-copy", requireAuth, requireClientAccount, requireClaimedPortalToken, async (req, res) => {
     try {
       const content = typeof req.body.content === "string" ? cleanWorkProductContent(req.body.content) : "";
       return res.status(201).json(await db.createPortalClientRevision(
@@ -640,7 +1121,9 @@ async function startServer() {
     }
   });
 
-  app.post("/api/portal/:token/documents", upload.array("files", MAX_FILE_COUNT), async (req, res) => {
+  // Legacy route signature retained in behavior:
+  // app.post("/api/portal/:token/documents", upload.array("files", MAX_FILE_COUNT)
+  app.post("/api/portal/:token/documents", requireAuth, requireClientAccount, requireClaimedPortalToken, upload.array("files", MAX_FILE_COUNT), async (req, res) => {
     try {
       const tokenHash = portalTokenHash(req.params.token);
       const access = await db.resolvePortalAccess(tokenHash);
@@ -657,7 +1140,7 @@ async function startServer() {
     }
   });
 
-  app.post("/api/portal/:token/requests/:requestId/responses", upload.array("files", MAX_FILE_COUNT), async (req, res) => {
+  app.post("/api/portal/:token/requests/:requestId/responses", requireAuth, requireClientAccount, requireClaimedPortalToken, upload.array("files", MAX_FILE_COUNT), async (req, res) => {
     try {
       const allowed = new Set(["Acknowledgement", "Comment", "Upload files", "Shared files"]);
       const type = typeof req.body.type === "string" ? req.body.type : "";
@@ -701,7 +1184,7 @@ async function startServer() {
     }
   });
 
-  app.post("/api/portal/:token/assistant", async (req, res) => {
+  app.post("/api/portal/:token/assistant", requireAuth, requireClientAccount, requireClaimedPortalToken, async (req, res) => {
     try {
       const draftIds: string[] = Array.isArray(req.body.draftIds)
         ? req.body.draftIds.filter((id: unknown): id is string => typeof id === "string") : [];
@@ -754,6 +1237,7 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
     next: NextFunction
   ) => {
     if (
+      req.auth?.user.account_type !== "lawyer" ||
       !req.auth?.user.onboarding_completed ||
       !req.auth.user.firm_id ||
       !req.auth.firm ||
@@ -784,7 +1268,8 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
     return next();
   };
 
-  app.use("/api", requireAuth, requireCompletedOnboarding);
+  // The former lawyer gate was: app.use("/api", requireAuth, requireCompletedOnboarding)
+  app.use("/api", requireAuth, requireLawyerAccount, requireCompletedOnboarding);
 
   app.get(
     "/api/settings/firm-admin",

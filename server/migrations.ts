@@ -552,6 +552,73 @@ const migrations: Migration[] = [
       );
     },
   },
+  {
+    version: 22,
+    name: "authenticated_client_workspace",
+    async run(client) {
+      await client.query(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS account_type TEXT NOT NULL DEFAULT 'lawyer'"
+      );
+      await client.query(`
+        UPDATE users
+        SET account_type = 'lawyer'
+        WHERE account_type IS NULL OR account_type NOT IN ('lawyer', 'client')
+      `);
+      await client.query(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint
+            WHERE conname = 'users_account_type_check'
+              AND conrelid = 'users'::regclass
+          ) THEN
+            ALTER TABLE users
+            ADD CONSTRAINT users_account_type_check
+            CHECK (account_type IN ('lawyer', 'client'));
+          END IF;
+        END
+        $$
+      `);
+      await client.query(
+        "CREATE INDEX IF NOT EXISTS users_account_type_idx ON users(account_type)"
+      );
+
+      await client.query(
+        "ALTER TABLE email_otp_challenges ADD COLUMN IF NOT EXISTS account_type TEXT NOT NULL DEFAULT 'lawyer'"
+      );
+      await client.query(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint
+            WHERE conname = 'email_otp_challenges_account_type_check'
+              AND conrelid = 'email_otp_challenges'::regclass
+          ) THEN
+            ALTER TABLE email_otp_challenges
+            ADD CONSTRAINT email_otp_challenges_account_type_check
+            CHECK (account_type IN ('lawyer', 'client'));
+          END IF;
+        END
+        $$
+      `);
+
+      await client.query(
+        "ALTER TABLE matter_client_access ADD COLUMN IF NOT EXISTS claimed_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL"
+      );
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS matter_client_access_claimed_user_idx
+        ON matter_client_access(claimed_by_user_id)
+        WHERE claimed_by_user_id IS NOT NULL
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS client_threads_user_activity_idx
+        ON threads(user_id, created_at DESC)
+        WHERE scope = 'client' AND case_id IS NULL
+      `);
+    },
+  },
 ];
 
 export async function runMigrations(pool: Pool): Promise<void> {

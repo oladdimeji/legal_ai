@@ -2,6 +2,7 @@ import pg from "pg";
 import { randomBytes, randomUUID } from "node:crypto";
 import {
   Account,
+  AccountType,
   Document,
   DocumentChunk,
   Case,
@@ -39,6 +40,7 @@ function accountFromRow(row: Record<string, unknown>): Account {
   return {
     user: {
       id: String(row.id),
+      account_type: (row.account_type || "lawyer") as AccountType,
       firm_id: row.firm_id ? String(row.firm_id) : null,
       firm_role: (row.firm_role || null) as FirmRole | null,
       name: row.name ? String(row.name) : null,
@@ -325,6 +327,7 @@ class DatabaseService {
     otpHash: string;
     otpSalt: string;
     expiresAt: string;
+    accountType: AccountType;
   }): Promise<{ allowed: boolean; retryAfterSeconds: number }> {
     await this.ensureSchema();
     const client = await getPool().connect();
@@ -367,8 +370,9 @@ class DatabaseService {
       );
       await client.query(
         `INSERT INTO email_otp_challenges
-          (id, email, otp_hash, otp_salt, expires_at, attempt_count, created_at, consumed_at)
-         VALUES ($1, $2, $3, $4, $5, 0, $6, NULL)`,
+          (id, email, otp_hash, otp_salt, expires_at, attempt_count, created_at, consumed_at,
+           account_type)
+         VALUES ($1, $2, $3, $4, $5, 0, $6, NULL, $7)`,
         [
           `otp_${randomUUID()}`,
           input.email,
@@ -376,6 +380,7 @@ class DatabaseService {
           input.otpSalt,
           input.expiresAt,
           nowText,
+          input.accountType,
         ]
       );
       await client.query("COMMIT");
@@ -391,7 +396,10 @@ class DatabaseService {
   public async consumeEmailOtp(
     email: string,
     code: string
-  ): Promise<"verified" | "invalid" | "expired" | "attempts_exceeded"> {
+  ): Promise<{
+    status: "verified" | "invalid" | "expired" | "attempts_exceeded";
+    accountType: AccountType;
+  }> {
     await this.ensureSchema();
     const client = await getPool().connect();
     const now = new Date().toISOString();
@@ -404,8 +412,9 @@ class DatabaseService {
         otp_salt: string;
         expires_at: string;
         attempt_count: number;
+        account_type: AccountType;
       }>(
-        `SELECT id, otp_hash, otp_salt, expires_at, attempt_count
+        `SELECT id, otp_hash, otp_salt, expires_at, attempt_count, account_type
          FROM email_otp_challenges
          WHERE email = $1 AND consumed_at IS NULL
          ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
@@ -414,7 +423,7 @@ class DatabaseService {
       const challenge = result.rows[0];
       if (!challenge) {
         await client.query("COMMIT");
-        return "invalid";
+        return { status: "invalid", accountType: "lawyer" };
       }
       if (challenge.attempt_count >= OTP_MAX_ATTEMPTS) {
         await client.query(
@@ -422,7 +431,7 @@ class DatabaseService {
           [challenge.id, now]
         );
         await client.query("COMMIT");
-        return "attempts_exceeded";
+        return { status: "attempts_exceeded", accountType: challenge.account_type };
       }
       if (challenge.expires_at <= now) {
         await client.query(
@@ -430,7 +439,7 @@ class DatabaseService {
           [challenge.id, now]
         );
         await client.query("COMMIT");
-        return "expired";
+        return { status: "expired", accountType: challenge.account_type };
       }
       if (!verifyOtpHash(code, challenge.otp_salt, challenge.otp_hash)) {
         const attempts = challenge.attempt_count + 1;
@@ -441,14 +450,17 @@ class DatabaseService {
           [challenge.id, attempts, OTP_MAX_ATTEMPTS, now]
         );
         await client.query("COMMIT");
-        return attempts >= OTP_MAX_ATTEMPTS ? "attempts_exceeded" : "invalid";
+        return {
+          status: attempts >= OTP_MAX_ATTEMPTS ? "attempts_exceeded" : "invalid",
+          accountType: challenge.account_type,
+        };
       }
       await client.query(
         "UPDATE email_otp_challenges SET consumed_at = $2 WHERE id = $1",
         [challenge.id, now]
       );
       await client.query("COMMIT");
-      return "verified";
+      return { status: "verified", accountType: challenge.account_type };
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -457,7 +469,10 @@ class DatabaseService {
     }
   }
 
-  public async authenticateEmail(email: string): Promise<{ account: Account; isNew: boolean }> {
+  public async authenticateEmail(
+    email: string,
+    requestedAccountType: AccountType
+  ): Promise<{ account: Account; isNew: boolean }> {
     await this.ensureSchema();
     const client = await getPool().connect();
     const now = new Date().toISOString();
@@ -473,9 +488,10 @@ class DatabaseService {
       if (isNew) {
         await client.query(
           `INSERT INTO users
-            (id, firm_id, name, email, email_verified_at, onboarding_completed, created_at, updated_at)
-           VALUES ($1, NULL, NULL, $2, $3, FALSE, $3, $3)`,
-          [userId, email, now]
+            (id, account_type, firm_id, name, email, email_verified_at, onboarding_completed,
+             created_at, updated_at)
+           VALUES ($1, $2, NULL, NULL, $3, $4, $5, $4, $4)`,
+          [userId, requestedAccountType, email, now, requestedAccountType === "client"]
         );
       } else {
         await client.query(
@@ -502,6 +518,7 @@ class DatabaseService {
     sub: string;
     email: string;
     name: string | null;
+    accountType: AccountType;
   }): Promise<{ account: Account; isNew: boolean }> {
     await this.ensureSchema();
     const client = await getPool().connect();
@@ -528,10 +545,18 @@ class DatabaseService {
       if (isNew) {
         await client.query(
           `INSERT INTO users
-            (id, firm_id, name, email, google_sub, email_verified_at, onboarding_completed,
-             created_at, updated_at)
-           VALUES ($1, NULL, $2, $3, $4, $5, FALSE, $5, $5)`,
-          [userId, input.name, input.email, input.sub, now]
+            (id, account_type, firm_id, name, email, google_sub, email_verified_at,
+             onboarding_completed, created_at, updated_at)
+           VALUES ($1, $2, NULL, $3, $4, $5, $6,
+             CASE WHEN $2 = 'client' THEN TRUE ELSE FALSE END, $6, $6)`,
+          [
+            userId,
+            input.accountType,
+            input.name,
+            input.email,
+            input.sub,
+            now,
+          ]
         );
       } else {
         await client.query(
@@ -574,13 +599,16 @@ class DatabaseService {
       await client.query("BEGIN");
       const userResult = await client.query<{
         id: string;
+        account_type: AccountType;
         firm_id: string | null;
         onboarding_completed: boolean;
-      }>("SELECT id, firm_id, onboarding_completed FROM users WHERE id = $1 FOR UPDATE", [
-        input.userId,
-      ]);
+      }>(
+        "SELECT id, firm_id, onboarding_completed, account_type FROM users WHERE id = $1 FOR UPDATE",
+        [input.userId]
+      );
       const user = userResult.rows[0];
       if (!user) throw new Error("USER_NOT_FOUND");
+      if (user.account_type !== "lawyer") throw new Error("LAWYER_ACCOUNT_REQUIRED");
       let firmId = user.firm_id;
       if (!user.onboarding_completed) {
         if (input.workspaceType === "firm") {
@@ -1003,7 +1031,12 @@ class DatabaseService {
        SELECT $1, c.id, $3, $4, 'Pending', $5 FROM cases c
        WHERE c.id = $2 AND c.firm_id = $6
        ON CONFLICT (case_id) DO UPDATE SET client_name = EXCLUDED.client_name,
-         client_email = EXCLUDED.client_email
+         client_email = EXCLUDED.client_email,
+         claimed_by_user_id = CASE
+           WHEN LOWER(BTRIM(matter_client_access.client_email)) = LOWER(BTRIM(EXCLUDED.client_email))
+             THEN matter_client_access.claimed_by_user_id
+           ELSE NULL
+         END
        RETURNING id, case_id, client_name, client_email, invitation_status, created_at,
          activated_at, revoked_at`,
       [id, caseId, name, email, now, context.firmId]
@@ -1120,6 +1153,181 @@ class DatabaseService {
       [tokenHash]
     );
     return rows[0] || null;
+  }
+
+  public async resolveClientPortalAccess(
+    tokenHash: string,
+    clientUserId: string
+  ): Promise<any | null> {
+    const rows = await this.query(
+      `SELECT ca.id AS access_id, ca.case_id, ca.client_name, ca.client_email,
+         ca.token_hash, c.firm_id, c.name AS matter_name, f.name AS firm_name
+       FROM matter_client_access ca
+       JOIN cases c ON c.id = ca.case_id
+       LEFT JOIN firm f ON f.id = c.firm_id
+       WHERE ca.token_hash = $1
+         AND ca.claimed_by_user_id = $2
+         AND ca.invitation_status = 'Active'
+         AND ca.revoked_at IS NULL`,
+      [tokenHash, clientUserId]
+    );
+    return rows[0] || null;
+  }
+
+  public async claimClientCollaboration(
+    tokenHash: string,
+    clientUserId: string,
+    clientEmail: string
+  ): Promise<any> {
+    await this.ensureSchema();
+    const client = await getPool().connect();
+    try {
+      await client.query("BEGIN");
+      const userResult = await client.query<{
+        id: string;
+        account_type: AccountType;
+        email: string;
+      }>(
+        `SELECT id, account_type, email
+         FROM users
+         WHERE id = $1
+         FOR UPDATE`,
+        [clientUserId]
+      );
+      const user = userResult.rows[0];
+      if (!user || user.account_type !== "client") {
+        throw new Error("CLIENT_COLLABORATION_UNAVAILABLE");
+      }
+
+      const accessResult = await client.query<{
+        id: string;
+        case_id: string;
+        client_email: string;
+        claimed_by_user_id: string | null;
+        matter_name: string;
+        firm_name: string | null;
+      }>(
+        `SELECT ca.id, ca.case_id, ca.client_email, ca.claimed_by_user_id,
+           c.name AS matter_name, f.name AS firm_name
+         FROM matter_client_access ca
+         JOIN cases c ON c.id = ca.case_id
+         LEFT JOIN firm f ON f.id = c.firm_id
+         WHERE ca.token_hash = $1
+           AND ca.invitation_status = 'Active'
+           AND ca.revoked_at IS NULL
+         FOR UPDATE OF ca`,
+        [tokenHash]
+      );
+      const access = accessResult.rows[0];
+      const authenticatedEmail = clientEmail.trim().toLowerCase();
+      if (
+        !access ||
+        access.client_email.trim().toLowerCase() !== authenticatedEmail ||
+        (access.claimed_by_user_id && access.claimed_by_user_id !== clientUserId)
+      ) {
+        throw new Error("CLIENT_COLLABORATION_UNAVAILABLE");
+      }
+
+      if (!access.claimed_by_user_id) {
+        await client.query(
+          `UPDATE matter_client_access
+           SET claimed_by_user_id = $1
+           WHERE id = $2 AND claimed_by_user_id IS NULL`,
+          [clientUserId, access.id]
+        );
+      }
+      await client.query("COMMIT");
+      return {
+        id: access.id,
+        matterName: access.matter_name,
+        firmName: access.firm_name,
+      };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async getClientSharedMatters(clientUserId: string): Promise<any[]> {
+    return await this.query(
+      `SELECT ca.id, c.name AS matter_name, f.name AS firm_name,
+         (
+           SELECT COUNT(*)::int
+           FROM collaboration_requests cr
+           WHERE cr.case_id = ca.case_id AND cr.status <> 'Responded'
+         ) AS active_request_count,
+         (
+           SELECT COUNT(*)::int
+           FROM drafts d
+           WHERE d.case_id = ca.case_id AND d.shared_with_client = TRUE
+         ) AS shared_document_count,
+         GREATEST(
+           ca.activated_at,
+           COALESCE((SELECT MAX(COALESCE(d.updated_at, d.created_at))
+             FROM drafts d WHERE d.case_id = ca.case_id AND d.shared_with_client = TRUE), ca.activated_at),
+           COALESCE((SELECT MAX(cr.updated_at)
+             FROM collaboration_requests cr WHERE cr.case_id = ca.case_id), ca.activated_at)
+         ) AS last_shared_activity_at
+       FROM matter_client_access ca
+       JOIN cases c ON c.id = ca.case_id
+       LEFT JOIN firm f ON f.id = c.firm_id
+       WHERE ca.claimed_by_user_id = $1
+         AND ca.invitation_status = 'Active'
+         AND ca.revoked_at IS NULL
+         AND ca.token_hash IS NOT NULL
+       ORDER BY last_shared_activity_at DESC NULLS LAST, c.name`,
+      [clientUserId]
+    );
+  }
+
+  public async resolveClientSharedMatter(
+    accessId: string,
+    clientUserId: string
+  ): Promise<any | null> {
+    const rows = await this.query(
+      `SELECT ca.id AS access_id, ca.case_id, ca.client_name, ca.client_email,
+         ca.token_hash, c.firm_id, c.name AS matter_name, f.name AS firm_name
+       FROM matter_client_access ca
+       JOIN cases c ON c.id = ca.case_id
+       LEFT JOIN firm f ON f.id = c.firm_id
+       WHERE ca.id = $1
+         AND ca.claimed_by_user_id = $2
+         AND ca.invitation_status = 'Active'
+         AND ca.revoked_at IS NULL
+         AND ca.token_hash IS NOT NULL`,
+      [accessId, clientUserId]
+    );
+    return rows[0] || null;
+  }
+
+  public async getClientSharedMatterSummary(
+    accessId: string,
+    clientUserId: string
+  ): Promise<any | null> {
+    const access = await this.resolveClientSharedMatter(accessId, clientUserId);
+    if (!access) return null;
+    const summary = await this.getPortalSummary(access.token_hash);
+    if (!summary) return null;
+    return {
+      ...summary,
+      access: {
+        id: access.access_id,
+        client_name: access.client_name,
+        matter_name: access.matter_name,
+        firm_name: access.firm_name,
+      },
+    };
+  }
+
+  public async getClientPermittedDraft(
+    accessId: string,
+    draftId: string,
+    clientUserId: string
+  ): Promise<any | null> {
+    const access = await this.resolveClientSharedMatter(accessId, clientUserId);
+    return access ? await this.getPermittedPortalDraft(access.token_hash, draftId) : null;
   }
 
   public async getPortalSummary(tokenHash: string): Promise<any | null> {
@@ -1610,7 +1818,7 @@ class DatabaseService {
     }
     return await this.query(
       `SELECT * FROM threads
-       WHERE user_id = $1 AND case_id IS NULL
+       WHERE user_id = $1 AND case_id IS NULL AND scope <> 'client'
        ORDER BY created_at DESC`,
       [context.userId]
     );
@@ -1622,6 +1830,7 @@ class DatabaseService {
        FROM threads t
        LEFT JOIN messages m ON m.thread_id = t.id
        WHERE t.user_id = $1
+         AND t.scope <> 'client'
          AND (
            t.case_id IS NULL OR EXISTS (
              SELECT 1 FROM cases c WHERE c.id = t.case_id AND c.firm_id = $2
@@ -1636,7 +1845,7 @@ class DatabaseService {
   public async getThreadById(id: string, context: OwnershipContext): Promise<Thread | undefined> {
     const rows = await this.query(
       `SELECT t.* FROM threads t
-       WHERE t.id = $1 AND t.user_id = $2
+       WHERE t.id = $1 AND t.user_id = $2 AND t.scope <> 'client'
          AND (
            t.case_id IS NULL OR EXISTS (
              SELECT 1 FROM cases c WHERE c.id = t.case_id AND c.firm_id = $3
@@ -1676,6 +1885,157 @@ class DatabaseService {
     };
   }
 
+  public async getClientConversations(clientUserId: string): Promise<Thread[]> {
+    return await this.query(
+      `SELECT t.*, COALESCE(MAX(m.created_at), t.created_at) AS last_activity_at
+       FROM threads t
+       LEFT JOIN messages m ON m.thread_id = t.id
+       WHERE t.user_id = $1 AND t.scope = 'client' AND t.case_id IS NULL
+       GROUP BY t.id
+       ORDER BY COALESCE(MAX(m.created_at), t.created_at) DESC`,
+      [clientUserId]
+    );
+  }
+
+  public async createClientConversation(clientUserId: string): Promise<Thread> {
+    const threadId = `thread_${randomUUID()}`;
+    const createdAt = new Date().toISOString();
+    const rows = await this.query(
+      `INSERT INTO threads (id, user_id, case_id, scope, title, created_at)
+       SELECT $1, u.id, NULL, 'client', 'New Conversation', $3
+       FROM users u
+       WHERE u.id = $2 AND u.account_type = 'client'
+       RETURNING *`,
+      [threadId, clientUserId, createdAt]
+    );
+    if (!rows[0]) throw new Error("Client account not found");
+    return rows[0];
+  }
+
+  public async getClientConversation(
+    threadId: string,
+    clientUserId: string
+  ): Promise<Thread | null> {
+    const rows = await this.query(
+      `SELECT * FROM threads
+       WHERE id = $1 AND user_id = $2 AND scope = 'client' AND case_id IS NULL`,
+      [threadId, clientUserId]
+    );
+    return rows[0] || null;
+  }
+
+  public async getClientMessages(
+    threadId: string,
+    clientUserId: string,
+    limit?: number
+  ): Promise<Message[]> {
+    const params: unknown[] = [threadId, clientUserId];
+    const limitClause = typeof limit === "number" ? "LIMIT $3" : "";
+    if (typeof limit === "number") params.push(limit);
+    const rows = await this.query(
+      `SELECT * FROM (
+         SELECT m.*
+         FROM messages m
+         JOIN threads t ON t.id = m.thread_id
+         WHERE m.thread_id = $1
+           AND t.user_id = $2
+           AND t.scope = 'client'
+           AND t.case_id IS NULL
+         ORDER BY m.created_at DESC
+         ${limitClause}
+       ) client_messages
+       ORDER BY created_at ASC`,
+      params
+    );
+    return rows.map((message) => ({
+      ...message,
+      citations:
+        typeof message.citations === "string"
+          ? JSON.parse(message.citations)
+          : message.citations,
+      steps: typeof message.steps === "string" ? JSON.parse(message.steps) : message.steps,
+      metadata:
+        typeof message.metadata === "string"
+          ? JSON.parse(message.metadata)
+          : message.metadata,
+    }));
+  }
+
+  public async addClientMessage(
+    threadId: string,
+    clientUserId: string,
+    role: "user" | "assistant",
+    content: string
+  ): Promise<Message> {
+    const id = `msg_${randomUUID()}`;
+    const createdAt = new Date().toISOString();
+    const rows = await this.query(
+      `INSERT INTO messages
+        (id, thread_id, role, content, citations, steps, created_at, metadata)
+       SELECT $1, t.id, $4, $5, '[]'::jsonb, NULL, $6, '{}'::jsonb
+       FROM threads t
+       WHERE t.id = $2
+         AND t.user_id = $3
+         AND t.scope = 'client'
+         AND t.case_id IS NULL
+       RETURNING *`,
+      [id, threadId, clientUserId, role, content, createdAt]
+    );
+    if (!rows[0]) throw new Error("Client conversation not found");
+    return {
+      ...rows[0],
+      citations: [],
+      steps: null,
+      metadata: {},
+    };
+  }
+
+  public async updateClientConversationTitleForFirstMessage(
+    threadId: string,
+    firstMessageId: string,
+    expectedCurrentTitle: string,
+    generatedTitle: string,
+    clientUserId: string
+  ): Promise<boolean> {
+    const rows = await this.query(
+      `UPDATE threads t
+       SET title = $1
+       WHERE t.id = $2
+         AND t.user_id = $3
+         AND t.scope = 'client'
+         AND t.case_id IS NULL
+         AND t.title = $4
+         AND EXISTS (
+           SELECT 1 FROM messages first_message
+           WHERE first_message.id = $5
+             AND first_message.thread_id = t.id
+             AND first_message.role = 'user'
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM messages other_user_message
+           WHERE other_user_message.thread_id = t.id
+             AND other_user_message.role = 'user'
+             AND other_user_message.id <> $5
+         )
+       RETURNING t.id`,
+      [generatedTitle, threadId, clientUserId, expectedCurrentTitle, firstMessageId]
+    );
+    return rows.length === 1;
+  }
+
+  public async deleteClientConversation(
+    threadId: string,
+    clientUserId: string
+  ): Promise<boolean> {
+    const rows = await this.query(
+      `DELETE FROM threads
+       WHERE id = $1 AND user_id = $2 AND scope = 'client' AND case_id IS NULL
+       RETURNING id`,
+      [threadId, clientUserId]
+    );
+    return rows.length === 1;
+  }
+
   public async updateThreadTitleForFirstMessage(
     threadId: string,
     firstMessageId: string,
@@ -1686,7 +2046,7 @@ class DatabaseService {
     const rows = await this.query(
       `UPDATE threads t
        SET title = $1
-       WHERE t.id = $2 AND t.user_id = $3 AND t.title = $4
+       WHERE t.id = $2 AND t.user_id = $3 AND t.title = $4 AND t.scope <> 'client'
          AND (
            t.case_id IS NULL OR EXISTS (
              SELECT 1 FROM cases c WHERE c.id = t.case_id AND c.firm_id = $5
@@ -1720,7 +2080,7 @@ class DatabaseService {
   public async deleteThread(id: string, context: OwnershipContext): Promise<boolean> {
     const rows = await this.query(
       `DELETE FROM threads t
-       WHERE t.id = $1 AND t.user_id = $2
+       WHERE t.id = $1 AND t.user_id = $2 AND t.scope <> 'client'
          AND (
            t.case_id IS NULL OR EXISTS (
              SELECT 1 FROM cases c WHERE c.id = t.case_id AND c.firm_id = $3
@@ -1736,7 +2096,7 @@ class DatabaseService {
     const rows = await this.query(
       `SELECT m.* FROM messages m
        JOIN threads t ON t.id = m.thread_id
-       WHERE m.thread_id = $1 AND t.user_id = $2
+       WHERE m.thread_id = $1 AND t.user_id = $2 AND t.scope <> 'client'
          AND (
            t.case_id IS NULL OR EXISTS (
              SELECT 1 FROM cases c WHERE c.id = t.case_id AND c.firm_id = $3
@@ -1762,7 +2122,7 @@ class DatabaseService {
       `SELECT * FROM (
          SELECT m.* FROM messages m
          JOIN threads t ON t.id = m.thread_id
-         WHERE m.thread_id = $1 AND t.user_id = $2
+         WHERE m.thread_id = $1 AND t.user_id = $2 AND t.scope <> 'client'
            AND (
              t.case_id IS NULL OR EXISTS (
                SELECT 1 FROM cases c WHERE c.id = t.case_id AND c.firm_id = $3
@@ -1797,7 +2157,7 @@ class DatabaseService {
       `INSERT INTO messages (id, thread_id, role, content, citations, steps, created_at, metadata)
        SELECT $1, t.id, $3, $4, $5, $6, $7, $10::jsonb
        FROM threads t
-       WHERE t.id = $2 AND t.user_id = $8
+       WHERE t.id = $2 AND t.user_id = $8 AND t.scope <> 'client'
          AND (
            t.case_id IS NULL OR EXISTS (
              SELECT 1 FROM cases c WHERE c.id = t.case_id AND c.firm_id = $9
@@ -1842,7 +2202,7 @@ class DatabaseService {
        WHERE m.id = $2 AND m.thread_id = $3
          AND EXISTS (
            SELECT 1 FROM threads t
-           WHERE t.id = m.thread_id AND t.user_id = $4
+           WHERE t.id = m.thread_id AND t.user_id = $4 AND t.scope <> 'client'
              AND (
                t.case_id IS NULL OR EXISTS (
                  SELECT 1 FROM cases c WHERE c.id = t.case_id AND c.firm_id = $5

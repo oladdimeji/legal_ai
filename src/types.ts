@@ -1,5 +1,6 @@
 export interface User {
   id: string;
+  account_type: AccountType;
   firm_id: string | null;
   firm_role: FirmRole | null;
   name: string | null;
@@ -13,6 +14,8 @@ export interface User {
   practice_areas: string[];
   custom_practice_area: string | null;
 }
+
+export type AccountType = "lawyer" | "client";
 
 export interface Firm {
   id: string;

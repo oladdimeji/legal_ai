@@ -20,6 +20,12 @@ export const OTP_RESEND_COOLDOWN_MS = 60 * 1000;
 export const OTP_REQUEST_WINDOW_MS = 60 * 60 * 1000;
 export const OTP_MAX_REQUESTS_PER_WINDOW = 5;
 
+export type AuthenticationAccountType = "lawyer" | "client";
+
+export function normalizeAccountType(value: unknown): AuthenticationAccountType {
+  return value === "client" ? "client" : "lawyer";
+}
+
 function scrypt(password: string, salt: Buffer): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     nodeScrypt(
@@ -142,7 +148,10 @@ export function safeInternalPath(value: unknown, fallback = "/assistant"): strin
     if (/^\/(?:auth|login|signup|onboarding)(?:\/|$|\?)/.test(path)) return fallback;
     const isProtectedPath =
       /^\/(?:assistant|matters|library|history|settings)\/?(?:[?#].*)?$/.test(path) ||
-      /^\/matters\/[^/?#]+(?:[?#].*)?$/.test(path);
+      /^\/matters\/[^/?#]+(?:[?#].*)?$/.test(path) ||
+      /^\/client\/(?:assistant|shared-matters|history|settings)\/?(?:[?#].*)?$/.test(path) ||
+      /^\/client\/shared-matters\/[^/?#]+(?:[?#].*)?$/.test(path) ||
+      /^\/client\/[A-Za-z0-9_-]{32,256}(?:[?#].*)?$/.test(path);
     return isProtectedPath ? path : fallback;
   } catch {
     return fallback;
@@ -169,13 +178,64 @@ export function verifyOtpHash(code: string, salt: string, expectedHash: string):
   return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 
-export function createOAuthState(returnTo: unknown): { state: string; cookieValue: string } {
+export function createOAuthState(
+  returnTo: unknown,
+  accountType: unknown = "lawyer"
+): { state: string; cookieValue: string } {
   const state = randomBytes(32).toString("base64url");
   const payload = Buffer.from(
-    JSON.stringify({ state, returnTo: safeInternalPath(returnTo) }),
+    JSON.stringify({
+      state,
+      returnTo: safeInternalPath(returnTo),
+      accountType: normalizeAccountType(accountType),
+    }),
     "utf8"
   ).toString("base64url");
   return { state, cookieValue: payload };
+}
+
+export function oauthAccountTypeFromCookie(
+  cookieValue: string | null
+): AuthenticationAccountType {
+  if (!cookieValue) return "lawyer";
+  try {
+    const parsed = JSON.parse(Buffer.from(cookieValue, "base64url").toString("utf8")) as {
+      accountType?: unknown;
+    };
+    return normalizeAccountType(parsed.accountType);
+  } catch {
+    return "lawyer";
+  }
+}
+
+export function extractCollaborationToken(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const candidate = value.trim();
+  if (!candidate || candidate.length > 2048 || /[\u0000-\u001f]/.test(candidate)) return null;
+
+  const validateToken = (token: string): string | null => {
+    try {
+      const decoded = decodeURIComponent(token).trim();
+      return /^[A-Za-z0-9_-]{32,256}$/.test(decoded) ? decoded : null;
+    } catch {
+      return null;
+    }
+  };
+
+  if (!candidate.includes("/") && !candidate.includes(":")) {
+    return validateToken(candidate);
+  }
+
+  try {
+    const parsed = new URL(candidate);
+    if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) {
+      return null;
+    }
+    const match = parsed.pathname.replace(/\/+$/, "").match(/^\/client\/([^/]+)$/);
+    return match ? validateToken(match[1]) : null;
+  } catch {
+    return null;
+  }
 }
 
 export function validateOAuthState(

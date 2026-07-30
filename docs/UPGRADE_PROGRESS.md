@@ -832,3 +832,36 @@ Known limitations:
 
 - Role promotion, demotion, transfer, and user removal are intentionally outside this phase.
 - Matter ownership and assignment remain intentionally deferred.
+
+## Authenticated Client Workspace
+
+Status: Complete.
+
+Implemented:
+
+- Added immutable lawyer/client account separation through the existing OTP and Google authentication flows; client accounts bypass Firm onboarding and route directly to a narrow Client Workspace.
+- Added server-side lawyer and client guards, with client-owned Assistant conversations isolated from lawyer History, Matter conversations, and Firm queries.
+- Turned existing lawyer-generated collaboration links into authenticated, email-matched claims without changing token format, copying Matter data, or replacing collaboration records.
+- Added persistent, revocation-aware Shared Matters with card/list views, secure link entry, shared-document preview/download, and the existing request, response, and upload workflow.
+- Added a general client-only Assistant with persistent one-time-titled conversations, client History, and minimal read-only Settings.
+- Preserved lawyer-side Matters, Firm Library, Assistant, History, Work Products, Firm Settings, collaboration management, sharing decisions, and stop-sharing behavior.
+
+Schema changes:
+
+- Migration 022, `authenticated_client_workspace`, additively creates `users.account_type` with existing accounts backfilled to `lawyer`, stores the requested account mode with OTP challenges, adds nullable `matter_client_access.claimed_by_user_id`, and adds supporting indexes.
+- No existing user, Firm, Matter, document, message, Work Product, request, response, or collaboration record is reset, renamed, recreated, or copied.
+
+Dependencies added or changed:
+
+- None.
+
+Verification:
+
+- Focused Client Workspace and portal reliability tests: passed, 30/30.
+- `npm run lint`: passed.
+- `npm test`: passed, 136/136 tests.
+- `npm run build`: passed with the existing Vite environment and large-chunk warnings.
+
+Known limitations:
+
+- Client profile editing, notifications, billing, account deletion, and email invitation delivery remain intentionally outside this phase.

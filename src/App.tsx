@@ -7,7 +7,7 @@ import SettingsView from "./components/SettingsView";
 import MatterWorkspaceView from "./components/MatterWorkspaceView";
 import HistoryView from "./components/HistoryView";
 import AuthView from "./components/AuthView";
-import ClientPortalView from "./components/ClientPortalView";
+import ClientWorkspace from "./components/ClientWorkspace";
 import LandingPage from "./components/LandingPage";
 import OnboardingView from "./components/OnboardingView";
 import { Account, Case } from "./types";
@@ -20,6 +20,21 @@ const protectedRouteKinds = new Set([
   "library",
   "history",
   "settings",
+  "client",
+  "clientAssistant",
+  "clientSharedMatters",
+  "clientSharedMatter",
+  "clientHistory",
+  "clientSettings",
+]);
+
+const clientRouteKinds = new Set([
+  "client",
+  "clientAssistant",
+  "clientSharedMatters",
+  "clientSharedMatter",
+  "clientHistory",
+  "clientSettings",
 ]);
 
 export default function App() {
@@ -32,7 +47,7 @@ export default function App() {
     route.kind === "matter" ? route.matterId : null
   );
   const [account, setAccount] = useState<Account | null>(null);
-  const [authLoading, setAuthLoading] = useState(route.kind !== "client");
+  const [authLoading, setAuthLoading] = useState(true);
   const [initialDraftId, setInitialDraftId] = useState<string | null>(null);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
@@ -53,10 +68,6 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (route.kind === "client") {
-      setAuthLoading(false);
-      return;
-    }
     let cancelled = false;
     const loadSession = async () => {
       try {
@@ -72,13 +83,14 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [route.kind === "client"]);
+  }, []);
 
   useEffect(() => {
-    if (authLoading || route.kind === "client") return;
+    if (authLoading) return;
     if (!account) {
       if (protectedRouteKinds.has(route.kind)) {
-        navigate(`/auth?returnTo=${encodeURIComponent(routePath(route))}`, true);
+        const mode = clientRouteKinds.has(route.kind) ? "&mode=client" : "";
+        navigate(`/auth?returnTo=${encodeURIComponent(routePath(route))}${mode}`, true);
       } else if (route.kind === "onboarding") {
         navigate("/auth", true);
       } else if (route.kind === "unknown") {
@@ -86,6 +98,17 @@ export default function App() {
       } else if (route.kind === "auth" && window.location.pathname !== "/auth") {
         navigate("/auth", true);
       }
+      return;
+    }
+    if (account.user.account_type === "client") {
+      if (!clientRouteKinds.has(route.kind)) navigate("/client/assistant", true);
+      return;
+    }
+    if (clientRouteKinds.has(route.kind)) {
+      navigate(
+        account.user.onboarding_completed && account.firm ? "/assistant" : "/onboarding",
+        true
+      );
       return;
     }
     if (!account.user.onboarding_completed || !account.firm) {
@@ -113,8 +136,15 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (account?.user.onboarding_completed && account.firm) void fetchCases();
-    else setCases([]);
+    if (
+      account?.user.account_type === "lawyer" &&
+      account.user.onboarding_completed &&
+      account.firm
+    ) {
+      void fetchCases();
+    } else {
+      setCases([]);
+    }
   }, [account, fetchCases]);
 
   useEffect(() => {
@@ -157,8 +187,9 @@ export default function App() {
     }
   };
 
-  if (route.kind === "client") return <ClientPortalView token={route.token} />;
-
+  // Legacy entry compatibility was rendered as:
+  // if (route.kind === "client") return <ClientPortalView token={route.token} />;
+  // It now authenticates and claims into ClientWorkspace instead.
   if (authLoading) {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-white text-xs font-mono uppercase text-zinc-500">
@@ -170,16 +201,23 @@ export default function App() {
   if (!account) {
     if (route.kind === "auth") {
       const params = new URLSearchParams(window.location.search);
+      const accountMode = params.get("mode") === "client" ? "client" : "lawyer";
       return (
         <AuthView
-          returnTo={safeReturnTo(params.get("returnTo"))}
+          accountMode={accountMode}
+          returnTo={safeReturnTo(
+            params.get("returnTo"),
+            accountMode === "client" ? "/client/assistant" : "/assistant"
+          )}
           initialError={params.get("authError") || ""}
           onAuthenticated={(nextAccount, redirectTo) => {
             setAccount(nextAccount);
             navigate(
-              nextAccount.user.onboarding_completed
-                ? safeReturnTo(redirectTo)
-                : "/onboarding",
+              nextAccount.user.account_type === "client"
+                ? safeReturnTo(redirectTo, "/client/assistant")
+                : nextAccount.user.onboarding_completed
+                  ? safeReturnTo(redirectTo)
+                  : "/onboarding",
               true
             );
           }}
@@ -187,7 +225,25 @@ export default function App() {
         />
       );
     }
-    return <LandingPage onAuthenticate={() => navigate("/auth")} />;
+    return (
+      <LandingPage
+        onAuthenticate={() => navigate("/auth")}
+        onClientPortal={() =>
+          navigate("/auth?mode=client&returnTo=%2Fclient%2Fshared-matters")
+        }
+      />
+    );
+  }
+
+  if (account.user.account_type === "client") {
+    return (
+      <ClientWorkspace
+        account={account}
+        route={route}
+        navigate={navigate}
+        onLogout={handleLogout}
+      />
+    );
   }
 
   if (!account.user.onboarding_completed || !account.firm) {

@@ -4,6 +4,7 @@ import { Account } from "../types";
 
 interface AuthViewProps {
   returnTo: string;
+  accountMode?: "lawyer" | "client";
   initialError?: string;
   onAuthenticated: (account: Account, redirectTo: string) => void;
   onBack: () => void;
@@ -16,6 +17,7 @@ interface ApiError {
 
 export default function AuthView({
   returnTo,
+  accountMode = "lawyer",
   initialError = "",
   onAuthenticated,
   onBack,
@@ -40,7 +42,7 @@ export default function AuthView({
       const response = await fetch("/api/auth/email/request-code", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email, accountType: accountMode }),
       });
       const data = (await response.json()) as ApiError;
       if (!response.ok) {
@@ -113,14 +115,16 @@ export default function AuthView({
 
         <div className="space-y-6 p-8">
           <div>
-            <h2 className="text-2xl font-semibold tracking-tight">Sign in to Exepts</h2>
+            <h2 className="text-2xl font-semibold tracking-tight">
+              {accountMode === "client" ? "Access Client Portal" : "Sign in to Exepts"}
+            </h2>
             <p className="mt-2 text-xs leading-5 text-zinc-500">
               Continue securely with Google or a one-time code sent to your email.
             </p>
           </div>
 
           <a
-            href={`/api/auth/google?returnTo=${encodeURIComponent(returnTo)}`}
+            href={`/api/auth/google?returnTo=${encodeURIComponent(returnTo)}&accountType=${accountMode}`}
             className="flex w-full items-center justify-center rounded border border-zinc-300 px-4 py-2.5 text-xs font-semibold hover:border-zinc-950 hover:bg-zinc-50"
           >
             Continue with Google
@@ -145,7 +149,7 @@ export default function AuthView({
                   autoComplete="email"
                   autoFocus
                   required
-                  placeholder="you@firm.com"
+                  placeholder={accountMode === "client" ? "you@example.com" : "you@firm.com"}
                   className="w-full rounded border border-zinc-300 px-3 py-2.5 text-sm outline-none focus:border-zinc-950"
                 />
               </label>
