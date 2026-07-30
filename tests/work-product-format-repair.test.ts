@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { extractGeneratedSubject } from "../server/extractGeneratedSubject.js";
+import {
+  extractGeneratedSubject,
+  extractSummaryHeading,
+} from "../server/extractGeneratedSubject.js";
 import {
   getWorkProductFormatInstructions,
   isWorkProductFormat,
@@ -64,13 +67,69 @@ test("Subject extraction is opening-line scoped and rejects unrelated subject te
   assert.equal(extractGeneratedSubject("Subject:\nTo: Client"), null);
 });
 
-test("draft creation uses cleaned content Subject or the unchanged technical fallback", async () => {
+test("Summary heading extraction uses the first meaningful opening heading", () => {
+  const content = `# Executive Summary
+
+## **Relationship   Between the Submitted Documents and the Employment Matter**
+
+Analysis remains unchanged.`;
+  const original = content;
+  assert.equal(
+    extractSummaryHeading(content),
+    "Relationship Between the Submitted Documents and the Employment Matter"
+  );
+  assert.equal(content, original);
+});
+
+test("Summary heading extraction rejects generic, metadata, deep, and unsafe headings", () => {
+  for (const heading of [
+    "# Summary",
+    "## Legal Summary",
+    "# Executive Summary",
+    "# Overview",
+    "# Introduction",
+    "# Background",
+    "# Relevant Facts",
+    "# Key Facts",
+    "# Key Issues",
+    "# Legal Issues",
+    "# Analysis",
+    "# Discussion",
+    "# Findings",
+    "# Recommendations",
+    "# Next Steps",
+    "# Conclusion",
+    "# Subject: Metadata",
+  ]) {
+    assert.equal(extractSummaryHeading(heading), null);
+  }
+  assert.equal(
+    extractSummaryHeading("# Legal Summary: Relationship Between the Documents and the Matter"),
+    "Legal Summary: Relationship Between the Documents and the Matter"
+  );
+  assert.equal(
+    extractSummaryHeading(`${Array.from({ length: 41 }, (_, index) => `Line ${index}`).join("\n")}\n# Too Deep`),
+    null
+  );
+  assert.equal(extractSummaryHeading(`# ${"Long heading ".repeat(30)}`), null);
+});
+
+test("draft creation uses Subject, summary heading, or the unchanged technical fallback", async () => {
   const server = await readFile("server.ts", "utf8");
   assert.match(server, /const cleanedContent = cleanGeneratedWorkProductContent\(draftResult\.text\)/);
+  assert.match(server, /const subjectTitle = extractGeneratedSubject\(cleanedContent\)/);
+  assert.match(server, /const summaryTitle = format === "summary" && !subjectTitle[\s\S]*?\? extractSummaryHeading\(cleanedContent\)[\s\S]*?: null/);
   assert.match(server, /const fallbackTitle = `Legal \$\{format\.charAt\(0\)\.toUpperCase\(\) \+ format\.slice\(1\)\} - Thread Ref: \$\{thread\.title\.substring\(0, 30\)\}`/);
-  assert.match(server, /const title = extractGeneratedSubject\(cleanedContent\) \|\| fallbackTitle/);
+  assert.match(server, /const title = subjectTitle \|\| summaryTitle \|\| fallbackTitle/);
   assert.match(server, /db\.createDraft\([\s\S]*?title,\s*cleanedContent,\s*requestOwnership/);
-  assert.doesNotMatch(server, /matter\.name[\s\S]{0,100}extractGeneratedSubject|extractGeneratedSubject[\s\S]{0,100}matter\.name/);
+  assert.doesNotMatch(server, /matter\.name[\s\S]{0,100}extractSummaryHeading|extractSummaryHeading[\s\S]{0,100}matter\.name/);
+
+  const promptConstruction = server.slice(
+    server.indexOf("const draftPrompt"),
+    server.indexOf('const draftResult = await callModel("draft-generation"')
+  );
+  assert.match(promptConstruction, /\$\{formatInstructions\}/);
+  assert.doesNotMatch(promptConstruction, /extractGeneratedSubject|extractSummaryHeading|summaryTitle/);
 });
 
 test("historical and custom Work Product titles remain untouched", async () => {
@@ -95,4 +154,29 @@ test("Matter Source preview reuses the read-only Work Product presentation", asy
   assert.match(sources, /setPreview\(source\)/);
   assert.match(sources, /method: "DELETE"/);
   assert.match(sources, /method: "POST"/);
+});
+
+test("Firm Library preview matches the read-only document presentation", async () => {
+  const library = await readFile("src/components/FirmLibraryView.tsx", "utf8");
+  assert.match(library, /import WorkProductDocument from "\.\/WorkProductDocument"/);
+  assert.match(library, /<WorkProductDocument content=\{preview\.extracted_text\} \/>/);
+  assert.match(library, /Firm Library · \{preview\.section\}/);
+  assert.match(library, /aria-label="Close Firm Library preview"/);
+  assert.match(library, /min-h-0 flex-1 overflow-y-auto/);
+  assert.match(library, /No extracted content is available for this Firm Library document/);
+
+  const preview = library.slice(library.indexOf("{preview &&"));
+  assert.doesNotMatch(preview, /RichDocumentEditor|Editor|Save|sharing|Export/);
+});
+
+test("Firm Library upload keeps multi-file handling without an optional title", async () => {
+  const library = await readFile("src/components/FirmLibraryView.tsx", "utf8");
+  assert.doesNotMatch(library, /Optional title for one-file upload only/);
+  assert.doesNotMatch(library, /\[title, setTitle\]|form\.append\("title"/);
+  assert.match(library, /fileSelection\.files\.forEach\(\(file\) => form\.append\("files", file\)\)/);
+  assert.match(library, /type="file" multiple/);
+  assert.match(library, /SelectedFileList/);
+  assert.match(library, /setUploadError/);
+  assert.match(library, /setUploading/);
+  assert.match(library, /Upload and index/);
 });

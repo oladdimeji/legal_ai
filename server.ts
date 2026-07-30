@@ -22,7 +22,7 @@ import { extractUploads, MAX_FILE_COUNT, MAX_FILE_SIZE_BYTES } from "./server/fi
 import { markdownToDocxDocument } from "./server/docxMarkdown.js";
 import { cleanMatterIntelligenceContent } from "./server/matterIntelligenceContent.js";
 import { cleanClientAssistantContent, cleanGeneratedBoilerplate } from "./server/generatedContentCleanup.js";
-import { extractGeneratedSubject } from "./server/extractGeneratedSubject.js";
+import { extractGeneratedSubject, extractSummaryHeading } from "./server/extractGeneratedSubject.js";
 import { getWorkProductFormatInstructions, isWorkProductFormat } from "./server/workProductFormat.js";
 import { canonicalizeAssistantCitations, rewriteGoogleGroundingCitations, stripInternalCitationsForWorkProduct } from "./src/lib/assistantCitations.js";
 import {
@@ -1703,8 +1703,12 @@ SHARED INSTRUCTIONS:
       });
 
       const cleanedContent = cleanGeneratedWorkProductContent(draftResult.text);
+      const subjectTitle = extractGeneratedSubject(cleanedContent);
+      const summaryTitle = format === "summary" && !subjectTitle
+        ? extractSummaryHeading(cleanedContent)
+        : null;
       const fallbackTitle = `Legal ${format.charAt(0).toUpperCase() + format.slice(1)} - Thread Ref: ${thread.title.substring(0, 30)}`;
-      const title = extractGeneratedSubject(cleanedContent) || fallbackTitle;
+      const title = subjectTitle || summaryTitle || fallbackTitle;
       const newDraft = await db.createDraft(
         threadId,
         thread.case_id,

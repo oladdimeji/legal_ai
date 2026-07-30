@@ -746,3 +746,28 @@ Verification:
 - `npm run lint`: passed.
 - `npm test`: passed, 100/100 tests.
 - `npm run build`: passed with the existing Vite environment and large-chunk warnings.
+
+## Summary Titles & Firm Library Presentation
+
+Status: Complete.
+
+Implemented:
+
+- Added a summary-only fallback that names newly generated Summary Work Product from the first meaningful opening Markdown heading when no generated Subject exists.
+- Updated the Firm Library document modal to use the existing read-only Work Product renderer and match the Matter Source preview presentation.
+- Removed the optional one-file title input and its upload FormData wiring from the Firm Library upload card.
+
+Schema changes:
+
+- None.
+
+Dependencies added or changed:
+
+- None.
+
+Verification:
+
+- Focused tests: passed, 11/11.
+- `npm run lint`: passed.
+- `npm test`: passed, 104/104 tests.
+- `npm run build`: passed with the existing Vite environment and large-chunk warnings.

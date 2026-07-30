@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Database, Eye, FileText, FolderOpen, Search, Trash2, Upload, X } from "lucide-react";
 import { Document } from "../types";
 import SelectedFileList from "./SelectedFileList";
+import WorkProductDocument from "./WorkProductDocument";
 import { useCumulativeFileSelection } from "../hooks/useCumulativeFileSelection";
 
 export default function FirmLibraryView() {
@@ -11,7 +12,6 @@ export default function FirmLibraryView() {
   const [semantic, setSemantic] = useState(true);
   const [section, setSection] = useState<string | null>(null);
   const [preview, setPreview] = useState<Document | null>(null);
-  const [title, setTitle] = useState("");
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
   const fileSelection = useCumulativeFileSelection();
@@ -51,11 +51,9 @@ export default function FirmLibraryView() {
     setUploadError("");
     try {
       const form = new FormData();
-      if (fileSelection.files.length === 1 && title.trim()) form.append("title", title.trim());
       fileSelection.files.forEach((file) => form.append("files", file));
       const response = await fetch("/api/documents", { method: "POST", body: form });
       if (!response.ok) throw new Error((await response.json()).error || "Upload failed");
-      setTitle("");
       fileSelection.clearFiles();
       await load();
     } catch (error) {
@@ -119,14 +117,34 @@ export default function FirmLibraryView() {
             </label>
             {fileSelection.fileError && <p className="text-xs text-red-700">{fileSelection.fileError}</p>}
             <SelectedFileList files={fileSelection.files} onRemove={fileSelection.removeFile} />
-            <input value={title} onChange={(event) => setTitle(event.target.value)} className="w-full rounded border border-zinc-300 bg-white px-3 py-2 text-xs" placeholder="Optional title for one-file upload only" />
             {uploadError && <p className="text-xs text-red-700">{uploadError}</p>}
             <button disabled={uploading || fileSelection.files.length === 0} className="w-full rounded bg-zinc-950 px-3 py-2 text-[10px] font-mono font-bold uppercase text-white disabled:cursor-not-allowed disabled:opacity-40">{uploading ? "Processing..." : "Upload and index"}</button>
           </form>
         </div>
       </div>
 
-      {preview && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-6"><div className="flex max-h-[85vh] w-full max-w-3xl flex-col rounded border border-zinc-300 bg-white shadow-xl"><header className="flex items-center justify-between border-b p-4"><div><h3 className="text-sm font-semibold">{preview.title}</h3><p className="text-[10px] font-mono uppercase text-zinc-400">Firm Library · {preview.section}</p></div><button onClick={() => setPreview(null)} className="rounded p-1 hover:bg-zinc-100"><X className="h-4 w-4" /></button></header><div className="overflow-y-auto whitespace-pre-wrap p-6 text-sm leading-relaxed text-zinc-700">{preview.extracted_text}</div></div></div>}
+      {preview && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-6">
+          <div className="flex max-h-[85vh] w-full max-w-4xl flex-col overflow-hidden rounded border bg-white shadow-xl">
+            <div className="flex shrink-0 items-center justify-between gap-4 border-b border-zinc-100 px-6 py-4">
+              <div className="min-w-0">
+                <h3 className="truncate font-semibold">{preview.title}</h3>
+                <p className="text-[10px] font-mono uppercase text-zinc-400">Firm Library · {preview.section}</p>
+              </div>
+              <button onClick={() => setPreview(null)} aria-label="Close Firm Library preview" className="shrink-0 rounded p-1 hover:bg-zinc-100">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto bg-zinc-50 px-6 py-8">
+              <div className="mx-auto min-h-full max-w-3xl rounded border border-zinc-100 bg-white px-8 py-10 shadow-sm">
+                {preview.extracted_text?.trim()
+                  ? <WorkProductDocument content={preview.extracted_text} />
+                  : <p className="text-sm text-zinc-500">No extracted content is available for this Firm Library document.</p>}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
