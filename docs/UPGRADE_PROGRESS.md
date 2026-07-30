@@ -896,3 +896,12 @@ Verification:
 Known limitations:
 
 - Collaboration-token expiration is not part of the existing product schema, so tokens remain valid until rotation, revocation, or claim by the intended client.
+
+## Collaboration Token Redemption Repair
+
+Status: Complete.
+
+- Collaboration tokens now act as the invitation credential for an authenticated Client account; the lawyer-entered email remains contact metadata and no longer restricts redemption.
+- The first valid claimant is stored on the existing collaboration, same-client redemption remains idempotent, and another client cannot take over the claim.
+- Explicit lawyer revocation now detaches the claimed client account, while active token regeneration preserves the current claim.
+- No schema, migration, token generation, token hashing, parsing, authentication, Shared Matter authorization, or Client Assistant behavior changed.

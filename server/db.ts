@@ -1031,12 +1031,7 @@ class DatabaseService {
        SELECT $1, c.id, $3, $4, 'Pending', $5 FROM cases c
        WHERE c.id = $2 AND c.firm_id = $6
        ON CONFLICT (case_id) DO UPDATE SET client_name = EXCLUDED.client_name,
-         client_email = EXCLUDED.client_email,
-         claimed_by_user_id = CASE
-           WHEN LOWER(BTRIM(matter_client_access.client_email)) = LOWER(BTRIM(EXCLUDED.client_email))
-             THEN matter_client_access.claimed_by_user_id
-           ELSE NULL
-         END
+         client_email = EXCLUDED.client_email
        RETURNING id, case_id, client_name, client_email, invitation_status, created_at,
          activated_at, revoked_at`,
       [id, caseId, name, email, now, context.firmId]
@@ -1064,7 +1059,8 @@ class DatabaseService {
 
   public async revokeClientInvite(caseId: string, context: OwnershipContext): Promise<any> {
     const rows = await this.query(
-      `UPDATE matter_client_access ca SET token_hash = NULL, invitation_status = 'Revoked', revoked_at = $1
+      `UPDATE matter_client_access ca SET token_hash = NULL, invitation_status = 'Revoked',
+         revoked_at = $1, claimed_by_user_id = NULL
        WHERE ca.case_id = $2 AND EXISTS (
          SELECT 1 FROM cases c WHERE c.id = ca.case_id AND c.firm_id = $3
        ) RETURNING id, case_id, client_name, client_email, invitation_status,
@@ -1176,8 +1172,7 @@ class DatabaseService {
 
   public async claimClientCollaboration(
     tokenHash: string,
-    clientUserId: string,
-    clientEmail: string
+    clientUserId: string
   ): Promise<any> {
     await this.ensureSchema();
     const client = await getPool().connect();
@@ -1186,9 +1181,8 @@ class DatabaseService {
       const userResult = await client.query<{
         id: string;
         account_type: AccountType;
-        email: string;
       }>(
-        `SELECT id, account_type, email
+        `SELECT id, account_type
          FROM users
          WHERE id = $1
          FOR UPDATE`,
@@ -1202,12 +1196,11 @@ class DatabaseService {
       const accessResult = await client.query<{
         id: string;
         case_id: string;
-        client_email: string;
         claimed_by_user_id: string | null;
         matter_name: string;
         firm_name: string | null;
       }>(
-        `SELECT ca.id, ca.case_id, ca.client_email, ca.claimed_by_user_id,
+        `SELECT ca.id, ca.case_id, ca.claimed_by_user_id,
            c.name AS matter_name, f.name AS firm_name
          FROM matter_client_access ca
          JOIN cases c ON c.id = ca.case_id
@@ -1219,10 +1212,8 @@ class DatabaseService {
         [tokenHash]
       );
       const access = accessResult.rows[0];
-      const authenticatedEmail = clientEmail.trim().toLowerCase();
       if (
         !access ||
-        access.client_email.trim().toLowerCase() !== authenticatedEmail ||
         (access.claimed_by_user_id && access.claimed_by_user_id !== clientUserId)
       ) {
         throw new Error("CLIENT_COLLABORATION_UNAVAILABLE");

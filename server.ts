@@ -677,8 +677,7 @@ async function startServer() {
       try {
         const claimed = await db.claimClientCollaboration(
           hashSessionToken(token),
-          req.auth!.user.id,
-          req.auth!.user.email
+          req.auth!.user.id
         );
         res.setHeader("Cache-Control", "no-store");
         return res.status(200).json(claimed);

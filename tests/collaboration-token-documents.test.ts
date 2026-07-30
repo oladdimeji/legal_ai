@@ -34,7 +34,10 @@ test("client redemption is token-only, trim-safe, immediate, and never navigates
 });
 
 test("redemption transaction locks the invitation, derives the client, and cannot copy Matter data", async () => {
-  const database = await readFile("server/db.ts", "utf8");
+  const [database, server] = await Promise.all([
+    readFile("server/db.ts", "utf8"),
+    readFile("server.ts", "utf8"),
+  ]);
   const claim = database.slice(
     database.indexOf("public async claimClientCollaboration"),
     database.indexOf("public async getClientSharedMatters")
@@ -45,7 +48,50 @@ test("redemption transaction locks the invitation, derives the client, and canno
   assert.match(claim, /claimed_by_user_id !== clientUserId/);
   assert.match(claim, /WHERE id = \$2 AND claimed_by_user_id IS NULL/);
   assert.match(claim, /await client\.query\("COMMIT"\)/);
+  assert.doesNotMatch(claim, /clientEmail|authenticatedEmail|ca\.client_email/);
   assert.doesNotMatch(claim, /INSERT INTO cases|INSERT INTO drafts|INSERT INTO documents/);
+  assert.match(
+    server,
+    /claimClientCollaboration\(\s*hashSessionToken\(token\),\s*req\.auth!\.user\.id\s*\)/
+  );
+});
+
+test("explicit revocation detaches the client while active token rotation preserves the claim", async () => {
+  const database = await readFile("server/db.ts", "utf8");
+  const activation = database.slice(
+    database.indexOf("public async activateClientInvite"),
+    database.indexOf("public async revokeClientInvite")
+  );
+  const revocation = database.slice(
+    database.indexOf("public async revokeClientInvite"),
+    database.indexOf("public async createCollaborationRequest")
+  );
+  const collaboratorSave = database.slice(
+    database.indexOf("public async saveClientCollaborator"),
+    database.indexOf("public async activateClientInvite")
+  );
+  assert.match(activation, /SET token_hash = \$1, invitation_status = 'Active'/);
+  assert.doesNotMatch(activation, /claimed_by_user_id\s*=\s*NULL/);
+  assert.match(
+    revocation,
+    /token_hash = NULL, invitation_status = 'Revoked',[\s\S]*claimed_by_user_id = NULL/
+  );
+  assert.doesNotMatch(collaboratorSave, /claimed_by_user_id\s*=/);
+});
+
+test("first claim, same-client retry, and other-client rejection remain explicit", async () => {
+  const database = await readFile("server/db.ts", "utf8");
+  const claim = database.slice(
+    database.indexOf("public async claimClientCollaboration"),
+    database.indexOf("public async getClientSharedMatters")
+  );
+  assert.match(
+    claim,
+    /access\.claimed_by_user_id && access\.claimed_by_user_id !== clientUserId/
+  );
+  assert.match(claim, /if \(!access\.claimed_by_user_id\)/);
+  assert.match(claim, /SET claimed_by_user_id = \$1/);
+  assert.match(claim, /return \{\s*id: access\.id/);
 });
 
 test("client document allow-list is session-derived and rechecks active sharing for every message", async () => {

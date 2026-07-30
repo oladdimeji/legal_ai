@@ -76,7 +76,7 @@ test("server has reusable account guards and keeps client APIs outside the lawye
   );
 });
 
-test("claiming is client-derived, email-matched, locked, idempotent, and non-copying", async () => {
+test("claiming uses the token credential, client identity, locking, and idempotency without email authorization", async () => {
   const database = await readFile("server/db.ts", "utf8");
   const claim = database.slice(
     database.indexOf("public async claimClientCollaboration"),
@@ -84,9 +84,9 @@ test("claiming is client-derived, email-matched, locked, idempotent, and non-cop
   );
   assert.match(claim, /account_type !== "client"/);
   assert.match(claim, /FOR UPDATE OF ca/);
-  assert.match(claim, /client_email\.trim\(\)\.toLowerCase\(\)/);
   assert.match(claim, /claimed_by_user_id && access\.claimed_by_user_id !== clientUserId/);
   assert.match(claim, /if \(!access\.claimed_by_user_id\)/);
+  assert.doesNotMatch(claim, /clientEmail|authenticatedEmail|ca\.client_email/);
   assert.doesNotMatch(claim, /INSERT INTO cases|INSERT INTO drafts|INSERT INTO documents/);
 });
 
