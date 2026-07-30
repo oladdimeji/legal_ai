@@ -265,7 +265,11 @@ export default function App() {
           />
         )}
         {route.kind === "settings" && (
-          <SettingsView user={account.user} onLogout={handleLogout} />
+          <SettingsView
+            account={account}
+            onAccountUpdated={setAccount}
+            onLogout={handleLogout}
+          />
         )}
       </main>
     </div>

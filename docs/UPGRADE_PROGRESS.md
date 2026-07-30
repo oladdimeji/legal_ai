@@ -797,3 +797,38 @@ Verification:
 - `npm run lint`: passed.
 - `npm test`: passed, 109/109 tests.
 - `npm run build`: passed with the existing Vite environment and large-chunk warnings.
+
+## Firm Settings Foundation
+
+Status: Complete.
+
+Implemented:
+
+- Added stored Firm roles with two values only: Admin and Member.
+- Independent onboarding now assigns Admin; invitation-code onboarding assigns Member without exposing a role selector.
+- Added server-authorized Firm Settings for Admins to view and edit the existing Firm name, view or securely generate/regenerate its existing invitation code, and view a read-only same-Firm member directory.
+- Added member-facing Account and read-only Firm details while keeping invitation codes and the Firm directory unavailable to Members.
+- Firm name changes update the authenticated React Account immediately so the Sidebar reflects the saved name without refresh or logout.
+- Preserved Firm Library access as shared for every user with the same `firm_id`, with other Firms excluded by the existing workspace-scoped queries.
+- Matter ownership and Matter assignment were intentionally deferred. No Matter schema, authorization, visibility, route, query, conversation, Source, Intelligence, Collaboration, or UI behavior was changed.
+
+Schema changes:
+
+- Migration 021, `firm_admin_and_member_roles`, additively creates nullable `users.firm_role`, backfills existing `independent` users as `admin` and existing `firm` join users as `member`, adds a two-value check constraint, and adds a Firm/role index.
+- Existing users, Firms, invitation codes, onboarding state, IDs, and application data are preserved.
+
+Dependencies added or changed:
+
+- None. Invitation codes use Node's existing cryptographic utilities and copying uses the browser Clipboard API.
+
+Verification:
+
+- Focused Firm Settings tests: passed, 11/11.
+- `npm run lint`: passed.
+- `npm test`: passed, 120/120 tests.
+- `npm run build`: passed with the existing Vite environment and large-chunk warnings.
+
+Known limitations:
+
+- Role promotion, demotion, transfer, and user removal are intentionally outside this phase.
+- Matter ownership and assignment remain intentionally deferred.

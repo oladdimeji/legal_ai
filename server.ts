@@ -764,7 +764,82 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
     return next();
   };
 
+  const requireFirmAdmin = (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ) => {
+    if (!req.auth) {
+      return res.status(401).json({ error: "Authentication required." });
+    }
+    if (
+      !req.auth.user.onboarding_completed ||
+      !req.auth.user.firm_id ||
+      !req.auth.firm ||
+      req.auth.user.firm_id !== req.auth.firm.id ||
+      req.auth.user.firm_role !== "admin"
+    ) {
+      return res.status(403).json({ error: "Firm Admin access is required." });
+    }
+    return next();
+  };
+
   app.use("/api", requireAuth, requireCompletedOnboarding);
+
+  app.get(
+    "/api/settings/firm-admin",
+    requireFirmAdmin,
+    async (req: AuthenticatedRequest, res) => {
+      try {
+        const settings = await db.getFirmAdminSettings(ownership(req));
+        res.setHeader("Cache-Control", "no-store");
+        if (!settings) return res.status(404).json({ error: "Firm settings not found." });
+        return res.json(settings);
+      } catch (error) {
+        console.error("Firm administration loading failed.");
+        return res.status(500).json({ error: "Unable to load Firm administration." });
+      }
+    }
+  );
+
+  app.patch(
+    "/api/settings/firm",
+    requireFirmAdmin,
+    async (req: AuthenticatedRequest, res) => {
+      const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
+      if (!name) return res.status(400).json({ error: "Firm name is required." });
+      if (name.length > 120) {
+        return res.status(400).json({ error: "Firm name must be 120 characters or fewer." });
+      }
+      try {
+        const firm = await db.updateFirmName(name, ownership(req));
+        res.setHeader("Cache-Control", "no-store");
+        if (!firm) return res.status(404).json({ error: "Firm settings not found." });
+        return res.json(firm);
+      } catch (error) {
+        console.error("Firm name update failed.");
+        return res.status(500).json({ error: "Unable to save the Firm name." });
+      }
+    }
+  );
+
+  app.post(
+    "/api/settings/firm/invitation-code",
+    requireFirmAdmin,
+    async (req: AuthenticatedRequest, res) => {
+      try {
+        const invitationCode = await db.regenerateFirmInvitationCode(ownership(req));
+        res.setHeader("Cache-Control", "no-store");
+        if (!invitationCode) {
+          return res.status(404).json({ error: "Firm settings not found." });
+        }
+        return res.json({ invitationCode });
+      } catch (error) {
+        console.error("Firm invitation code generation failed.");
+        return res.status(500).json({ error: "Unable to generate an invitation code." });
+      }
+    }
+  );
 
   // Enhance/Improve Raw Prompt into Legal-Grade Query
   app.post("/api/improve-prompt", async (req, res) => {

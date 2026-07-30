@@ -1,6 +1,7 @@
 export interface User {
   id: string;
   firm_id: string | null;
+  firm_role: FirmRole | null;
   name: string | null;
   email: string;
   google_sub: string | null;
@@ -19,6 +20,8 @@ export interface Firm {
   invitation_code?: string | null;
 }
 
+export type FirmRole = "admin" | "member";
+
 export type ProfessionalRole =
   | "Lawyer"
   | "Paralegal"
@@ -31,6 +34,24 @@ export type WorkspaceType = "firm" | "independent";
 export interface Account {
   user: User;
   firm: Firm | null;
+}
+
+export interface FirmAdminMember {
+  id: string;
+  name: string | null;
+  email: string;
+  professionalRole: ProfessionalRole | null;
+  customProfessionalRole: string | null;
+  firmRole: FirmRole;
+}
+
+export interface FirmAdminSettings {
+  firm: {
+    id: string;
+    name: string;
+    invitationCode: string | null;
+  };
+  members: FirmAdminMember[];
 }
 
 export interface Document {

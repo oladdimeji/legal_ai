@@ -1,5 +1,5 @@
 import pg from "pg";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import {
   Account,
   Document,
@@ -9,6 +9,8 @@ import {
   Message,
   Draft,
   Citation,
+  FirmAdminSettings,
+  FirmRole,
   ProfessionalRole,
   WorkspaceType,
 } from "../src/types.js";
@@ -38,6 +40,7 @@ function accountFromRow(row: Record<string, unknown>): Account {
     user: {
       id: String(row.id),
       firm_id: row.firm_id ? String(row.firm_id) : null,
+      firm_role: (row.firm_role || null) as FirmRole | null,
       name: row.name ? String(row.name) : null,
       email: String(row.email),
       google_sub: row.google_sub ? String(row.google_sub) : null,
@@ -181,8 +184,9 @@ class DatabaseService {
       ["firm_123", "Sterling & Croft LLP"]
     );
     await this.query(
-      `INSERT INTO users (id, firm_id, name, email, onboarding_completed, workspace_type)
-       VALUES ($1, $2, $3, $4, TRUE, 'firm') ON CONFLICT (id) DO NOTHING`,
+      `INSERT INTO users
+        (id, firm_id, name, email, onboarding_completed, workspace_type, firm_role)
+       VALUES ($1, $2, $3, $4, TRUE, 'firm', 'member') ON CONFLICT (id) DO NOTHING`,
       ["user_456", "firm_123", "Oladimeji", "oladimeji@workpodd.com"]
     );
     await this.query(
@@ -596,7 +600,8 @@ class DatabaseService {
         await client.query(
           `UPDATE users SET firm_id = $2, name = $3, professional_role = $4,
              custom_professional_role = $5, workspace_type = $6, practice_areas = $7::jsonb,
-             custom_practice_area = $8, onboarding_completed = TRUE, updated_at = $9
+             custom_practice_area = $8, firm_role = $9, onboarding_completed = TRUE,
+             updated_at = $10
            WHERE id = $1`,
           [
             input.userId,
@@ -607,6 +612,7 @@ class DatabaseService {
             input.workspaceType,
             JSON.stringify(input.practiceAreas),
             input.customPracticeArea,
+            input.workspaceType === "independent" ? "admin" : "member",
             now,
           ]
         );
@@ -628,6 +634,98 @@ class DatabaseService {
 
   public async deleteSession(tokenHash: string): Promise<void> {
     await this.query("DELETE FROM sessions WHERE token_hash = $1", [tokenHash]);
+  }
+
+  public async getFirmAdminSettings(
+    context: OwnershipContext
+  ): Promise<FirmAdminSettings | null> {
+    const firms = await this.query(
+      `SELECT f.id, f.name, f.invitation_code
+       FROM firm f
+       WHERE f.id = $2
+         AND EXISTS (
+           SELECT 1 FROM users administrator
+           WHERE administrator.id = $1
+             AND administrator.firm_id = f.id
+             AND administrator.firm_role = 'admin'
+         )`,
+      [context.userId, context.firmId]
+    );
+    const firm = firms[0];
+    if (!firm) return null;
+
+    const members = await this.query(
+      `SELECT id, name, email, professional_role, custom_professional_role, firm_role
+       FROM users
+       WHERE firm_id = $1
+       ORDER BY CASE firm_role WHEN 'admin' THEN 0 ELSE 1 END,
+                LOWER(COALESCE(name, email)), LOWER(email)`,
+      [context.firmId]
+    );
+    return {
+      firm: {
+        id: String(firm.id),
+        name: String(firm.name),
+        invitationCode: firm.invitation_code ? String(firm.invitation_code) : null,
+      },
+      members: members.map((member) => ({
+        id: String(member.id),
+        name: member.name ? String(member.name) : null,
+        email: String(member.email),
+        professionalRole: (member.professional_role || null) as ProfessionalRole | null,
+        customProfessionalRole: member.custom_professional_role
+          ? String(member.custom_professional_role)
+          : null,
+        firmRole: member.firm_role as FirmRole,
+      })),
+    };
+  }
+
+  public async updateFirmName(
+    name: string,
+    context: OwnershipContext
+  ): Promise<{ id: string; name: string } | null> {
+    const rows = await this.query(
+      `UPDATE firm f
+       SET name = $3
+       WHERE f.id = $2
+         AND EXISTS (
+           SELECT 1 FROM users administrator
+           WHERE administrator.id = $1
+             AND administrator.firm_id = f.id
+             AND administrator.firm_role = 'admin'
+         )
+       RETURNING f.id, f.name`,
+      [context.userId, context.firmId, name]
+    );
+    return rows[0] ? { id: String(rows[0].id), name: String(rows[0].name) } : null;
+  }
+
+  public async regenerateFirmInvitationCode(
+    context: OwnershipContext
+  ): Promise<string | null> {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const invitationCode = `EXE-${randomBytes(8).toString("hex").toUpperCase()}`;
+      try {
+        const rows = await this.query(
+          `UPDATE firm f
+           SET invitation_code = $3
+           WHERE f.id = $2
+             AND EXISTS (
+               SELECT 1 FROM users administrator
+               WHERE administrator.id = $1
+                 AND administrator.firm_id = f.id
+                 AND administrator.firm_role = 'admin'
+             )
+           RETURNING f.invitation_code`,
+          [context.userId, context.firmId, invitationCode]
+        );
+        return rows[0] ? String(rows[0].invitation_code) : null;
+      } catch (error) {
+        if ((error as { code?: string }).code !== "23505") throw error;
+      }
+    }
+    throw new Error("INVITATION_CODE_GENERATION_FAILED");
   }
 
   public async getCases(context: OwnershipContext): Promise<Case[]> {

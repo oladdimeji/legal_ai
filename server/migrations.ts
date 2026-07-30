@@ -517,6 +517,41 @@ const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 21,
+    name: "firm_admin_and_member_roles",
+    async run(client) {
+      await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS firm_role TEXT");
+      await client.query(`
+        UPDATE users
+        SET firm_role = CASE
+          WHEN workspace_type = 'independent' THEN 'admin'
+          WHEN workspace_type = 'firm' THEN 'member'
+          ELSE firm_role
+        END
+        WHERE firm_role IS NULL
+      `);
+      await client.query(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint
+            WHERE conname = 'users_firm_role_check'
+              AND conrelid = 'users'::regclass
+          ) THEN
+            ALTER TABLE users
+            ADD CONSTRAINT users_firm_role_check
+            CHECK (firm_role IS NULL OR firm_role IN ('admin', 'member'));
+          END IF;
+        END
+        $$
+      `);
+      await client.query(
+        "CREATE INDEX IF NOT EXISTS users_firm_role_idx ON users(firm_id, firm_role)"
+      );
+    },
+  },
 ];
 
 export async function runMigrations(pool: Pool): Promise<void> {
