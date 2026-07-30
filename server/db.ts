@@ -1465,7 +1465,9 @@ class DatabaseService {
   ): Promise<any> {
     const access = await this.resolvePortalAccess(tokenHash);
     const original = access ? await this.getPermittedPortalDraft(tokenHash, draftId) : null;
-    if (!access || !original) throw new Error("Shared Work Product not found");
+    if (!access || !original || original.revision_type === "Client Revision") {
+      throw new Error("Shared Work Product not found");
+    }
     const id = `draft_${randomUUID()}`;
     const now = new Date().toISOString();
     const rows = await this.query(

@@ -905,3 +905,11 @@ Status: Complete.
 - The first valid claimant is stored on the existing collaboration, same-client redemption remains idempotent, and another client cannot take over the claim.
 - Explicit lawyer revocation now detaches the claimed client account, while active token regeneration preserves the current claim.
 - No schema, migration, token generation, token hashing, parsing, authentication, Shared Matter authorization, or Client Assistant behavior changed.
+
+## Persistent Client Work Product Revisions
+
+Status: Complete.
+
+- Clients can create editable Client Revisions from shared Work Products in the persistent Shared Matters interface.
+- Each revision is stored as a separate existing Matter draft; the lawyer’s original remains unchanged.
+- Comments remain deferred and were not changed.

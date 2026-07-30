@@ -176,6 +176,62 @@ test("Shared Matters has add, card/list, safe metadata, two detail tabs, preview
   assert.doesNotMatch(view, /preliminary_objectives|Matter Intelligence|Firm Library/);
 });
 
+test("persistent Shared Matters reconnects Edit a Copy to the existing Client Revision flow", async () => {
+  const [view, server, database] = await Promise.all([
+    readFile("src/components/ClientSharedMattersView.tsx", "utf8"),
+    readFile("server.ts", "utf8"),
+    readFile("server/db.ts", "utf8"),
+  ]);
+  const detail = view.slice(view.indexOf("function SharedMatterDetail"));
+  const revisionMethod = database.slice(
+    database.indexOf("public async createPortalClientRevision"),
+    database.indexOf("public async uploadPortalDocument")
+  );
+  const persistentEndpoint = server.slice(
+    server.indexOf(
+      '"/api/client/shared-matters/:accessId/work-products/:draftId/edit-copy"'
+    ),
+    server.indexOf('"/api/client/shared-matters/:accessId/documents"')
+  );
+
+  assert.match(detail, /<RichDocumentEditor/);
+  assert.match(detail, /setEditContent\(currentDraft\.content\)/);
+  assert.match(detail, /The lawyer’s original will remain unchanged\./);
+  assert.match(detail, /Save Client Revision/);
+  assert.match(detail, /method: "POST"/);
+  assert.match(detail, /work-products\/\$\{encodeURIComponent\(editingDraft\.id\)\}\/edit-copy/);
+  assert.match(detail, /JSON\.stringify\(\{ content: editContent \}\)/);
+  assert.match(detail, /revisions:\s*\[\s*revision,/);
+  assert.match(detail, /draft\.revision_type === "Client Revision"/);
+  assert.match(detail, /draft\.revision_type !== "Client Revision"/);
+  assert.match(detail, /if \(!editingDraft \|\| savingRevision\) return/);
+  assert.match(detail, /disabled=\{savingRevision\}/);
+  assert.match(detail, /setRevisionError\(/);
+  assert.doesNotMatch(detail, /alert\(/);
+
+  assert.match(persistentEndpoint, /requireAuth,\s*requireClientAccount/);
+  assert.match(persistentEndpoint, /resolveClientSharedMatter\(\s*req\.params\.accessId,\s*req\.auth!\.user\.id/);
+  assert.match(persistentEndpoint, /createPortalClientRevision\(/);
+
+  assert.match(revisionMethod, /INSERT INTO drafts/);
+  assert.match(revisionMethod, /\$2, \$3, \$4, \$5, \$5, 'Client Revision', \$6, 'Client Revision'/);
+  assert.match(revisionMethod, /original\.id/);
+  assert.match(revisionMethod, /original\.revision_type === "Client Revision"/);
+  assert.doesNotMatch(revisionMethod, /UPDATE drafts/);
+  assert.doesNotMatch(revisionMethod, /portal_comments|addPortalComment/);
+});
+
+test("Client Revisions remain visible to the lawyer's normal Matter Work Product query", async () => {
+  const database = await readFile("server/db.ts", "utf8");
+  const lawyerDrafts = database.slice(
+    database.indexOf("public async getDrafts"),
+    database.indexOf("public async getDraftById")
+  );
+  assert.match(lawyerDrafts, /FROM drafts d/);
+  assert.match(lawyerDrafts, /d\.case_id = \$1/);
+  assert.doesNotMatch(lawyerDrafts, /revision_type\s*(?:<>|!=)|revision_type IS NULL/);
+});
+
 test("Client Assistant has persistent chat UX and an authorized document picker", async () => {
   const assistant = await readFile("src/components/ClientAssistantView.tsx", "utf8");
   assert.match(assistant, /New Chat/);

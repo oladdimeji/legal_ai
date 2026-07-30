@@ -10,6 +10,7 @@ import {
   X,
 } from "lucide-react";
 import { CollaborationRequest, Draft } from "../types";
+import RichDocumentEditor from "./RichDocumentEditor";
 import WorkProductDocument from "./WorkProductDocument";
 
 interface SharedMatterListItem {
@@ -317,6 +318,12 @@ function SharedMatterDetail({ accessId, onBack }: { accessId: string; onBack: ()
   const [tab, setTab] = useState<"Shared Documents" | "Requests">("Shared Documents");
   const [openDraft, setOpenDraft] = useState<Draft | null>(null);
   const [opening, setOpening] = useState(false);
+  const [editingDraft, setEditingDraft] = useState<Draft | null>(null);
+  const [editContent, setEditContent] = useState("");
+  const [preparingRevisionId, setPreparingRevisionId] = useState<string | null>(null);
+  const [savingRevision, setSavingRevision] = useState(false);
+  const [revisionError, setRevisionError] = useState("");
+  const [revisionSuccess, setRevisionSuccess] = useState("");
   const [responseStates, setResponseStates] = useState<Record<string, ResponseState>>({});
 
   const load = async () => {
@@ -347,7 +354,16 @@ function SharedMatterDetail({ accessId, onBack }: { accessId: string; onBack: ()
     if (!summary) return [];
     const drafts = [...summary.shared, ...summary.revisions];
     for (const request of summary.requests) drafts.push(...request.documents);
-    return Array.from(new Map(drafts.map((draft) => [draft.id, draft])).values());
+    const unique = new Map<string, Draft>();
+    for (const draft of drafts) {
+      const existing = unique.get(draft.id);
+      unique.set(draft.id, existing ? { ...draft, ...existing } : draft);
+    }
+    return Array.from(unique.values()).sort(
+      (left, right) =>
+        new Date(right.updated_at || right.created_at).getTime() -
+        new Date(left.updated_at || left.created_at).getTime()
+    );
   }, [summary]);
 
   const open = async (draftId: string) => {
@@ -366,6 +382,75 @@ function SharedMatterDetail({ accessId, onBack }: { accessId: string; onBack: ()
       );
     } finally {
       setOpening(false);
+    }
+  };
+
+  const beginEditCopy = async (draft: Draft) => {
+    if (draft.revision_type === "Client Revision" || preparingRevisionId) return;
+    setPreparingRevisionId(draft.id);
+    setRevisionError("");
+    setRevisionSuccess("");
+    try {
+      const response = await fetch(
+        `/api/client/shared-matters/${encodeURIComponent(accessId)}/work-products/${encodeURIComponent(draft.id)}`
+      );
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Shared document could not be opened.");
+      const currentDraft = data as Draft;
+      setEditingDraft(currentDraft);
+      setEditContent(currentDraft.content);
+    } catch (caught) {
+      setError(
+        caught instanceof Error ? caught.message : "Shared document could not be opened."
+      );
+    } finally {
+      setPreparingRevisionId(null);
+    }
+  };
+
+  const cancelRevision = () => {
+    if (savingRevision) return;
+    setEditingDraft(null);
+    setEditContent("");
+    setRevisionError("");
+  };
+
+  const saveRevision = async () => {
+    if (!editingDraft || savingRevision) return;
+    setSavingRevision(true);
+    setRevisionError("");
+    try {
+      const response = await fetch(
+        `/api/client/shared-matters/${encodeURIComponent(accessId)}/work-products/${encodeURIComponent(editingDraft.id)}/edit-copy`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content: editContent }),
+        }
+      );
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Client Revision could not be saved.");
+      const revision = data as Draft;
+      setSummary((current) =>
+        current
+          ? {
+              ...current,
+              revisions: [
+                revision,
+                ...current.revisions.filter((draft) => draft.id !== revision.id),
+              ],
+            }
+          : current
+      );
+      setEditingDraft(null);
+      setEditContent("");
+      setRevisionSuccess("Client Revision saved. The lawyer’s original remains unchanged.");
+    } catch (caught) {
+      setRevisionError(
+        caught instanceof Error ? caught.message : "Client Revision could not be saved."
+      );
+    } finally {
+      setSavingRevision(false);
     }
   };
 
@@ -468,6 +553,11 @@ function SharedMatterDetail({ accessId, onBack }: { accessId: string; onBack: ()
             {error}
           </div>
         )}
+        {revisionSuccess && (
+          <div role="status" className="mb-5 rounded border border-zinc-300 bg-zinc-50 p-3 text-xs">
+            {revisionSuccess}
+          </div>
+        )}
         {tab === "Shared Documents" ? (
           permittedDrafts.length === 0 ? (
             <div className="rounded border border-dashed border-zinc-300 px-6 py-14 text-center">
@@ -483,7 +573,14 @@ function SharedMatterDetail({ accessId, onBack }: { accessId: string; onBack: ()
                 >
                   <FileText className="h-5 w-5 text-zinc-400" />
                   <div className="min-w-0 flex-1">
-                    <h2 className="truncate text-sm font-medium">{draft.title}</h2>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h2 className="truncate text-sm font-medium">{draft.title}</h2>
+                      {draft.revision_type === "Client Revision" && (
+                        <span className="rounded bg-zinc-100 px-2 py-0.5 text-[9px] font-mono uppercase text-zinc-500">
+                          Client Revision
+                        </span>
+                      )}
+                    </div>
                     <p className="mt-1 text-[9px] font-mono uppercase text-zinc-400">
                       Shared {new Date(draft.updated_at || draft.created_at).toLocaleString()}
                     </p>
@@ -502,6 +599,16 @@ function SharedMatterDetail({ accessId, onBack }: { accessId: string; onBack: ()
                   >
                     <Download className="h-3.5 w-3.5" /> Download
                   </a>
+                  {draft.revision_type !== "Client Revision" && (
+                    <button
+                      type="button"
+                      onClick={() => void beginEditCopy(draft)}
+                      disabled={preparingRevisionId !== null}
+                      className="rounded border border-zinc-300 px-3 py-2 text-[10px] font-mono font-semibold uppercase hover:border-zinc-950 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {preparingRevisionId === draft.id ? "Opening…" : "Edit a Copy"}
+                    </button>
+                  )}
                 </article>
               ))}
             </div>
@@ -664,6 +771,47 @@ function SharedMatterDetail({ accessId, onBack }: { accessId: string; onBack: ()
             </header>
             <div className="min-h-0 flex-1 overflow-y-auto bg-white px-6 py-5">
               <WorkProductDocument content={openDraft.content} />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editingDraft && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-6">
+          <div className="max-h-[90vh] w-full max-w-4xl overflow-y-auto rounded border border-zinc-200 bg-white p-6 shadow-xl">
+            <h2 className="text-base font-semibold">Edit a Copy</h2>
+            <p className="mt-1 text-xs text-zinc-500">
+              The lawyer’s original will remain unchanged.
+            </p>
+            <div className="mt-4">
+              <RichDocumentEditor
+                value={editContent}
+                onChange={setEditContent}
+                minHeight={430}
+              />
+            </div>
+            {revisionError && (
+              <p role="alert" className="mt-3 rounded bg-zinc-50 p-3 text-xs text-red-700">
+                {revisionError}
+              </p>
+            )}
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={cancelRevision}
+                disabled={savingRevision}
+                className="rounded border border-zinc-300 px-4 py-2 text-[10px] font-mono font-semibold uppercase hover:border-zinc-950 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void saveRevision()}
+                disabled={savingRevision}
+                className="rounded bg-zinc-950 px-4 py-2 text-[10px] font-mono font-semibold uppercase text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {savingRevision ? "Saving…" : "Save Client Revision"}
+              </button>
             </div>
           </div>
         </div>
