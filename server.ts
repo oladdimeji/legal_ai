@@ -22,6 +22,8 @@ import { extractUploads, MAX_FILE_COUNT, MAX_FILE_SIZE_BYTES } from "./server/fi
 import { markdownToDocxDocument } from "./server/docxMarkdown.js";
 import { cleanMatterIntelligenceContent } from "./server/matterIntelligenceContent.js";
 import { cleanClientAssistantContent, cleanGeneratedBoilerplate } from "./server/generatedContentCleanup.js";
+import { extractGeneratedSubject } from "./server/extractGeneratedSubject.js";
+import { getWorkProductFormatInstructions, isWorkProductFormat } from "./server/workProductFormat.js";
 import { canonicalizeAssistantCitations, rewriteGoogleGroundingCitations, stripInternalCitationsForWorkProduct } from "./src/lib/assistantCitations.js";
 import {
   SESSION_COOKIE_NAME,
@@ -1629,9 +1631,12 @@ ${citationInstSearch}`;
 
   app.post("/api/drafts", async (req, res) => {
     try {
-      const { threadId, format, instructions } = req.body; // format = 'memo' | 'email' | 'summary'
-      if (!threadId || !format) {
-        return res.status(400).json({ error: "Thread ID and format are required" });
+      const { threadId, format, instructions } = req.body;
+      if (!threadId) {
+        return res.status(400).json({ error: "Thread ID is required" });
+      }
+      if (!isWorkProductFormat(format)) {
+        return res.status(400).json({ error: "Format must be memo, email, or summary" });
       }
 
       const requestOwnership = ownership(req);
@@ -1669,8 +1674,10 @@ ${citationInstSearch}`;
         `Current date: ${currentDate}`,
       ].filter(Boolean).join("\n");
 
+      const formatInstructions = getWorkProductFormatInstructions(format);
+
       const draftPrompt = `You are a meticulous legal counsel drafting a formal document based on legal research.
-Draft a high-quality ${format.toUpperCase()} (e.g., memo, email advice, or legal summary) based on the legal consultation conversation history and references provided below.
+Draft a high-quality ${format.toUpperCase()} based on the legal consultation conversation history and references provided below.
 
 Matter and account metadata:
 ${matterMetadata}
@@ -1681,27 +1688,28 @@ ${convoHistory}
 Custom Instructions:
 ${instructions || "Ensure high-level professionalism and clear structure."}
 
-INSTRUCTIONS:
-1. Adhere to proper legal formatting for a ${format}:
-   - Legal Memo: Include To, From, Date, Subject, Question Presented, Brief Answer, Statement of Facts, Discussion, and Conclusion sections.
-   - Professional Legal Email: Include clear greeting, analytical overview, breakdown of issues, and next steps.
-   - Legal Summary: Analytical breakdown of the primary matter, facts, governing laws, and key recommendations.
-2. Produce a polished standalone work product. Do not include internal source IDs, Assistant citation tokens, numbered source markers, clickable citation syntax, footnotes, endnotes, a references list, or a bibliography unless the user explicitly requests formal citations. Integrate legal authorities naturally into prose by naming the case, statute, regulation, or document when relevant.
-3. Use the server-provided current date exactly when a date is needed. Do not invent another date.
-4. Do not emit bracketed placeholders such as [Client Name], [Your Name], or [Firm Name] when the metadata supplies those values. If optional metadata is missing, omit that field or use a neutral professional phrasing.
-5. Do not append generic legal-advice, AI, lawyer-review, consultation, informational-purpose, or limitation-of-liability disclaimer boilerplate. State genuine evidentiary uncertainty directly and specifically instead. Do not remove substantive analysis of disclaimer clauses contained in the conversation or sources.
-6. Output the draft using elegant, rich markdown with readable headers. Do not wrap in generic JSON, just output the clean draft text.`;
+FORMAT INSTRUCTIONS:
+${formatInstructions}
+
+SHARED INSTRUCTIONS:
+1. Produce a polished standalone work product. Do not include internal source IDs, Assistant citation tokens, numbered source markers, clickable citation syntax, footnotes, endnotes, a references list, or a bibliography unless the user explicitly requests formal citations. Integrate legal authorities naturally into prose by naming the case, statute, regulation, or document when relevant.
+2. Use the server-provided current date exactly when a date is needed. Do not invent another date.
+3. Do not emit bracketed placeholders such as [Client Name], [Your Name], or [Firm Name] when the metadata supplies those values. If optional metadata is missing, omit that field or use a neutral professional phrasing.
+4. Do not append generic legal-advice, AI, lawyer-review, consultation, informational-purpose, or limitation-of-liability disclaimer boilerplate. State genuine evidentiary uncertainty directly and specifically instead. Do not remove substantive analysis of disclaimer clauses contained in the conversation or sources.
+5. Output the draft using elegant, rich markdown with readable headers. Do not wrap in generic JSON, just output the clean draft text.`;
 
       const draftResult = await callModel("draft-generation", [{ role: "user", content: draftPrompt }], {
         temperature: 0.3
       });
 
-      const title = `Legal ${format.charAt(0).toUpperCase() + format.slice(1)} - Thread Ref: ${thread.title.substring(0, 30)}`;
+      const cleanedContent = cleanGeneratedWorkProductContent(draftResult.text);
+      const fallbackTitle = `Legal ${format.charAt(0).toUpperCase() + format.slice(1)} - Thread Ref: ${thread.title.substring(0, 30)}`;
+      const title = extractGeneratedSubject(cleanedContent) || fallbackTitle;
       const newDraft = await db.createDraft(
         threadId,
         thread.case_id,
         title,
-        cleanGeneratedWorkProductContent(draftResult.text),
+        cleanedContent,
         requestOwnership
       );
 

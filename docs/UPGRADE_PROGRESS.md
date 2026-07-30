@@ -719,3 +719,30 @@ Verification:
 - Slowed the presentation-safe response reveal with adaptive word-based chunking, a 3–8.5 second duration cap, exact final-message replacement, and reduced-motion support.
 - Kept the Assistant API, retrieval, citations, stored messages, and error behavior unchanged.
 - Focused Assistant tests, `npm run lint`, all 93 tests, and `npm run build` passed; the existing Vite large-chunk warning remains.
+
+## Work Product Format, Naming & Source Preview Repair
+
+Status: Complete.
+
+Implemented:
+
+- Restricted AI Work Product generation to `memo`, `email`, or `summary` and injects only the selected format's instructions.
+- Named newly generated Work Product from the cleaned document's opening `Subject:` field, with the existing technical title retained only as a fallback.
+- Preserved stored Work Product titles verbatim in the sidebar.
+- Reused the read-only Work Product document renderer in the Matter Source preview modal.
+- Added focused coverage for format isolation, Subject extraction and fallback, title preservation, and Source preview behavior.
+
+Schema changes:
+
+- None.
+
+Dependencies added or changed:
+
+- None.
+
+Verification:
+
+- Focused tests: passed, 7/7.
+- `npm run lint`: passed.
+- `npm test`: passed, 100/100 tests.
+- `npm run build`: passed with the existing Vite environment and large-chunk warnings.

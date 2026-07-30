@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Eye, FileText, Plus, Search, Trash2, Upload, X } from "lucide-react";
 import { Document } from "../types";
 import SelectedFileList from "./SelectedFileList";
+import WorkProductDocument from "./WorkProductDocument";
 import { useCumulativeFileSelection } from "../hooks/useCumulativeFileSelection";
 
 export default function MatterSources({ matterId }: { matterId: string }) {
@@ -169,7 +170,25 @@ export default function MatterSources({ matterId }: { matterId: string }) {
         </div>
       )}
 
-      {preview && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-6"><div className="max-h-[85vh] w-full max-w-3xl overflow-y-auto rounded border bg-white p-6"><button onClick={() => setPreview(null)} className="float-right"><X className="h-4 w-4" /></button><h3 className="font-semibold">{preview.title}</h3><p className="mt-4 whitespace-pre-wrap text-sm leading-relaxed text-zinc-700">{preview.extracted_text}</p></div></div>}
+      {preview && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-6">
+          <div className="flex max-h-[85vh] w-full max-w-4xl flex-col overflow-hidden rounded border bg-white shadow-xl">
+            <div className="flex shrink-0 items-center justify-between gap-4 border-b border-zinc-100 px-6 py-4">
+              <h3 className="min-w-0 truncate font-semibold">{preview.title}</h3>
+              <button onClick={() => setPreview(null)} aria-label="Close Source preview" className="shrink-0 rounded p-1 hover:bg-zinc-100">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto bg-zinc-50 px-6 py-8">
+              <div className="mx-auto min-h-full max-w-3xl rounded border border-zinc-100 bg-white px-8 py-10 shadow-sm">
+                {preview.extracted_text?.trim()
+                  ? <WorkProductDocument content={preview.extracted_text} />
+                  : <p className="text-sm text-zinc-500">No extracted content is available for this Source.</p>}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

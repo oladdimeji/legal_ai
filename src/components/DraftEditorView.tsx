@@ -151,7 +151,7 @@ export default function DraftEditorView({ initialDraftId, onClearInitialDraftId,
             >
               <FileText className="mt-0.5 h-4 w-4 shrink-0 text-zinc-400" />
               <div className="min-w-0 flex-1">
-                <p className="truncate font-bold uppercase tracking-tight">{draft.title.replace("Legal ", "")}</p>
+                <p className="truncate font-bold uppercase tracking-tight">{draft.title}</p>
                 <p className="mt-0.5 text-[9px] font-mono text-zinc-400">
                   {new Date(draft.updated_at || draft.created_at).toLocaleDateString()} · {draft.shared_with_client ? "Shared" : "Private"}
                 </p>
