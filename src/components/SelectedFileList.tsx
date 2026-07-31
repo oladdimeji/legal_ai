@@ -5,9 +5,11 @@ import { browserFileIdentity } from "../hooks/useCumulativeFileSelection";
 export default function SelectedFileList({
   files,
   onRemove,
+  disabled = false,
 }: {
   files: File[];
   onRemove: (identity: string) => void;
+  disabled?: boolean;
 }) {
   if (files.length === 0) return null;
   return (
@@ -22,7 +24,8 @@ export default function SelectedFileList({
           <button
             type="button"
             onClick={() => onRemove(browserFileIdentity(file))}
-            className="rounded p-1 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-900"
+            disabled={disabled}
+            className="rounded p-1 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-900 disabled:cursor-not-allowed disabled:opacity-40"
             aria-label={`Remove ${file.name}`}
             title={`Remove ${file.name}`}
           >

@@ -349,6 +349,78 @@ test("Focused UX fix uses cumulative multi-file pickers and removable selections
   }
 });
 
+test("persistent lawyer uploads opt into 25 files while Assistant and client uploads remain restricted", async () => {
+  const [hook, matters, sources, library, assistant, portal, clientWorkspace] = await Promise.all([
+    readFile("src/hooks/useCumulativeFileSelection.ts", "utf8"),
+    readFile("src/components/MattersView.tsx", "utf8"),
+    readFile("src/components/MatterSources.tsx", "utf8"),
+    readFile("src/components/FirmLibraryView.tsx", "utf8"),
+    readFile("src/components/AssistantView.tsx", "utf8"),
+    readFile("src/components/ClientPortalView.tsx", "utf8"),
+    readFile("src/components/ClientSharedMattersView.tsx", "utf8"),
+  ]);
+
+  assert.match(hook, /MAX_SELECTED_FILES = 5/);
+  assert.match(hook, /MAX_PERSISTENT_UPLOAD_FILES = 25/);
+  for (const view of [matters, sources, library]) {
+    assert.match(view, /useCumulativeFileSelection\(MAX_PERSISTENT_UPLOAD_FILES\)/);
+    assert.match(view, /uploadPersistentFilesSequentially/);
+  }
+  assert.match(assistant, /temporaryFiles\.length \+ unique\.length > MAX_SELECTED_FILES/);
+  assert.doesNotMatch(assistant, /MAX_PERSISTENT_UPLOAD_FILES/);
+  assert.match(portal, /appendUniqueFiles\(state\.files, Array\.from\(files \|\| \[\]\)\)/);
+  assert.doesNotMatch(portal, /MAX_PERSISTENT_UPLOAD_FILES/);
+  assert.doesNotMatch(clientWorkspace, /MAX_PERSISTENT_UPLOAD_FILES/);
+});
+
+test("persistent endpoints receive one file per sequential request and retain per-file failures", async () => {
+  const [library, sources, selectedList] = await Promise.all([
+    readFile("src/components/FirmLibraryView.tsx", "utf8"),
+    readFile("src/components/MatterSources.tsx", "utf8"),
+    readFile("src/components/SelectedFileList.tsx", "utf8"),
+  ]);
+
+  for (const view of [library, sources]) {
+    assert.match(view, /uploadPersistentFilesSequentially\([\s\S]*form\.append\("files", file\)/);
+    assert.match(view, /progress\.phase === "succeeded"[\s\S]*removeFile\(progress\.identity\)/);
+    assert.match(view, /setUploadFailures\(result\.failedFiles\)/);
+    assert.match(view, /failure\.file\.name}: \{failure\.error/);
+    assert.doesNotMatch(view, /files\.forEach\(\(file\) => form\.append\("files", file\)\)/);
+  }
+  assert.match(library, /fetch\("\/api\/documents", \{ method: "POST", body: form \}\)/);
+  assert.match(sources, /fetch\(`\/api\/cases\/\$\{matterId\}\/sources`, \{ method: "POST", body: form \}\)/);
+  assert.match(sources, /const customTitle = files\.length === 1 \? title\.trim\(\) : ""/);
+  assert.match(selectedList, /disabled=\{disabled\}/);
+});
+
+test("more-than-five Matter creation makes one Matter before sequential source uploads", async () => {
+  const matters = await readFile("src/components/MattersView.tsx", "utf8");
+  assert.match(matters, /const uploadSourcesAfterCreation = selectedFiles\.length > 5/);
+  assert.match(matters, /if \(!uploadSourcesAfterCreation\) selectedFiles\.forEach\(\(file\) => form\.append\("files", file\)\)/);
+  assert.equal((matters.match(/fetch\("\/api\/cases", \{ method: "POST", body: form \}\)/g) || []).length, 1);
+  assert.match(matters, /uploadPersistentFilesSequentially\([\s\S]*sourceForm\.append\("files", file\)[\s\S]*\/api\/cases\/\$\{data\.id\}\/sources/);
+  assert.match(matters, /Matter created successfully\. \$\{summary\}/);
+  assert.match(matters, /matterCreated[\s\S]*Matter created successfully, but source processing could not be completed/);
+  assert.match(matters, /onOpenMatter\(data\.id\)/);
+});
+
+test("persistent upload changes leave server limits and tenant authorization paths intact", async () => {
+  const [extractor, server] = await Promise.all([
+    readFile("server/fileExtraction.ts", "utf8"),
+    readFile("server.ts", "utf8"),
+  ]);
+  assert.match(extractor, /MAX_FILE_COUNT = 5/);
+  assert.match(extractor, /MAX_FILE_SIZE_BYTES = 10 \* 1024 \* 1024/);
+  assert.match(extractor, /MAX_TOTAL_EXTRACTED_CHARS = 120_000/);
+  assert.match(server, /storage: multer\.memoryStorage\(\)/);
+  assert.match(server, /limits: \{ fileSize: MAX_FILE_SIZE_BYTES, files: MAX_FILE_COUNT \}/);
+  assert.match(server, /app\.post\("\/api\/cases\/:id\/sources", upload\.array\("files", MAX_FILE_COUNT\)/);
+  assert.match(server, /const requestOwnership = ownership\(req\);[\s\S]*db\.getCaseById\(req\.params\.id, requestOwnership\)/);
+  assert.match(server, /app\.post\("\/api\/documents", upload\.array\("files", MAX_FILE_COUNT\)/);
+  assert.match(server, /db\.uploadDocument\([\s\S]*ownership\(req\)/);
+  assert.match(server, /app\.post\("\/api\/portal\/:token\/requests\/:requestId\/responses"[\s\S]*upload\.array\("files", MAX_FILE_COUNT\)/);
+});
+
 test("Focused UX fix persists every extracted upload and preserves one-file compatibility", async () => {
   const server = await readFile("server.ts", "utf8");
   const matterRoute = server.slice(server.indexOf('app.post("/api/cases/:id/sources"'), server.indexOf('app.delete("/api/cases/:caseId/sources'));

@@ -3,7 +3,14 @@ import { Eye, FileText, Plus, Search, Trash2, Upload, X } from "lucide-react";
 import { Document } from "../types";
 import SelectedFileList from "./SelectedFileList";
 import WorkProductDocument from "./WorkProductDocument";
-import { useCumulativeFileSelection } from "../hooks/useCumulativeFileSelection";
+import { MAX_PERSISTENT_UPLOAD_FILES, useCumulativeFileSelection } from "../hooks/useCumulativeFileSelection";
+import {
+  persistentUploadSummary,
+  responseErrorMessage,
+  uploadPersistentFilesSequentially,
+  type PersistentUploadFailure,
+  type PersistentUploadProgress,
+} from "../lib/persistentUploads";
 
 export default function MatterSources({ matterId }: { matterId: string }) {
   const [sources, setSources] = useState<Document[]>([]);
@@ -17,7 +24,10 @@ export default function MatterSources({ matterId }: { matterId: string }) {
   const [selectedLibraryIds, setSelectedLibraryIds] = useState<string[]>([]);
   const [processing, setProcessing] = useState(false);
   const [error, setError] = useState("");
-  const fileSelection = useCumulativeFileSelection();
+  const [uploadFailures, setUploadFailures] = useState<PersistentUploadFailure[]>([]);
+  const [uploadProgress, setUploadProgress] = useState<PersistentUploadProgress | null>(null);
+  const [uploadSummary, setUploadSummary] = useState("");
+  const fileSelection = useCumulativeFileSelection(MAX_PERSISTENT_UPLOAD_FILES);
 
   const load = async () => {
     const [sourceResponse, libraryResponse] = await Promise.all([
@@ -41,30 +51,54 @@ export default function MatterSources({ matterId }: { matterId: string }) {
     setSelectedLibraryIds([]);
     fileSelection.clearFiles();
     setError("");
+    setUploadFailures([]);
+    setUploadProgress(null);
   };
 
   const add = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (processing) return;
     setProcessing(true);
     setError("");
+    setUploadFailures([]);
+    setUploadSummary("");
     try {
-      let response: Response;
       if (type === "upload") {
         if (fileSelection.files.length === 0) return;
-        const form = new FormData();
-        if (fileSelection.files.length === 1 && title.trim()) form.append("title", title.trim());
-        fileSelection.files.forEach((file) => form.append("files", file));
-        response = await fetch(`/api/cases/${matterId}/sources`, { method: "POST", body: form });
-      } else {
-        const body = type === "library"
-          ? { libraryDocumentIds: selectedLibraryIds }
-          : { title, text, sourceType: "Starting Instruction" };
-        response = await fetch(`/api/cases/${matterId}/sources`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
+        const files = [...fileSelection.files];
+        const customTitle = files.length === 1 ? title.trim() : "";
+        const result = await uploadPersistentFilesSequentially(
+          files,
+          async (file) => {
+            const form = new FormData();
+            if (customTitle) form.append("title", customTitle);
+            form.append("files", file);
+            const response = await fetch(`/api/cases/${matterId}/sources`, { method: "POST", body: form });
+            if (!response.ok) throw new Error(await responseErrorMessage(response, "Source could not be added"));
+          },
+          (progress) => {
+            setUploadProgress(progress);
+            if (progress.phase === "succeeded") fileSelection.removeFile(progress.identity);
+          }
+        );
+        setUploadFailures(result.failedFiles);
+        setUploadSummary(persistentUploadSummary(result.successfulFiles.length, result.failedFiles.length));
+        await load();
+        if (result.failedFiles.length === 0) {
+          setShowAdd(false);
+          resetAddForm();
+        }
+        return;
       }
+
+      const body = type === "library"
+        ? { libraryDocumentIds: selectedLibraryIds }
+        : { title, text, sourceType: "Starting Instruction" };
+      const response = await fetch(`/api/cases/${matterId}/sources`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
       const data = await response.json();
       if (!response.ok) {
         setError(data.error || "Source could not be added");
@@ -77,7 +111,14 @@ export default function MatterSources({ matterId }: { matterId: string }) {
       setError(err instanceof Error ? err.message : "Source could not be added");
     } finally {
       setProcessing(false);
+      setUploadProgress(null);
     }
+  };
+
+  const removePendingFile = (identity: string) => {
+    fileSelection.removeFile(identity);
+    setUploadFailures((current) => current.filter((failure) => failure.identity !== identity));
+    setUploadSummary("");
   };
 
   const remove = async (source: Document) => {
@@ -98,10 +139,11 @@ export default function MatterSources({ matterId }: { matterId: string }) {
           <Search className="h-4 w-4 text-zinc-400" />
           <input value={query} onChange={(event) => setQuery(event.target.value)} className="w-full py-2 text-xs outline-none" placeholder="Search Matter Sources" />
         </div>
-        <button onClick={() => setShowAdd(true)} className="flex items-center gap-2 rounded bg-zinc-950 px-4 text-[10px] font-mono font-bold uppercase text-white">
+        <button onClick={() => { setUploadSummary(""); setShowAdd(true); }} className="flex items-center gap-2 rounded bg-zinc-950 px-4 text-[10px] font-mono font-bold uppercase text-white">
           <Plus className="h-4 w-4" />Add Source
         </button>
       </div>
+      {uploadSummary && <p className="text-xs text-zinc-700">{uploadSummary}</p>}
 
       <div className="overflow-hidden rounded border">
         {visible.length === 0 ? <p className="p-10 text-center text-xs text-zinc-500">No Sources match this view.</p> : visible.map((source) => (
@@ -124,7 +166,7 @@ export default function MatterSources({ matterId }: { matterId: string }) {
             <h3 className="text-sm font-semibold uppercase">Add Matter Source</h3>
             <div className="flex gap-2">
               {(["note", "upload", "library"] as const).map((item) => (
-                <button type="button" key={item} onClick={() => { setType(item); setError(""); }} className={`rounded border px-3 py-2 text-[9px] font-mono uppercase ${type === item ? "bg-zinc-900 text-white" : ""}`}>{item === "library" ? "Firm Library" : item}</button>
+                <button type="button" disabled={processing} key={item} onClick={() => { setType(item); setError(""); }} className={`rounded border px-3 py-2 text-[9px] font-mono uppercase disabled:cursor-not-allowed disabled:opacity-40 ${type === item ? "bg-zinc-900 text-white" : ""}`}>{item === "library" ? "Firm Library" : item}</button>
               ))}
             </div>
             {type === "library" ? (
@@ -149,11 +191,11 @@ export default function MatterSources({ matterId }: { matterId: string }) {
                 <label className="flex cursor-pointer items-center justify-between rounded border border-dashed p-5 text-xs text-zinc-500 hover:bg-zinc-50">
                   <span className="flex items-center gap-2"><Upload className="h-4 w-4" />Choose PDF, DOCX, or TXT</span>
                   <span>{fileSelection.files.length ? fileSelection.selectedLabel : ""}</span>
-                  <input type="file" multiple className="sr-only" accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" onChange={(event) => { fileSelection.addFiles(event.target.files); event.currentTarget.value = ""; }} />
+                  <input type="file" multiple disabled={processing} className="sr-only" accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" onChange={(event) => { fileSelection.addFiles(event.target.files); event.currentTarget.value = ""; }} />
                 </label>
                 {fileSelection.fileError && <p className="text-xs text-red-700">{fileSelection.fileError}</p>}
-                <SelectedFileList files={fileSelection.files} onRemove={fileSelection.removeFile} />
-                <input value={title} onChange={(event) => setTitle(event.target.value)} className="w-full rounded border px-3 py-2 text-xs" placeholder="Optional title for one-file upload only" />
+                <SelectedFileList files={fileSelection.files} onRemove={removePendingFile} disabled={processing} />
+                <input value={title} disabled={processing} onChange={(event) => setTitle(event.target.value)} className="w-full rounded border px-3 py-2 text-xs disabled:bg-zinc-50" placeholder="Optional title for one-file upload only" />
               </div>
             ) : (
               <>
@@ -161,9 +203,12 @@ export default function MatterSources({ matterId }: { matterId: string }) {
                 <textarea value={text} onChange={(event) => setText(event.target.value)} className="h-32 w-full rounded border px-3 py-2 text-xs" placeholder="Write Source note" />
               </>
             )}
+            {uploadProgress && <p className="text-xs text-zinc-600">Uploading and indexing {uploadProgress.current} of {uploadProgress.total}: {uploadProgress.file.name}</p>}
+            {uploadFailures.map((failure) => <p key={failure.identity} className="text-xs text-red-700">{failure.file.name}: {failure.error}</p>)}
+            {type === "upload" && uploadSummary && <p className="text-xs text-zinc-700">{uploadSummary}</p>}
             {error && <p className="text-xs text-red-700">{error}</p>}
             <div className="flex justify-end gap-2">
-              <button type="button" onClick={() => { resetAddForm(); setShowAdd(false); }} className="rounded border px-4 py-2 text-[10px] uppercase">Cancel</button>
+              <button type="button" disabled={processing} onClick={() => { resetAddForm(); setShowAdd(false); }} className="rounded border px-4 py-2 text-[10px] uppercase disabled:cursor-not-allowed disabled:opacity-40">Cancel</button>
               <button disabled={processing || (type === "library" ? selectedLibraryIds.length === 0 : type === "upload" ? fileSelection.files.length === 0 : !text.trim())} className="rounded bg-zinc-950 px-4 py-2 text-[10px] font-bold uppercase text-white disabled:cursor-not-allowed disabled:opacity-40">{processing ? "Processing..." : "Add Source"}</button>
             </div>
           </form>

@@ -913,3 +913,46 @@ Status: Complete.
 - Clients can create editable Client Revisions from shared Work Products in the persistent Shared Matters interface.
 - Each revision is stored as a separate existing Matter draft; the lawyer’s original remains unchanged.
 - Comments remain deferred and were not changed.
+
+## Persistent Workspace Uploads
+
+Status: Complete.
+
+Implemented:
+
+- Added a 25-file frontend selection limit used only by Firm Library uploads, Matter Source uploads, and optional files selected while creating a Matter. The existing five-file default remains in place for Assistant and client-facing attachment flows.
+- Added one reusable sequential upload helper with ordered processing, per-file progress, stable browser-file identities, separate success and failure results, and no automatic retries or concurrent requests.
+- Firm Library and Matter Source uploads now send exactly one file per request, continue after an individual failure, remove only successful files from the pending selection, retain failed files for manual retry, show filename-specific server errors, and refresh their document lists after processing.
+- Matter Source custom titles remain available only when the operation starts with exactly one selected file; multi-file operations continue to use filenames.
+- Matter creation retains the existing request path for zero to five files. With more than five files, it creates one Matter without browser files, then uploads each optional source sequentially through the existing Matter Source endpoint and opens the created Matter even when an optional source fails.
+- Upload controls and pending-file removal are disabled while a persistent operation is running to prevent duplicate or conflicting submissions.
+
+Schema changes:
+
+- None.
+
+Server and isolation safeguards:
+
+- No server code changed. Multer remains memory-backed and `MAX_FILE_COUNT = 5`, `MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024`, and `MAX_TOTAL_EXTRACTED_CHARS = 120_000` remain unchanged.
+- Existing authentication, Firm ownership, Matter ownership, portal token validation, MIME/extension validation, extraction, chunking, embedding, and tenant-isolation paths remain unchanged.
+
+Dependencies added or changed:
+
+- None.
+
+Tests:
+
+- Added behavioral coverage for the 25-file persistent limit, the five-file restricted default, duplicate prevention, strictly sequential execution, one-file FormData requests, failure continuation, successful-file preservation, failed-file retry results, server error propagation, and unchanged backend ceilings.
+- Updated workflow regressions for the three persistent views, one-file custom-title behavior, more-than-five Matter creation, single-Matter creation, post-creation source failure reporting, restricted Assistant/client limits, and unchanged authorization paths.
+
+Verification:
+
+- Focused persistent-upload and related regression tests: passed, 69/69.
+- `npm run lint`: passed.
+- `npm test`: passed, 156/156 tests.
+- `npm run build`: passed with the existing Vite `NODE_ENV` and large-chunk warnings.
+- `npm run verify`: passed, including lint, 156/156 tests, and the production build.
+
+Manual checks:
+
+- Browser-driven upload and cross-tenant smoke checks were not run because this environment did not provide an authenticated browser session or disposable database data. Automated isolation and upload-path regressions passed.

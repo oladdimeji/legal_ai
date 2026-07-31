@@ -169,11 +169,13 @@ test("Firm Library preview matches the read-only document presentation", async (
   assert.doesNotMatch(preview, /RichDocumentEditor|Editor|Save|sharing|Export/);
 });
 
-test("Firm Library upload keeps multi-file handling without an optional title", async () => {
+test("Firm Library upload keeps multi-file selection and sends one file per request without an optional title", async () => {
   const library = await readFile("src/components/FirmLibraryView.tsx", "utf8");
   assert.doesNotMatch(library, /Optional title for one-file upload only/);
   assert.doesNotMatch(library, /\[title, setTitle\]|form\.append\("title"/);
-  assert.match(library, /fileSelection\.files\.forEach\(\(file\) => form\.append\("files", file\)\)/);
+  assert.match(library, /uploadPersistentFilesSequentially/);
+  assert.match(library, /form\.append\("files", file\)/);
+  assert.doesNotMatch(library, /fileSelection\.files\.forEach\(\(file\) => form\.append\("files", file\)\)/);
   assert.match(library, /type="file" multiple/);
   assert.match(library, /SelectedFileList/);
   assert.match(library, /setUploadError/);

@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
 
 export const MAX_SELECTED_FILES = 5;
+export const MAX_PERSISTENT_UPLOAD_FILES = 25;
 
 export function browserFileIdentity(file: File): string {
   return `${file.name}:${file.size}:${file.lastModified}`;

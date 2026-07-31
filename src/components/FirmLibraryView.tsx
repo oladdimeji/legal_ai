@@ -3,7 +3,14 @@ import { Database, Eye, FileText, FolderOpen, Search, Trash2, Upload, X } from "
 import { Document } from "../types";
 import SelectedFileList from "./SelectedFileList";
 import WorkProductDocument from "./WorkProductDocument";
-import { useCumulativeFileSelection } from "../hooks/useCumulativeFileSelection";
+import { MAX_PERSISTENT_UPLOAD_FILES, useCumulativeFileSelection } from "../hooks/useCumulativeFileSelection";
+import {
+  persistentUploadSummary,
+  responseErrorMessage,
+  uploadPersistentFilesSequentially,
+  type PersistentUploadFailure,
+  type PersistentUploadProgress,
+} from "../lib/persistentUploads";
 
 export default function FirmLibraryView() {
   const [documents, setDocuments] = useState<Document[]>([]);
@@ -14,7 +21,10 @@ export default function FirmLibraryView() {
   const [preview, setPreview] = useState<Document | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
-  const fileSelection = useCumulativeFileSelection();
+  const [uploadFailures, setUploadFailures] = useState<PersistentUploadFailure[]>([]);
+  const [uploadProgress, setUploadProgress] = useState<PersistentUploadProgress | null>(null);
+  const [uploadSummary, setUploadSummary] = useState("");
+  const fileSelection = useCumulativeFileSelection(MAX_PERSISTENT_UPLOAD_FILES);
 
   const load = async () => {
     const response = await fetch("/api/documents?caseId=null");
@@ -46,21 +56,46 @@ export default function FirmLibraryView() {
 
   const upload = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (fileSelection.files.length === 0) return;
+    if (uploading || fileSelection.files.length === 0) return;
+    const files = [...fileSelection.files];
     setUploading(true);
     setUploadError("");
+    setUploadFailures([]);
+    setUploadSummary("");
     try {
-      const form = new FormData();
-      fileSelection.files.forEach((file) => form.append("files", file));
-      const response = await fetch("/api/documents", { method: "POST", body: form });
-      if (!response.ok) throw new Error((await response.json()).error || "Upload failed");
-      fileSelection.clearFiles();
-      await load();
+      const result = await uploadPersistentFilesSequentially(
+        files,
+        async (file) => {
+          const form = new FormData();
+          form.append("files", file);
+          const response = await fetch("/api/documents", { method: "POST", body: form });
+          if (!response.ok) throw new Error(await responseErrorMessage(response, "Upload failed"));
+        },
+        (progress) => {
+          setUploadProgress(progress);
+          if (progress.phase === "succeeded") fileSelection.removeFile(progress.identity);
+        }
+      );
+      setUploadFailures(result.failedFiles);
+      setUploadSummary(persistentUploadSummary(result.successfulFiles.length, result.failedFiles.length));
+      if (result.failedFiles.length === 0) fileSelection.clearFiles();
+      try {
+        await load();
+      } catch (error) {
+        setUploadError(error instanceof Error ? error.message : "The document list could not be refreshed");
+      }
     } catch (error) {
       setUploadError(error instanceof Error ? error.message : "Upload failed");
     } finally {
       setUploading(false);
+      setUploadProgress(null);
     }
+  };
+
+  const removePendingFile = (identity: string) => {
+    fileSelection.removeFile(identity);
+    setUploadFailures((current) => current.filter((failure) => failure.identity !== identity));
+    setUploadSummary("");
   };
 
   const remove = async (document: Document) => {
@@ -113,11 +148,14 @@ export default function FirmLibraryView() {
             <label className="block rounded border border-dashed border-zinc-300 bg-white px-3 py-5 text-center text-xs text-zinc-500 hover:bg-zinc-50 cursor-pointer">
               <span className="block">Choose PDF, DOCX, or TXT</span>
               <span className="mt-1 block text-[10px] font-mono uppercase">{fileSelection.files.length ? fileSelection.selectedLabel : "No files selected"}</span>
-              <input type="file" multiple className="sr-only" accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" onChange={(event) => { fileSelection.addFiles(event.target.files); event.currentTarget.value = ""; }} />
+              <input type="file" multiple disabled={uploading} className="sr-only" accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" onChange={(event) => { fileSelection.addFiles(event.target.files); event.currentTarget.value = ""; }} />
             </label>
             {fileSelection.fileError && <p className="text-xs text-red-700">{fileSelection.fileError}</p>}
-            <SelectedFileList files={fileSelection.files} onRemove={fileSelection.removeFile} />
+            <SelectedFileList files={fileSelection.files} onRemove={removePendingFile} disabled={uploading} />
+            {uploadProgress && <p className="text-xs text-zinc-600">Uploading and indexing {uploadProgress.current} of {uploadProgress.total}: {uploadProgress.file.name}</p>}
+            {uploadFailures.map((failure) => <p key={failure.identity} className="text-xs text-red-700">{failure.file.name}: {failure.error}</p>)}
             {uploadError && <p className="text-xs text-red-700">{uploadError}</p>}
+            {uploadSummary && <p className="text-xs text-zinc-700">{uploadSummary}</p>}
             <button disabled={uploading || fileSelection.files.length === 0} className="w-full rounded bg-zinc-950 px-3 py-2 text-[10px] font-mono font-bold uppercase text-white disabled:cursor-not-allowed disabled:opacity-40">{uploading ? "Processing..." : "Upload and index"}</button>
           </form>
         </div>
