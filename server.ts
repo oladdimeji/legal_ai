@@ -54,6 +54,14 @@ import {
   sessionCookie,
   validateOAuthState,
 } from "./server/auth.js";
+import {
+  SITE_LOCK_DENIED_MESSAGE,
+  canAccessPrivateApplication,
+  isProtectedApplicationPath,
+  isSiteLocked,
+  publicSiteLockStatus,
+  readSiteLockPolicy,
+} from "./server/siteLock.js";
 
 const isProduction = process.env.NODE_ENV === "production";
 const PORT = Number(process.env.PORT) || 3000;
@@ -331,6 +339,11 @@ ${input.startingContent.slice(0, 20000)}`;
 async function startServer() {
   const app = express();
   app.use(express.json());
+  const siteLockPolicy = readSiteLockPolicy(process.env);
+  const denySiteLockAccess = (res: Response) => {
+    res.setHeader("Cache-Control", "no-store");
+    return res.status(403).json({ error: SITE_LOCK_DENIED_MESSAGE });
+  };
 
   // Migrations and legacy ownership validation must succeed before any route is served.
   try {
@@ -350,12 +363,21 @@ async function startServer() {
     res.json({ status: "ok", time: new Date().toISOString() });
   });
 
+  app.get("/api/site-status", (_req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    return res.json(publicSiteLockStatus(siteLockPolicy));
+  });
+
   app.post(["/api/auth/signup", "/api/auth/login"], (_req, res) => {
+    if (isSiteLocked(siteLockPolicy)) return denySiteLockAccess(res);
     res.setHeader("Cache-Control", "no-store");
     return res.status(410).json({ error: "Password authentication is no longer available." });
   });
 
   app.get("/api/auth/google", (req, res) => {
+    if (isSiteLocked(siteLockPolicy) && siteLockPolicy.allowedEmails.size === 0) {
+      return denySiteLockAccess(res);
+    }
     const clientId = process.env.GOOGLE_CLIENT_ID;
     const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
     const redirectUri = process.env.GOOGLE_OAUTH_REDIRECT_URI;
@@ -416,9 +438,13 @@ async function startServer() {
       ) {
         return fail("Google could not verify this email address.");
       }
+      const email = normalizeEmail(payload.email);
+      if (!canAccessPrivateApplication(email, siteLockPolicy)) {
+        return fail(SITE_LOCK_DENIED_MESSAGE);
+      }
       const { account } = await db.authenticateGoogle({
         sub: payload.sub,
-        email: normalizeEmail(payload.email),
+        email,
         name: typeof payload.name === "string" ? payload.name.trim() || null : null,
         accountType: requestedAccountType,
       });
@@ -453,6 +479,7 @@ async function startServer() {
     const email = normalizeEmail(typeof req.body.email === "string" ? req.body.email : "");
     const accountType = normalizeAccountType(req.body.accountType);
     if (!isValidEmail(email)) return res.status(400).json({ error: "Enter a valid email address." });
+    if (!canAccessPrivateApplication(email, siteLockPolicy)) return denySiteLockAccess(res);
     try {
       const code = generateOtp();
       const { salt, hash } = createOtpHash(code);
@@ -494,6 +521,7 @@ async function startServer() {
     if (!isValidEmail(email) || !/^\d{6}$/.test(code)) {
       return res.status(400).json({ error: "Enter a valid email and six-digit code." });
     }
+    if (!canAccessPrivateApplication(email, siteLockPolicy)) return denySiteLockAccess(res);
     try {
       const result = await db.consumeEmailOtp(email, code);
       if (result.status !== "verified") {
@@ -543,6 +571,9 @@ async function startServer() {
       if (!account) {
         res.setHeader("Cache-Control", "no-store");
         return res.status(401).json({ error: "Authentication required." });
+      }
+      if (!canAccessPrivateApplication(account.user.email, siteLockPolicy)) {
+        return denySiteLockAccess(res);
       }
       req.auth = account;
       return next();
@@ -2472,6 +2503,25 @@ SHARED INSTRUCTIONS:
   });
 
   // --- VITE MIDDLEWARE SETUP ---
+
+  app.use(async (req, res, next) => {
+    if (
+      req.method !== "GET" ||
+      !isSiteLocked(siteLockPolicy) ||
+      !isProtectedApplicationPath(req.path)
+    ) {
+      return next();
+    }
+    try {
+      const token = parseCookie(req.headers.cookie, SESSION_COOKIE_NAME);
+      const account = token ? await db.getSessionAccount(hashSessionToken(token)) : null;
+      if (canAccessPrivateApplication(account?.user.email, siteLockPolicy)) return next();
+    } catch (error) {
+      console.error("Protected page site-lock validation failed.");
+    }
+    res.setHeader("Cache-Control", "no-store");
+    return res.redirect(302, "/");
+  });
 
   if (!isProduction) {
     const vite = await createViteServer({

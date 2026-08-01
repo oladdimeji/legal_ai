@@ -10,8 +10,14 @@ import AuthView from "./components/AuthView";
 import ClientWorkspace from "./components/ClientWorkspace";
 import LandingPage from "./components/LandingPage";
 import OnboardingView from "./components/OnboardingView";
+import SiteLockScreen from "./components/SiteLockScreen";
 import { Account, Case } from "./types";
 import { parseRoute, routePath, safeReturnTo } from "./lib/routes";
+
+interface PublicSiteStatus {
+  locked: boolean;
+  reopensAt: string | null;
+}
 
 const protectedRouteKinds = new Set([
   "assistant",
@@ -45,6 +51,7 @@ export default function App() {
     route.kind === "matter" ? route.matterId : null
   );
   const [account, setAccount] = useState<Account | null>(null);
+  const [siteStatus, setSiteStatus] = useState<PublicSiteStatus | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [initialDraftId, setInitialDraftId] = useState<string | null>(null);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
@@ -67,6 +74,32 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
+    const loadSiteStatus = async () => {
+      try {
+        const response = await fetch("/api/site-status");
+        if (!response.ok) throw new Error("Unable to load site status.");
+        const data = (await response.json()) as Partial<PublicSiteStatus>;
+        if (typeof data.locked !== "boolean") throw new Error("Invalid site status response.");
+        if (!cancelled) {
+          setSiteStatus({
+            locked: data.locked,
+            reopensAt: typeof data.reopensAt === "string" ? data.reopensAt : null,
+          });
+        }
+      } catch (error) {
+        console.error("Error loading site status:", error);
+        if (!cancelled) setSiteStatus({ locked: true, reopensAt: null });
+      }
+    };
+    void loadSiteStatus();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!siteStatus) return;
+    let cancelled = false;
     const loadSession = async () => {
       try {
         const response = await fetch("/api/auth/me");
@@ -81,11 +114,19 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [siteStatus]);
 
   useEffect(() => {
-    if (authLoading) return;
+    if (authLoading || !siteStatus) return;
     if (!account) {
+      if (siteStatus.locked) {
+        if (route.kind === "auth" && window.location.pathname !== "/auth") {
+          navigate("/auth", true);
+        } else if (route.kind !== "auth" && route.kind !== "landing") {
+          navigate("/", true);
+        }
+        return;
+      }
       if (protectedRouteKinds.has(route.kind)) {
         const mode = clientRouteKinds.has(route.kind) ? "&mode=client" : "";
         navigate(`/auth?returnTo=${encodeURIComponent(routePath(route))}${mode}`, true);
@@ -121,7 +162,7 @@ export default function App() {
     ) {
       navigate("/assistant", true);
     }
-  }, [account, authLoading, navigate, route]);
+  }, [account, authLoading, navigate, route, siteStatus]);
 
   const fetchCases = useCallback(async () => {
     try {
@@ -185,12 +226,16 @@ export default function App() {
     }
   };
 
-  if (authLoading) {
+  if (authLoading || !siteStatus) {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-white text-xs font-mono uppercase text-zinc-500">
         Loading secure workspace...
       </div>
     );
+  }
+
+  if (!account && siteStatus.locked && route.kind !== "auth") {
+    return <SiteLockScreen reopensAt={siteStatus.reopensAt} />;
   }
 
   if (!account) {

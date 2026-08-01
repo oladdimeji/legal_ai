@@ -956,3 +956,35 @@ Verification:
 Manual checks:
 
 - Browser-driven upload and cross-tenant smoke checks were not run because this environment did not provide an authenticated browser session or disposable database data. Automated isolation and upload-path regressions passed.
+
+## Private-Preview Site Lock
+
+Status: Complete.
+
+Implemented:
+
+- Added a server-only private-preview policy configured by `SITE_LOCKED`, `SITE_REOPENS_AT`, and `SITE_ALLOWED_EMAILS`, with case-insensitive trimmed email matching and fail-closed empty or malformed allowlists.
+- Enforced the policy before Google account creation, OTP issuance and verification, session establishment, session restoration, every existing protected API path, and direct protected SPA page access.
+- Added a sanitized no-store public status endpoint that exposes only the lock state and normalized countdown date; approved email addresses remain absent from frontend source and build output.
+- Added a responsive white, black, and grayscale coming-soon screen with safe days, hours, minutes, and seconds countdown behavior, a generic missing/invalid-date state, and a discreet Private access link to the existing authentication page.
+- Preserved normal authentication, routing, and API behavior when the lock is disabled. Countdown expiry does not unlock the application.
+
+Schema changes:
+
+- None.
+
+Dependencies added or changed:
+
+- None.
+
+Verification:
+
+- Focused private-preview tests: passed, 11/11.
+- `npm run lint`: passed (`tsc --noEmit`).
+- `npm test`: passed, 167/167 tests.
+- `npm run build`: passed with the existing Vite `NODE_ENV` and large-chunk warnings.
+- Diff review confirmed fixed internal redirects, normalized email comparisons, server-side session/API enforcement, and no allowlist content in frontend source or the production frontend bundle.
+
+Manual checks:
+
+- Live Google OAuth, Brevo OTP delivery, browser-responsive rendering, and authenticated production database sessions were not exercised because this environment did not provide disposable provider credentials, a browser session, or a disposable production database. The focused policy/wiring tests, full regression suite, TypeScript check, and production build passed.
