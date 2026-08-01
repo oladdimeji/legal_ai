@@ -12,11 +12,14 @@ import {
   readSiteLockPolicy,
 } from "../server/siteLock.js";
 
-test("site lock defaults to disabled and preserves normal access", () => {
-  const policy = readSiteLockPolicy({});
-  assert.equal(isSiteLocked(policy), false);
-  assert.equal(canAccessPrivateApplication(undefined, policy), true);
-  assert.equal(canAccessPrivateApplication("anyone@example.com", policy), true);
+test("site lock defaults to enabled and only explicit false restores normal access", () => {
+  const defaultPolicy = readSiteLockPolicy({});
+  const disabledPolicy = readSiteLockPolicy({ SITE_LOCKED: " FALSE " });
+  assert.equal(isSiteLocked(defaultPolicy), true);
+  assert.equal(canAccessPrivateApplication("anyone@example.com", defaultPolicy), false);
+  assert.equal(isSiteLocked(disabledPolicy), false);
+  assert.equal(canAccessPrivateApplication(undefined, disabledPolicy), true);
+  assert.equal(canAccessPrivateApplication("anyone@example.com", disabledPolicy), true);
 });
 
 test("enabled site lock permits only allowlisted email addresses", () => {

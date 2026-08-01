@@ -74,7 +74,7 @@ The canonical variables are documented in `.env.example`. `GEMINI_API_KEY` and `
 
 ## Private-preview site lock
 
-The site lock is optional and disabled by default. When enabled, anonymous and non-approved users see the coming-soon screen and cannot create or restore an application session or use protected APIs. The allowlist is read only by the server and email matching is case-insensitive after surrounding whitespace is removed. The countdown date controls presentation only: reaching zero does not unlock the application.
+The site lock is enabled by default and is disabled only when `SITE_LOCKED=false` is set explicitly. While locked, anonymous and non-approved users see the coming-soon screen and cannot create or restore an application session or use protected APIs. The allowlist is read only by the server and email matching is case-insensitive after surrounding whitespace is removed. The countdown date controls presentation only: reaching zero does not unlock the application.
 
 The following values are examples, not built-in accounts or deployment defaults:
 
@@ -84,14 +84,14 @@ SITE_REOPENS_AT=2026-08-15T09:00:00Z
 SITE_ALLOWED_EMAILS=oladimeji@workpodd.com,themamatra01@gmail.com, rasheedmuhammed002@gmail.com
 ```
 
-To activate private preview:
+To configure private preview:
 
-1. Set `SITE_LOCKED=true`.
+1. Keep `SITE_LOCKED=true` or leave it unset.
 2. Set `SITE_REOPENS_AT` to the intended ISO-8601 countdown date, or leave it empty for a generic launching-soon state.
 3. Set `SITE_ALLOWED_EMAILS` to the comma-separated approved email addresses.
 4. Rebuild and restart the application using the normal deployment process.
 
-An empty or malformed allowlist fails closed while the lock is enabled. To reverse the change, set `SITE_LOCKED=false`, then rebuild and restart the application. No database rollback, account change, or session reset is required.
+An unset, empty, or malformed allowlist fails closed while the lock is enabled. To reverse the change, set `SITE_LOCKED=false` explicitly, then rebuild and restart the application. No database rollback, account change, or session reset is required.
 
 ## Troubleshooting
 

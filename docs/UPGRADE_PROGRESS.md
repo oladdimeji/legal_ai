@@ -988,3 +988,10 @@ Verification:
 Manual checks:
 
 - Live Google OAuth, Brevo OTP delivery, browser-responsive rendering, and authenticated production database sessions were not exercised because this environment did not provide disposable provider credentials, a browser session, or a disposable production database. The focused policy/wiring tests, full regression suite, TypeScript check, and production build passed.
+
+### Default-Locked Configuration Follow-up
+
+- Changed private preview to fail closed by default: an unset or non-`false` `SITE_LOCKED` value keeps the site locked, and only an explicit case-insensitive `false` restores public access.
+- Aligned `.env.example`, deployment guidance, and focused regression coverage with the default-locked behavior.
+- No authentication flow, route enforcement, schema, dependency, account, session, or production data behavior changed beyond the lock default.
+- Verification passed: 11/11 focused tests, `npm run lint`, 167/167 full tests, and `npm run build` with the existing Vite warnings.
