@@ -69,7 +69,7 @@ function normalizedAllowedEmails(value: string | undefined): ReadonlySet<string>
 
 export function readSiteLockPolicy(environment: SiteLockEnvironment): SiteLockPolicy {
   return {
-    locked: environment.SITE_LOCKED?.trim().toLowerCase() === "true",
+    locked: environment.SITE_LOCKED?.trim().toLowerCase() !== "false",
     reopensAt: normalizedCountdownDate(environment.SITE_REOPENS_AT),
     allowedEmails: normalizedAllowedEmails(environment.SITE_ALLOWED_EMAILS),
   };
