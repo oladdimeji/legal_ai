@@ -246,7 +246,7 @@ test("continuous threads can save to the current Matter or outside it with indep
   assert.doesNotMatch(createStandalone, /AND t\.case_id IS NULL/);
 });
 
-test("UI help and general modes return before vector retrieval while workspace research retains evidence refusal", async () => {
+test("UI help and general modes return before retrieval while workspace analysis avoids generic refusal", async () => {
   const server = await readFile("server.ts", "utf8");
   const endpoint = server.slice(
     server.indexOf('app.post("/api/threads/:id/messages"'),
@@ -258,7 +258,8 @@ test("UI help and general modes return before vector retrieval while workspace r
   const directSection = endpoint.slice(directBranch, directReturn);
   assert.doesNotMatch(directSection, /could not find any relevant documents|db\.vectorSearch/);
   assert.match(directSection, /Do not claim to have searched internal workspace documents/);
-  assert.match(endpoint.slice(directReturn), /I could not find any relevant documents in the permitted context regarding this topic/);
+  assert.doesNotMatch(endpoint, /I could not find any relevant documents in the permitted context regarding this topic/);
+  assert.match(endpoint.slice(directReturn), /General legal knowledge may still be used/);
 });
 
 test("composer keeps sources and Draft while removing manual Improve and Deep Research", async () => {

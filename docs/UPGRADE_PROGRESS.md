@@ -1174,3 +1174,38 @@ Deliberate limitations:
 - Active assistant state intentionally resets on a full browser refresh and is not stored in browser storage or a URL.
 - Existing `thread.case_id` and `thread.scope` values remain unchanged for History grouping and backward compatibility.
 - The legacy Improve endpoint and backward-compatible server handling for `forceDeepResearch` remain available to internal callers, but the lawyer Assistant UI no longer invokes them.
+
+## Legal LLM Plus — Phase 1: One Assistant Core
+
+Status: Complete.
+
+Implemented:
+
+- Added one permanent lawyer-assistant charter and supplied it through Gemini `systemInstruction` for lawyer Assistant planning, answering, research synthesis, and Draft generation.
+- Added strict typed assistant intents, depths, read-only tool-call shapes, session context, evidence records, prompt builders, and adaptive response temperature policy.
+- Replaced authoritative endpoint use of the frontend regex router with a structured server planner using the lighter Gemini model, JSON response schema, strict runtime validation, deterministic Draft planning, and a conservative no-model fallback.
+- Built authenticated server session context from the account and server-validated current Matter while excluding invitation codes, session data, OAuth data, cloud links, tokens, and other secrets.
+- Wrapped retrieved and supplied content in an explicit untrusted evidence boundary with control-character and nested-boundary sanitization.
+- Removed the mandatory exact missing-document refusal and restored normal general legal knowledge while requiring private Matter facts to remain grounded and current law to be described as unverified when live search is not used.
+- Preserved the existing request-mode response metadata for frontend compatibility and added the server intent as additional metadata.
+
+Schema changes:
+
+- None in Phase 1.
+
+Tests:
+
+- Added planner, validator, permanent-charter, deterministic Draft, general/legal/product/workspace fallback, disabled-web, and prompt-injection boundary tests.
+- Updated legacy assertions that required the retired exact document refusal or the old metadata-only shape.
+
+Verification:
+
+- `npm run lint`: passed via `npm.cmd` (PowerShell script execution is disabled on this host).
+- `npm test`: passed, 214/214 tests.
+- `npm run build`: passed outside the filesystem sandbox after the sandboxed Vite config load was denied by host permissions.
+- Existing Vite warnings remain for `.env` `NODE_ENV=production` handling and the JavaScript chunk exceeding 500 kB.
+
+Deliberate Phase 1 boundary:
+
+- The typed tool names are planner-visible, but their server-only execution registry is implemented in Phase 2.
+- Hybrid retrieval and rolling thread memory are implemented in Phase 3.

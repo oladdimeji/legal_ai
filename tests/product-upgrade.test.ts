@@ -247,7 +247,7 @@ test("Phase 11 Assistant uses bounded history and persists dynamic follow-ups", 
   assert.match(database, /getRecentMessages/);
   assert.match(server, /Prior conversation for resolving follow-up references only/);
   assert.match(server, /generateFollowUpSuggestions/);
-  assert.match(server, /\{ suggestions, requestMode: assistantMode \}/);
+  assert.match(server, /\{ suggestions, requestMode: assistantMode, assistantIntent: assistantPlan\.intent \}/);
   assert.match(migrations, /version: 10/);
   assert.match(migrations, /assistant_message_metadata/);
   assert.match(types, /metadata\?:/);

@@ -7,12 +7,16 @@ dotenv.config();
 export const MODEL_CONFIGS = {
   chat: "gemini-3.6-flash",
   "classify-complexity": "gemini-3.1-flash-lite",
+  "assistant-planner": "gemini-3.1-flash-lite",
+  "assistant-memory": "gemini-3.1-flash-lite",
   "draft-generation": "gemini-3.6-flash",
   "matter-intelligence": "gemini-3.1-flash-lite",
   "client-assistant": "gemini-3.1-flash-lite",
   embedding: "gemini-embedding-2",
   "summarize-subquestion": "gemini-3.1-flash-lite"
 };
+
+export type ModelTaskType = keyof typeof MODEL_CONFIGS;
 
 // Lazy initialization of GoogleGenAI client to prevent startup crash if GEMINI_API_KEY is not defined.
 let aiInstance: GoogleGenAI | null = null;
@@ -120,7 +124,7 @@ const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * A new provider would just be a new branch in the switch statement below.
  */
 export async function callModel(
-  taskType: "chat" | "classify-complexity" | "draft-generation" | "matter-intelligence" | "client-assistant" | "embedding" | "summarize-subquestion",
+  taskType: ModelTaskType,
   messages: any[],
   options: {
     provider?: Provider;

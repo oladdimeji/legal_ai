@@ -38,8 +38,7 @@ export function buildAssistantDraftPrompt({
   deepResearchEnabled: boolean;
   researchPlan?: string[];
 }): string {
-  return `You are a meticulous legal document drafter in Exepts.
-Infer the requested document type from the user's instruction. It may be a contract, agreement, letter, brief, report, policy, summary, email, memorandum, or another reasonable document type. Do not restrict the output to a fixed format list.
+  return `Current task: create a meticulous legal document in Exepts. Infer the requested document type from the user's instruction. It may be a contract, agreement, letter, brief, report, policy, summary, email, memorandum, or another reasonable document type. Do not restrict the output to a fixed format list.
 
 User instruction:
 ${instruction}
@@ -51,8 +50,9 @@ Server-validated Matter and account metadata:
 ${accountMetadata || "No Matter metadata. The authenticated firm and author details are available only as listed here."}
 Current date: ${currentDate}
 
-Authorized evidence:
+<authorized_workspace_evidence>
 ${authorizedEvidence || "No authorized private workspace evidence was retrieved for this request."}
+</authorized_workspace_evidence>
 
 Prior conversation for task continuity only; it is not independent evidence:
 ${conversationContext || "No prior conversation."}
