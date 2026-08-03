@@ -42,10 +42,11 @@ test("Assistant uses rotating working statuses and completes designed response s
   assert.match(assistant, /Understanding your request…/);
   assert.match(assistant, /Identifying the relevant context…/);
   assert.match(assistant, /Reviewing Matter sources…/);
-  assert.match(assistant, /Reviewing Firm Library materials…/);
+  assert.doesNotMatch(assistant, /Reviewing Firm Library materials…/);
+  assert.match(assistant, /Reviewing the visible page and actions…/);
   assert.match(assistant, /hasAttachments[\s\S]*Reviewing attached documents…/);
   assert.match(assistant, /if \(webSearchEnabled\) activities\.push\("Searching the web…"\)/);
-  assert.match(assistant, /if \(deepResearchEnabled\)[\s\S]*Breaking the question into research steps…/);
+  assert.match(assistant, /deepResearchEnabled \|\| requestMode === "deep_research"[\s\S]*Breaking the question into research steps…/);
   assert.match(assistant, /Searching the web…/);
   assert.match(assistant, /Checking research depth…/);
   assert.match(assistant, /Refining the response…/);

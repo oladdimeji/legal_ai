@@ -11,8 +11,10 @@ import {
   type PersistentUploadFailure,
   type PersistentUploadProgress,
 } from "../lib/persistentUploads";
+import { useWorkspacePageContext } from "../lib/WorkspacePageContextProvider";
 
 export default function FirmLibraryView() {
+  const { publishPageContext } = useWorkspacePageContext();
   const [documents, setDocuments] = useState<Document[]>([]);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<string[]>([]);
@@ -25,6 +27,21 @@ export default function FirmLibraryView() {
   const [uploadProgress, setUploadProgress] = useState<PersistentUploadProgress | null>(null);
   const [uploadSummary, setUploadSummary] = useState("");
   const fileSelection = useCumulativeFileSelection(MAX_PERSISTENT_UPLOAD_FILES);
+
+  useEffect(() => {
+    publishPageContext({
+      routeKind: "library",
+      pageTitle: "Firm Library",
+      activeSection: preview ? "Document preview" : section || "All documents",
+      ...(preview ? { selectedItem: { kind: "libraryDocument" as const, id: preview.id, title: preview.title } } : {}),
+      visibleActions: [
+        { id: "search-library", label: "Search", description: "Searches authorized Firm Library documents using the selected keyword or semantic mode." },
+        { id: "upload-library-document", label: "Upload and index", description: "Adds selected PDF, DOCX, or TXT files to the Firm Library and indexes their extracted text." },
+        { id: "preview-library-document", label: "Preview", description: "Opens the selected Firm Library document in a read-only preview." },
+        { id: "remove-library-document", label: "Remove", description: "Permanently removes the selected document from the Firm Library after confirmation." },
+      ],
+    });
+  }, [preview, publishPageContext, section]);
 
   const load = async () => {
     const response = await fetch("/api/documents?caseId=null");

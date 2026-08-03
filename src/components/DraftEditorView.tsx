@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Check, Copy, Download, Edit, Eye, FileText, FileWarning, RefreshCw, Save } from "lucide-react";
-import { Draft } from "../types";
+import { Draft, WorkspacePageContext } from "../types";
 import RichDocumentEditor from "./RichDocumentEditor";
 import WorkProductDocument from "./WorkProductDocument";
 
@@ -8,9 +8,10 @@ interface DraftEditorViewProps {
   initialDraftId: string | null;
   onClearInitialDraftId: () => void;
   caseId: string | null;
+  onSelectedItemChange?: (item: WorkspacePageContext["selectedItem"]) => void;
 }
 
-export default function DraftEditorView({ initialDraftId, onClearInitialDraftId, caseId }: DraftEditorViewProps) {
+export default function DraftEditorView({ initialDraftId, onClearInitialDraftId, caseId, onSelectedItemChange }: DraftEditorViewProps) {
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [activeDraft, setActiveDraft] = useState<Draft | null>(null);
   const [title, setTitle] = useState("");
@@ -19,6 +20,10 @@ export default function DraftEditorView({ initialDraftId, onClearInitialDraftId,
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">("idle");
   const [editMode, setEditMode] = useState(true);
   const [sharingBusy, setSharingBusy] = useState<"sharing" | "stopping" | null>(null);
+
+  useEffect(() => {
+    onSelectedItemChange?.(activeDraft ? { kind: "workProduct", id: activeDraft.id, title: activeDraft.title } : undefined);
+  }, [activeDraft, onSelectedItemChange]);
 
   useEffect(() => {
     setActiveDraft(null);

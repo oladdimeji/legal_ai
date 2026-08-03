@@ -48,12 +48,13 @@ test("migration 005 adds only additive Matter and Source metadata", async () => 
   assert.match(migrations, /ADD COLUMN IF NOT EXISTS link_origin/);
 });
 
-test("Phase 5 Assistant exposes persistent General and Matter context language", async () => {
+test("Phase 5 Assistant now receives automatic General and Matter context", async () => {
   const assistant = await readFile("src/components/AssistantView.tsx", "utf8");
-  assert.match(assistant, />General Assistant<\/option>/);
+  assert.doesNotMatch(assistant, />General Assistant<\/option>/);
   assert.match(assistant, /General Assistant Context/);
   assert.match(assistant, /Matter Context/);
-  assert.match(assistant, /setActiveThreadId\(null\)[\s\S]*setActiveCaseId/);
+  assert.match(assistant, /useWorkspacePageContext/);
+  assert.doesNotMatch(assistant, /setActiveCaseId/);
   assert.doesNotMatch(assistant, />📁 Wide Library<\/option>/);
 });
 
@@ -247,7 +248,7 @@ test("Phase 11 Assistant uses bounded history and persists dynamic follow-ups", 
   assert.match(database, /getRecentMessages/);
   assert.match(server, /Prior conversation for resolving follow-up references only/);
   assert.match(server, /generateFollowUpSuggestions/);
-  assert.match(server, /\{ suggestions \}/);
+  assert.match(server, /\{ suggestions, requestMode: assistantMode \}/);
   assert.match(migrations, /version: 10/);
   assert.match(migrations, /assistant_message_metadata/);
   assert.match(types, /metadata\?:/);

@@ -1024,3 +1024,33 @@ Verification:
 
 - `npm ci`: passed.
 - `npm run verify`: passed after the Phase 1 changes.
+
+## Lawyer Workspace Redesign — Phase 2
+
+Status: Complete.
+
+Implemented:
+
+- Removed the manual General Assistant/Matter selector. The route now determines a General or Matter conversation boundary, and the browser keeps a separate active thread ID for each boundary during the session.
+- Added a typed page-context provider and published current page, active Matter tab, selected Source/Work Product/Library document, and concise visible-action descriptions from Matters, Matter workspace, Firm Library, History, and Settings.
+- Added shared page-context sanitization with route and item allowlists, control-character cleanup, field-length bounds, a 12-action ceiling, and unknown-field removal.
+- Revalidated submitted Matter, thread, selected Source, Firm Library document, and Work Product identifiers against the authenticated user/Firm and the thread's authoritative `case_id` before any message is saved.
+- Added deterministic `ui_help`, `general`, `workspace_research`, `deep_research`, and reserved `draft` request routing. UI help and ordinary general chat return before vector retrieval; complex authorized workspace questions retain Deep Research and citation handling.
+- Preserved strict Matter retrieval and evidence-insufficiency behavior for workspace research while allowing ordinary general questions to use normal model capability without an internal-document refusal.
+- Kept Google grounding opt-in, request-scoped attachments, canonical citations, streaming, conversation titles, and dynamic follow-ups.
+- Made Improve task-aware using the sanitized current page and response mode, and made loading activity text reflect the routed request instead of always claiming an internal-source review.
+- History now loads a selected Matter conversation in that Matter and loads a General conversation in the persistent panel without navigating to `/assistant`.
+
+Schema changes:
+
+- None.
+
+Tests:
+
+- Added behavioral tests for sanitization bounds, request routing, page/thread boundary validation, automatic context-specific thread state, server-side selected-entity revalidation, UI/general no-vector paths, retained workspace insufficiency language, page publishers, and task-aware Improve.
+- Updated brittle tests that intentionally encoded the retired manual scope selector, unconditional research activity, classifier wording, or exact metadata object shape.
+
+Verification:
+
+- `npm ci`: passed.
+- `npm run verify`: passed after the Phase 2 changes.

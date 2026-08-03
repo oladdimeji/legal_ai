@@ -9,6 +9,7 @@ import {
   Users,
 } from "lucide-react";
 import { Account, FirmAdminMember, FirmAdminSettings } from "../types";
+import { useWorkspacePageContext } from "../lib/WorkspacePageContextProvider";
 
 interface SettingsViewProps {
   account: Account;
@@ -34,6 +35,7 @@ export default function SettingsView({
   onAccountUpdated,
   onLogout,
 }: SettingsViewProps) {
+  const { publishPageContext } = useWorkspacePageContext();
   const isAdmin = account.user.firm_role === "admin";
   const [firmName, setFirmName] = useState(account.firm?.name || "");
   const [members, setMembers] = useState<FirmAdminMember[]>([]);
@@ -46,6 +48,19 @@ export default function SettingsView({
   const [generatingCode, setGeneratingCode] = useState(false);
   const [codeError, setCodeError] = useState("");
   const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    publishPageContext({
+      routeKind: "settings",
+      pageTitle: "Settings",
+      activeSection: isAdmin ? "Account and Firm administration" : "Account",
+      visibleActions: [
+        { id: "save-firm-name", label: "Save Firm name", description: "Updates the Firm name for this workspace; this is available to Firm administrators." },
+        { id: "regenerate-invitation-code", label: "Generate invitation code", description: "Rotates the Firm invitation code used to invite lawyers to this workspace." },
+        { id: "logout-settings", label: "Log out", description: "Ends the current authenticated session." },
+      ],
+    });
+  }, [isAdmin, publishPageContext]);
 
   useEffect(() => {
     setFirmName(account.firm?.name || "");

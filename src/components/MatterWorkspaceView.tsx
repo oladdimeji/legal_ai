@@ -1,13 +1,43 @@
 import React, { useEffect, useState } from "react";
 import { ArrowLeft } from "lucide-react";
-import { Case } from "../types";
+import { Case, WorkspacePageContext } from "../types";
 import MatterOverview from "./MatterOverview";
 import MatterSources from "./MatterSources";
 import DraftEditorView from "./DraftEditorView";
 import MatterIntelligence from "./MatterIntelligence";
 import MatterCollaboration from "./MatterCollaboration";
+import { useWorkspacePageContext } from "../lib/WorkspacePageContextProvider";
 
 const tabs = ["Overview", "Matter Intelligence", "Sources", "Work Product", "Collaboration"] as const;
+
+function visibleActionsForTab(tab: (typeof tabs)[number]): NonNullable<WorkspacePageContext["visibleActions"]> {
+  if (tab === "Overview") return [
+    { id: "edit-matter-overview", label: "Edit Overview", description: "Enables editing of the Matter name, client, jurisdiction, objectives, and status." },
+    { id: "save-matter-overview", label: "Save", description: "Saves the edited Matter overview to this Matter." },
+  ];
+  if (tab === "Matter Intelligence") return [
+    { id: "generate-matter-intelligence", label: "Generate Matter Intelligence", description: "Builds a source-backed working analysis from this Matter's current Sources." },
+    { id: "regenerate-matter-intelligence", label: "Regenerate", description: "Rebuilds Matter Intelligence from the latest authorized Matter Sources." },
+    { id: "edit-matter-intelligence", label: "Edit", description: "Opens Matter Intelligence for rich-text editing without changing the underlying Sources." },
+    { id: "export-matter-intelligence", label: "Export .docx", description: "Downloads the current Matter Intelligence as a real Word document." },
+  ];
+  if (tab === "Sources") return [
+    { id: "add-matter-source", label: "Add Source", description: "Adds a note, uploaded file, or authorized Firm Library link to this Matter only." },
+    { id: "preview-matter-source", label: "Preview", description: "Opens the selected Matter Source in a read-only preview." },
+    { id: "remove-matter-source", label: "Remove", description: "Removes a direct Matter Source or unlinks a Firm Library document after confirmation." },
+  ];
+  if (tab === "Work Product") return [
+    { id: "new-work-product", label: "New", description: "Creates a blank editable Work Product document in this Matter." },
+    { id: "share-with-client", label: "Share with client", description: "Makes the selected Matter Work Product available through this Matter's client workspace; it can be stopped later." },
+    { id: "save-work-product", label: "Save", description: "Saves edits to the selected Matter Work Product." },
+    { id: "export-work-product", label: "Export .docx", description: "Downloads the selected Matter Work Product as a real Word document." },
+  ];
+  return [
+    { id: "generate-client-token", label: "Generate Token", description: "Creates or rotates the secure token for this Matter's single client collaborator." },
+    { id: "send-client-request", label: "Send Request", description: "Sends the selected shared Work Product and request type to this Matter's client collaborator." },
+    { id: "revoke-client-access", label: "Revoke Access", description: "Revokes the client's access to this Matter collaboration workspace." },
+  ];
+}
 
 export default function MatterWorkspaceView({
   matterId,
@@ -22,10 +52,12 @@ export default function MatterWorkspaceView({
   initialDraftId: string | null;
   onClearInitialDraftId: () => void;
 }) {
+  const { publishPageContext } = useWorkspacePageContext();
   const [matter, setMatter] = useState<Case | null>(null);
   const [tab, setTab] = useState<(typeof tabs)[number]>("Overview");
   const [unread, setUnread] = useState(0);
   const [collaborationDraftId, setCollaborationDraftId] = useState<string | null>(null);
+  const [selectedItem, setSelectedItem] = useState<WorkspacePageContext["selectedItem"]>();
 
   useEffect(() => {
     void fetch(`/api/cases/${matterId}`).then(async (response) => {
@@ -42,6 +74,27 @@ export default function MatterWorkspaceView({
   useEffect(() => {
     if (initialDraftId) setTab("Work Product");
   }, [initialDraftId]);
+
+  useEffect(() => {
+    setSelectedItem(undefined);
+  }, [matterId, tab]);
+
+  useEffect(() => {
+    if (!matter) return;
+    publishPageContext({
+      routeKind: "matter",
+      pageTitle: matter.name,
+      activeSection: tab,
+      matter: {
+        id: matter.id,
+        name: matter.name,
+        clientName: matter.client_name || null,
+        status: matter.status || null,
+      },
+      selectedItem,
+      visibleActions: visibleActionsForTab(tab),
+    });
+  }, [matter, publishPageContext, selectedItem, tab]);
 
   if (!matter) {
     return <div className="flex h-full items-center justify-center text-xs font-mono uppercase text-zinc-500">Loading Matter...</div>;
@@ -85,13 +138,14 @@ export default function MatterWorkspaceView({
       </nav>
       <main className={`flex-1 overflow-hidden ${tab === "Work Product" ? "p-0" : "overflow-y-auto p-8"}`}>
         {tab === "Overview" && <MatterOverview matter={matter} onChange={update} />}
-        {tab === "Sources" && <MatterSources matterId={matter.id} />}
+        {tab === "Sources" && <MatterSources matterId={matter.id} onSelectedItemChange={setSelectedItem} />}
         {tab === "Matter Intelligence" && <MatterIntelligence matterId={matter.id} />}
         {tab === "Work Product" && (
           <DraftEditorView
             caseId={matter.id}
             initialDraftId={initialDraftId || collaborationDraftId}
             onClearInitialDraftId={clearDraftNavigation}
+            onSelectedItemChange={setSelectedItem}
           />
         )}
         {tab === "Collaboration" && (

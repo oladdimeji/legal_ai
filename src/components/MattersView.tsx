@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Briefcase, Check, ChevronDown, Grid2X2, List, Plus, Search, Upload, X } from "lucide-react";
 import { Case, Document } from "../types";
 import SelectedFileList from "./SelectedFileList";
@@ -9,11 +9,13 @@ import {
   uploadPersistentFilesSequentially,
   type PersistentUploadFailure,
 } from "../lib/persistentUploads";
+import { useWorkspacePageContext } from "../lib/WorkspacePageContextProvider";
 
 interface Props { matters: Case[]; onRefresh: () => Promise<void> | void; onOpenMatter: (id: string) => void; }
 type Sort = "activity" | "created" | "name";
 
 export default function MattersView({ matters, onRefresh, onOpenMatter }: Props) {
+  const { publishPageContext } = useWorkspacePageContext();
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<Sort>("activity");
   const [view, setView] = useState<"cards" | "list">("cards");
@@ -27,6 +29,18 @@ export default function MattersView({ matters, onRefresh, onOpenMatter }: Props)
   const [status, setStatus] = useState("");
   const [sourceFailures, setSourceFailures] = useState<PersistentUploadFailure[]>([]);
   const fileSelection = useCumulativeFileSelection(MAX_PERSISTENT_UPLOAD_FILES);
+
+  useEffect(() => {
+    publishPageContext({
+      routeKind: "matters",
+      pageTitle: "Matters",
+      visibleActions: [
+        { id: "create-matter", label: "New Matter", description: "Creates a Matter workspace from an assignment, with optional sources." },
+        { id: "search-matters", label: "Search", description: "Filters the visible Matters by Matter or client name." },
+        { id: "change-matter-view", label: "Cards or list", description: "Changes only how the Matters list is displayed." },
+      ],
+    });
+  }, [publishPageContext]);
 
   const shown = useMemo(() => matters.filter((matter) => `${matter.name} ${matter.client_name || ""}`.toLowerCase().includes(query.toLowerCase())).sort((a, b) => {
     if (sort === "name") return a.name.localeCompare(b.name);

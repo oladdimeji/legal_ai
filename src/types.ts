@@ -39,6 +39,39 @@ export interface Account {
   firm: Firm | null;
 }
 
+export type WorkspacePageContext = {
+  routeKind:
+    | "matters"
+    | "matter"
+    | "library"
+    | "history"
+    | "settings"
+    | "assistantDocument";
+  pageTitle: string;
+  activeSection?: string;
+  matter?: {
+    id: string;
+    name: string;
+    clientName?: string | null;
+    status?: string | null;
+  };
+  selectedItem?: {
+    kind:
+      | "matter"
+      | "source"
+      | "workProduct"
+      | "libraryDocument"
+      | "assistantDocument";
+    id?: string;
+    title: string;
+  };
+  visibleActions?: Array<{
+    id: string;
+    label: string;
+    description: string;
+  }>;
+};
+
 export interface FirmAdminMember {
   id: string;
   name: string | null;

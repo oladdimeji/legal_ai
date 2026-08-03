@@ -1865,14 +1865,14 @@ class DatabaseService {
         `SELECT t.* FROM threads t
          JOIN cases c ON c.id = t.case_id
          WHERE t.user_id = $1 AND t.case_id = $2 AND c.firm_id = $3
-         ORDER BY t.created_at DESC`,
+         ORDER BY COALESCE((SELECT MAX(m.created_at) FROM messages m WHERE m.thread_id = t.id), t.created_at) DESC`,
         [context.userId, caseId, context.firmId]
       );
     }
     return await this.query(
-      `SELECT * FROM threads
-       WHERE user_id = $1 AND case_id IS NULL AND scope <> 'client'
-       ORDER BY created_at DESC`,
+      `SELECT t.* FROM threads t
+       WHERE t.user_id = $1 AND t.case_id IS NULL AND t.scope <> 'client'
+       ORDER BY COALESCE((SELECT MAX(m.created_at) FROM messages m WHERE m.thread_id = t.id), t.created_at) DESC`,
       [context.userId]
     );
   }

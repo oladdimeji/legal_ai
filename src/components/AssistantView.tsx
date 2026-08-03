@@ -13,6 +13,8 @@ import { Case, Thread, Message, Citation, ResearchStep } from "../types";
 import FormattedMarkdown from "./FormattedMarkdown";
 import { browserFileIdentity, MAX_SELECTED_FILES } from "../hooks/useCumulativeFileSelection";
 import { assistantCitationsToDisplayText } from "../lib/assistantCitations";
+import { useWorkspacePageContext } from "../lib/WorkspacePageContextProvider";
+import { routeAssistantRequest } from "../lib/assistantRequestRouting";
 
 type TemporaryFile = {
   id: string;
@@ -27,7 +29,6 @@ type TemporaryFile = {
 interface AssistantViewProps {
   cases: Case[];
   activeCaseId: string | null;
-  setActiveCaseId: (id: string | null) => void;
   activeThreadId: string | null;
   setActiveThreadId: (id: string | null) => void;
   onMessagesChange: (count: number) => void;
@@ -47,18 +48,25 @@ function buildWorkingActivities({
   hasAttachments,
   webSearchEnabled,
   deepResearchEnabled,
+  requestMode,
 }: {
   queryText: string;
   hasMatter: boolean;
   hasAttachments: boolean;
   webSearchEnabled: boolean;
   deepResearchEnabled: boolean;
+  requestMode: ReturnType<typeof routeAssistantRequest>;
 }): string[] {
+  const usesWorkspaceEvidence = ["workspace_research", "deep_research", "draft"].includes(requestMode);
   const activities = [
     "Understanding your request…",
     "Identifying the relevant context…",
-    hasMatter ? "Reviewing Matter sources…" : "Reviewing Firm Library materials…",
   ];
+  if (usesWorkspaceEvidence) {
+    activities.push(hasMatter ? "Reviewing Matter sources…" : "Reviewing authorized workspace materials…");
+  } else if (requestMode === "ui_help") {
+    activities.push("Reviewing the visible page and actions…");
+  }
 
   if (hasAttachments) {
     activities.push("Reviewing attached documents…");
@@ -66,14 +74,14 @@ function buildWorkingActivities({
   }
   if (webSearchEnabled) activities.push("Searching the web…");
 
-  if (deepResearchEnabled) {
+  if (deepResearchEnabled || requestMode === "deep_research") {
     activities.push(
       "Breaking the question into research steps…",
       "Examining the legal issues…",
       "Checking supporting and conflicting evidence…",
       "Connecting the relevant findings…",
     );
-  } else {
+  } else if (requestMode === "workspace_research") {
     activities.push(
       "Checking research depth…",
       /claim|liability|breach|cause of action/i.test(queryText)
@@ -82,13 +90,14 @@ function buildWorkingActivities({
     );
   }
 
-  activities.push(
-    "Organizing the supporting sources…",
-    "Synthesizing the findings…",
-    "Preparing citations…",
-    "Drafting the response…",
-    "Refining the response…",
-  );
+  if (usesWorkspaceEvidence) {
+    activities.push(
+      "Organizing the supporting sources…",
+      "Synthesizing the findings…",
+      "Preparing citations…",
+    );
+  }
+  activities.push("Drafting the response…", "Refining the response…");
 
   return activities.filter((activity, index) => activity !== activities[index - 1]);
 }
@@ -183,13 +192,13 @@ function getProcessedSnippet(snippet: string, queryText: string, maxLen: number 
 export default function AssistantView({ 
   cases, 
   activeCaseId, 
-  setActiveCaseId,
   activeThreadId,
   setActiveThreadId,
   onMessagesChange,
   onNavigateToDrafts,
   compact = false,
 }: AssistantViewProps) {
+  const { pageContext } = useWorkspacePageContext();
   const [threads, setThreads] = useState<Thread[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState("");
@@ -375,8 +384,11 @@ export default function AssistantView({
     try {
       const url = activeCaseId ? `/api/threads?caseId=${activeCaseId}` : "/api/threads?caseId=null";
       const res = await fetch(url);
-      const data = await res.json();
+      const data = await res.json() as Thread[];
       setThreads(data);
+      if (!activeThreadId || !data.some((thread) => thread.id === activeThreadId)) {
+        setActiveThreadId(data[0]?.id || null);
+      }
     } catch (err) {
       console.error("Error fetching threads:", err);
     }
@@ -431,12 +443,19 @@ export default function AssistantView({
     setLoading(true);
     setStreaming(false);
     setWorkingStageIndex(0);
+    const requestMode = routeAssistantRequest({
+      content: queryText,
+      pageContext,
+      forceDeepResearch: deepResearchEnabled,
+      hasTemporaryFiles: temporaryFiles.some((file) => file.status === "ready"),
+    });
     setWorkingStages(buildWorkingActivities({
       queryText,
       hasMatter: activeCaseId !== null,
       hasAttachments: temporaryFiles.some((file) => file.status === "ready"),
       webSearchEnabled: enableWebSearch,
       deepResearchEnabled,
+      requestMode,
     }));
     setInputValue("");
     setFilesAndSourcesOpen(false);
@@ -476,6 +495,8 @@ export default function AssistantView({
           content: queryText,
           forceDeepResearch: deepResearchEnabled,
           enableWebSearch,
+          responseMode: "chat",
+          pageContext,
           temporaryFiles: submittedTemporaryFiles
             .map(({ filename, text }) => ({ filename, text }))
         })
@@ -583,7 +604,7 @@ export default function AssistantView({
       const res = await fetch("/api/improve-prompt", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: rawPrompt })
+        body: JSON.stringify({ prompt: rawPrompt, pageContext, responseMode: "chat" })
       });
       const data = await res.json();
       if (data.improved) {
@@ -829,7 +850,7 @@ export default function AssistantView({
             ref={textareaRef}
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
-            placeholder={activeCaseId ? "Ask about Sources in the selected Matter..." : "Ask using the Firm Library and permitted external sources..."}
+            placeholder={activeCaseId ? "Ask about this Matter or anything else..." : "Ask about this page, your workspace, or anything else..."}
             className="w-full min-h-[64px] max-h-[180px] p-1.5 border-none outline-none focus:ring-0 text-sm text-zinc-900 placeholder-zinc-400 font-sans transition-all resize-none bg-white"
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
@@ -842,29 +863,6 @@ export default function AssistantView({
           {/* Bottom control row inside the unified container */}
           <div className="flex flex-wrap items-center justify-between gap-2 select-none pt-2 border-t border-zinc-100 bg-white">
             <div className="flex min-w-0 flex-wrap items-center gap-2 relative">
-              {/* Streamlined Workspace project selector dropdown */}
-              <div className="relative inline-block">
-                <select
-                  value={activeCaseId || "wide"}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    setActiveThreadId(null);
-                    setActiveCaseId(val === "wide" ? null : val);
-                  }}
-                  className="appearance-none bg-white border border-zinc-200 text-xs font-mono font-semibold text-zinc-600 hover:text-zinc-900 px-2.5 py-1.5 pr-7 rounded focus:outline-none cursor-pointer hover:border-zinc-300 transition-all"
-                >
-                  <option value="wide">General Assistant</option>
-                  {cases.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      💼 {c.name.length > 15 ? `${c.name.substring(0, 15)}...` : c.name}
-                    </option>
-                  ))}
-                </select>
-                <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-1.5 text-zinc-400">
-                  <ChevronDown className="h-3 w-3" />
-                </div>
-              </div>
-
               {/* Redesigned Files and Sources Dropdown Menu */}
               <div className="relative">
                 <button

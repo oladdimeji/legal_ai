@@ -15,6 +15,7 @@ import {
   Draft,
   ProfessionalRole,
   ResearchStep,
+  WorkspacePageContext,
   WorkspaceType,
 } from "./src/types.js";
 import { Packer } from "docx";
@@ -30,6 +31,12 @@ import {
 import { extractGeneratedSubject, extractSummaryHeading } from "./server/extractGeneratedSubject.js";
 import { getWorkProductFormatInstructions, isWorkProductFormat } from "./server/workProductFormat.js";
 import { canonicalizeAssistantCitations, rewriteGoogleGroundingCitations, stripInternalCitationsForWorkProduct } from "./src/lib/assistantCitations.js";
+import { sanitizeWorkspacePageContext } from "./src/lib/workspacePageContext.js";
+import {
+  pageContextForPrompt,
+  routeAssistantRequest,
+  validatePageContextThreadBoundary,
+} from "./server/assistantRouting.js";
 import {
   SESSION_COOKIE_NAME,
   SESSION_TTL_MS,
@@ -1455,17 +1462,24 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
   // Enhance/Improve Raw Prompt into Legal-Grade Query
   app.post("/api/improve-prompt", async (req, res) => {
     try {
-      const { prompt } = req.body;
+      const prompt = typeof req.body.prompt === "string" ? req.body.prompt.trim().slice(0, 6000) : "";
       if (!prompt) {
         return res.status(400).json({ error: "Prompt is required" });
       }
+      const pageContext = sanitizeWorkspacePageContext(req.body.pageContext);
+      if (req.body.pageContext !== undefined && !pageContext) {
+        return res.status(400).json({ error: "Page context is invalid" });
+      }
+      const drafting = req.body.responseMode === "draft";
 
-      const enhancePrompt = `You are an elite senior legal advisor. 
-Transform the following raw question or thought into a professional, precise, structured, and formal legal-grade research query. 
-Incorporate standard legal terminology, specify statutory frameworks or jurisdictional queries where appropriate, and ensure it remains clear and succinct for search retrieval.
+      const enhancePrompt = `Improve the user's request without changing its intended task, facts, tone, or requested output.
+Use the current page context only when it is relevant. ${drafting ? "The user is preparing a standalone document, so preserve the requested document type, audience, tone, and drafting instructions." : "Do not turn ordinary chat or product-help questions into formal legal research queries."}
 Output ONLY plain editable text. Do not use Markdown headings, bold, italics, bullet markers, code fences, or tables. Preserve ordinary legal punctuation and numbered prose only when numbering is substantively useful.
 
-Raw prompt: "${prompt}"`;
+Current page context:
+${pageContext ? pageContextForPrompt(pageContext) : "No page context supplied."}
+
+Raw request: "${prompt}"`;
 
       const result = await callModel("classify-complexity", [{ role: "user", content: enhancePrompt }]);
       res.json({ improved: sanitizePlainEditableText(result.text) });
@@ -1890,7 +1904,9 @@ ${sourceText}`;
   // Core Assistant Chat Endpoint
   app.post("/api/threads/:id/messages", async (req, res) => {
     const threadId = req.params.id;
-    const { content, forceDeepResearch, enableWebSearch } = req.body;
+    const rawContent = typeof req.body.content === "string" ? req.body.content.trim() : "";
+    const content = rawContent.slice(0, 12000);
+    const { forceDeepResearch, enableWebSearch } = req.body;
     const temporaryFiles: Array<{ filename: string; text: string }> = Array.isArray(req.body.temporaryFiles)
       ? req.body.temporaryFiles
           .filter((file: any) => typeof file?.filename === "string" && typeof file?.text === "string")
@@ -1900,6 +1916,9 @@ ${sourceText}`;
     if (!content) {
       return res.status(400).json({ error: "Message content is required" });
     }
+    if (rawContent.length > 12000) {
+      return res.status(413).json({ error: "Message content is too long" });
+    }
 
     try {
       const requestOwnership = ownership(req);
@@ -1907,6 +1926,85 @@ ${sourceText}`;
       if (!thread) {
         return res.status(404).json({ error: "Thread not found" });
       }
+      let pageContext = sanitizeWorkspacePageContext(req.body.pageContext);
+      if (req.body.pageContext !== undefined && !pageContext) {
+        return res.status(400).json({ error: "Page context is invalid" });
+      }
+      const matter = thread.case_id
+        ? await db.getCaseById(thread.case_id, requestOwnership)
+        : undefined;
+      if (thread.case_id && !matter) {
+        return res.status(404).json({ error: "Matter not found" });
+      }
+      if (!pageContext) {
+        pageContext = matter
+          ? {
+              routeKind: "matter",
+              pageTitle: matter.name,
+              matter: {
+                id: matter.id,
+                name: matter.name,
+                clientName: matter.client_name || null,
+                status: matter.status || null,
+              },
+            }
+          : { routeKind: "matters", pageTitle: "Matters" };
+      }
+      const contextBoundary = validatePageContextThreadBoundary(pageContext, thread.case_id);
+      if (contextBoundary.valid === false) {
+        return res.status(409).json({ error: contextBoundary.error });
+      }
+      if (matter) {
+        pageContext = {
+          ...pageContext,
+          pageTitle: matter.name,
+          matter: {
+            id: matter.id,
+            name: matter.name,
+            clientName: matter.client_name || null,
+            status: matter.status || null,
+          },
+        };
+      }
+
+      let selectedEntityEvidence: { title: string; text: string; sourceName: string } | null = null;
+      const selectedItem = pageContext.selectedItem;
+      if (selectedItem?.id) {
+        if (selectedItem.kind === "source" || selectedItem.kind === "libraryDocument") {
+          const selectedDocument = await db.getDocumentById(selectedItem.id, requestOwnership, thread.case_id);
+          if (!selectedDocument) return res.status(404).json({ error: "Selected document not found in this context" });
+          selectedEntityEvidence = {
+            title: selectedDocument.title,
+            text: selectedDocument.extracted_text.slice(0, 12000),
+            sourceName: thread.case_id ? "Matter Sources" : "Firm Library",
+          };
+          pageContext = { ...pageContext, selectedItem: { ...selectedItem, title: selectedDocument.title } };
+        } else if (selectedItem.kind === "workProduct") {
+          if (!thread.case_id) return res.status(409).json({ error: "Selected Work Product requires its Matter context" });
+          const selectedDraft = await db.getDraftById(selectedItem.id, thread.case_id, requestOwnership);
+          if (!selectedDraft) return res.status(404).json({ error: "Selected Work Product not found in this Matter" });
+          selectedEntityEvidence = {
+            title: selectedDraft.title,
+            text: selectedDraft.content.slice(0, 12000),
+            sourceName: "Matter Work Product",
+          };
+          pageContext = { ...pageContext, selectedItem: { ...selectedItem, title: selectedDraft.title } };
+        } else if (selectedItem.kind === "matter") {
+          if (!matter || selectedItem.id !== matter.id) {
+            return res.status(409).json({ error: "Selected Matter does not match the conversation" });
+          }
+        } else if (selectedItem.kind === "assistantDocument") {
+          return res.status(409).json({ error: "Standalone assistant documents are not available in this phase" });
+        }
+      }
+
+      const assistantMode = routeAssistantRequest({
+        content,
+        pageContext,
+        forceDeepResearch: forceDeepResearch === true,
+        responseMode: req.body.responseMode === "draft" ? "draft" : "chat",
+        hasTemporaryFiles: temporaryFiles.length > 0,
+      });
       const priorHistory = await db.getRecentMessages(threadId, requestOwnership, 12);
 
       // Save user message first
@@ -1938,43 +2036,76 @@ ${sourceText}`;
         .join("\n\n");
       const retrievalQuery = [...conversationHistory.filter((m) => m.role === "user").slice(-3).map((m) => m.content), content].join("\n");
 
+      if (assistantMode === "ui_help" || assistantMode === "general") {
+        const modelPrompt = assistantMode === "ui_help"
+          ? `You are the Exepts product assistant. Answer the user's question directly using only the server-sanitized current-page context below.
+Do not claim that a control exists unless it appears in visibleActions. Do not claim to have searched Firm Library, Matter Sources, or the web. If the supplied context does not identify the requested control, say specifically that it is not visible in the current context.
+
+Current page context:
+${pageContextForPrompt(pageContext)}
+
+Server-validated selected entity: ${selectedEntityEvidence ? `${selectedEntityEvidence.sourceName}: ${selectedEntityEvidence.title}` : "None"}
+
+Question: ${content}`
+          : `Answer the user's ordinary question using your normal capabilities. Do not claim to have searched internal workspace documents because no internal retrieval was performed. Do not fabricate citations or present general knowledge as private Matter facts. Do not add generic AI or legal-advice disclaimer boilerplate. Express genuine uncertainty directly and specifically.
+
+Prior conversation:
+${conversationContext || "No prior conversation."}
+
+User question: ${content}`;
+        const modelResult = await callModel("chat", [{ role: "user", content: modelPrompt }], {
+          googleSearch: assistantMode === "general" && enableWebSearch === true,
+          temperature: 0.2,
+        });
+        const citations: Citation[] = [];
+        const groundingCitationIds: Record<number, string> = {};
+        if (assistantMode === "general" && modelResult.groundingMetadata?.groundingChunks) {
+          modelResult.groundingMetadata.groundingChunks.forEach((chunk: any, index: number) => {
+            if (!chunk.web) return;
+            const citation: Citation = {
+              id: `cit_${citations.length + 1}`,
+              type: "web",
+              title: chunk.web.title || "Web Reference",
+              url: chunk.web.uri,
+              textSnippet: "Live Web Search Grounding source.",
+              sourceName: "Google Search Grounding",
+            };
+            citations.push(citation);
+            groundingCitationIds[index] = citation.id;
+          });
+        }
+        const rewritten = rewriteGoogleGroundingCitations(modelResult.text, groundingCitationIds);
+        const finalContent = canonicalizeAssistantCitations(cleanGeneratedText(rewritten), citations);
+        const suggestions = await generateFollowUpSuggestions([...conversationHistory], finalContent);
+        const assistantMessage = await db.addMessage(
+          threadId,
+          "assistant",
+          finalContent,
+          requestOwnership,
+          citations,
+          null,
+          { suggestions, requestMode: assistantMode }
+        );
+        return res.status(201).json({ userMessage, assistantMessage, requestMode: assistantMode });
+      }
+
       const scope = thread.case_id || "wide";
 
-      // 1. Determine if Deep Research is needed and split into sub-questions in ONE single call
-      let needsDeepResearch = forceDeepResearch === true;
-      let classificationReason = "Manual override or preset config";
+      // Deep Research is selected deterministically before this point; only split a genuinely deep request.
+      const needsDeepResearch = assistantMode === "deep_research";
       let subQuestions: string[] = [];
 
-      try {
-        const combinedPrompt = `Analyze this legal query and determine if it requires complex, multi-step analysis, comparisons of laws, or structured sub-questions to answer properly (e.g. cross-disciplinary issues, detailed statutes, case comparing).
-If it requires Deep Research (or if forced), also break this complex legal question into 2 to 3 simple, highly targeted legal sub-questions for individual document retrieval and legislative/statutory lookups.
-
-Respond with a JSON object of this exact schema:
-{
-  "requiresDeepResearch": boolean,
-  "reason": "short explanation",
-  "subQuestions": ["sub-question 1", "sub-question 2", ...]
-}
-
-Query: "${content}"`;
-
-        const classResult = await callModel("classify-complexity", [{ role: "user", content: combinedPrompt }], {
-          responseMimeType: "application/json"
-        });
-        const parsed = JSON.parse(classResult.text);
-        if (forceDeepResearch !== true) {
-          needsDeepResearch = parsed.requiresDeepResearch === true;
-        }
-        classificationReason = parsed.reason || "AI Classifier result";
-        subQuestions = parsed.subQuestions || [];
-        if (!Array.isArray(subQuestions)) {
-          subQuestions = [];
-        }
-        console.log(`[Classifier] Needs Deep Research: ${needsDeepResearch}. Reason: ${classificationReason}. Sub-questions count: ${subQuestions.length}`);
-      } catch (err) {
-        console.error("Combined classification and split pass failed:", err);
-        if (forceDeepResearch !== true) {
-          needsDeepResearch = false;
+      if (needsDeepResearch) {
+        try {
+          const splitResult = await callModel("classify-complexity", [{ role: "user", content: `Break this complex research request into 2 to 3 concise retrieval sub-questions. Return JSON with exactly this schema: {"subQuestions":["question"]}.\n\nRequest: ${content}` }], {
+            responseMimeType: "application/json"
+          });
+          const parsed = JSON.parse(splitResult.text);
+          if (Array.isArray(parsed.subQuestions)) {
+            subQuestions = parsed.subQuestions.filter((question: unknown): question is string => typeof question === "string" && question.trim().length > 0).slice(0, 3);
+          }
+        } catch (err) {
+          console.error("Deep Research question split failed:", err);
         }
       }
 
@@ -2007,6 +2138,15 @@ Query: "${content}"`;
         citations.push(finalCit);
         return finalCit;
       };
+
+      if (selectedEntityEvidence?.text) {
+        registerCitation({
+          type: "workspace",
+          title: selectedEntityEvidence.title,
+          textSnippet: cleanSourceText(selectedEntityEvidence.text.slice(0, 4000)),
+          sourceName: selectedEntityEvidence.sourceName,
+        });
+      }
 
       let finalContent = "";
       let researchSteps: ResearchStep[] | null = null;
@@ -2263,12 +2403,13 @@ ${citationInstSearch}`;
         requestOwnership,
         citations,
         researchSteps,
-        { suggestions }
+        { suggestions, requestMode: assistantMode }
       );
 
       res.status(201).json({
         userMessage,
-        assistantMessage
+        assistantMessage,
+        requestMode: assistantMode
       });
 
     } catch (err: any) {

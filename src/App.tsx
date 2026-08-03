@@ -13,6 +13,10 @@ import OnboardingView from "./components/OnboardingView";
 import SiteLockScreen from "./components/SiteLockScreen";
 import { Account, Case } from "./types";
 import { parseRoute, routePath, safeReturnTo } from "./lib/routes";
+import {
+  WorkspacePageContextProvider,
+  useWorkspacePageContext,
+} from "./lib/WorkspacePageContextProvider";
 
 interface PublicSiteStatus {
   locked: boolean;
@@ -42,19 +46,38 @@ const clientRouteKinds = new Set([
 ]);
 
 export default function App() {
+  return (
+    <WorkspacePageContextProvider>
+      <AppContent />
+    </WorkspacePageContextProvider>
+  );
+}
+
+function AppContent() {
   const [locationKey, setLocationKey] = useState(
     `${window.location.pathname}${window.location.search}${window.location.hash}`
   );
   const route = useMemo(() => parseRoute(window.location.pathname), [locationKey]);
   const [cases, setCases] = useState<Case[]>([]);
-  const [activeCaseId, setActiveCaseId] = useState<string | null>(
-    route.kind === "matter" ? route.matterId : null
-  );
+  const activeCaseId = route.kind === "matter" ? route.matterId : null;
   const [account, setAccount] = useState<Account | null>(null);
   const [siteStatus, setSiteStatus] = useState<PublicSiteStatus | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [initialDraftId, setInitialDraftId] = useState<string | null>(null);
-  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+  const [activeThreadIds, setActiveThreadIds] = useState<Record<string, string>>({});
+  const { pageContext } = useWorkspacePageContext();
+  const assistantContextKey = activeCaseId ? `matter:${activeCaseId}` : "general";
+  const activeThreadId = activeThreadIds[assistantContextKey] || null;
+  const setActiveThreadId = useCallback((id: string | null) => {
+    setActiveThreadIds((current) => {
+      if (!id) {
+        const next = { ...current };
+        delete next[assistantContextKey];
+        return next;
+      }
+      return { ...current, [assistantContextKey]: id };
+    });
+  }, [assistantContextKey]);
 
   const navigate = useCallback((path: string, replace = false) => {
     if (`${window.location.pathname}${window.location.search}${window.location.hash}` === path) {
@@ -186,17 +209,7 @@ export default function App() {
     }
   }, [account, fetchCases]);
 
-  useEffect(() => {
-    if (route.kind === "matter") {
-      setActiveCaseId(route.matterId);
-    } else {
-      setActiveCaseId(null);
-    }
-  }, [route]);
-
   const handleOpenMatter = (matterId: string) => {
-    setActiveCaseId(matterId);
-    setActiveThreadId(null);
     navigate(`/matters/${encodeURIComponent(matterId)}`);
   };
 
@@ -218,8 +231,7 @@ export default function App() {
       await fetch("/api/auth/logout", { method: "POST" });
     } finally {
       setAccount(null);
-      setActiveCaseId(null);
-      setActiveThreadId(null);
+      setActiveThreadIds({});
       setInitialDraftId(null);
       navigate("/", true);
     }
@@ -302,18 +314,9 @@ export default function App() {
     : route.kind === "matters" || route.kind === "library" || route.kind === "history"
       ? route.kind
       : null;
-  const activeMatter = route.kind === "matter"
-    ? cases.find((matter) => matter.id === route.matterId)
-    : null;
-  const assistantContextLabel = activeMatter
-    ? `Matter · ${activeMatter.name}`
-    : route.kind === "library"
-      ? "Firm Library"
-      : route.kind === "history"
-        ? "History"
-        : route.kind === "settings"
-          ? "Settings"
-          : "Matters";
+  const assistantContextLabel = pageContext.matter
+    ? `Matter · ${pageContext.matter.name}${pageContext.activeSection ? ` · ${pageContext.activeSection}` : ""}`
+    : `${pageContext.pageTitle}${pageContext.activeSection ? ` · ${pageContext.activeSection}` : ""}`;
 
   return (
     <LawyerWorkspaceShell
@@ -327,7 +330,6 @@ export default function App() {
         <AssistantView
           cases={cases}
           activeCaseId={activeCaseId}
-          setActiveCaseId={setActiveCaseId}
           activeThreadId={activeThreadId}
           setActiveThreadId={setActiveThreadId}
           onMessagesChange={() => undefined}
@@ -354,8 +356,8 @@ export default function App() {
           cases={cases}
           activeThreadId={activeThreadId}
           onSelectThread={(thread) => {
-            setActiveCaseId(thread.case_id);
-            setActiveThreadId(thread.id);
+            const key = thread.case_id ? `matter:${thread.case_id}` : "general";
+            setActiveThreadIds((current) => ({ ...current, [key]: thread.id }));
             if (thread.case_id) navigate(`/matters/${encodeURIComponent(thread.case_id)}`);
           }}
         />

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Eye, FileText, Plus, Search, Trash2, Upload, X } from "lucide-react";
-import { Document } from "../types";
+import { Document, WorkspacePageContext } from "../types";
 import SelectedFileList from "./SelectedFileList";
 import WorkProductDocument from "./WorkProductDocument";
 import { MAX_PERSISTENT_UPLOAD_FILES, useCumulativeFileSelection } from "../hooks/useCumulativeFileSelection";
@@ -12,7 +12,7 @@ import {
   type PersistentUploadProgress,
 } from "../lib/persistentUploads";
 
-export default function MatterSources({ matterId }: { matterId: string }) {
+export default function MatterSources({ matterId, onSelectedItemChange }: { matterId: string; onSelectedItemChange?: (item: WorkspacePageContext["selectedItem"]) => void }) {
   const [sources, setSources] = useState<Document[]>([]);
   const [library, setLibrary] = useState<Document[]>([]);
   const [query, setQuery] = useState("");
@@ -39,6 +39,9 @@ export default function MatterSources({ matterId }: { matterId: string }) {
   };
 
   useEffect(() => { void load(); }, [matterId]);
+  useEffect(() => {
+    onSelectedItemChange?.(preview ? { kind: "source", id: preview.id, title: preview.title } : undefined);
+  }, [onSelectedItemChange, preview]);
 
   const visible = useMemo(
     () => sources.filter((source) => `${source.title} ${source.source_type} ${source.origin}`.toLowerCase().includes(query.toLowerCase())),

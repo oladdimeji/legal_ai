@@ -1,13 +1,25 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { ArrowRight, Calendar, MessageSquare, Trash2 } from "lucide-react";
 import { Case, Thread } from "../types";
+import { useWorkspacePageContext } from "../lib/WorkspacePageContextProvider";
 
 interface Props { cases: Case[]; activeThreadId: string | null; onSelectThread: (thread: Thread) => void; onRefreshThreads?: () => void; }
 
 export default function HistoryView({ cases, activeThreadId, onSelectThread, onRefreshThreads }: Props) {
+  const { publishPageContext } = useWorkspacePageContext();
   const [threads, setThreads] = useState<Thread[]>([]), [loading, setLoading] = useState(true);
   const load = async () => { setLoading(true); try { const response = await fetch("/api/threads?history=true"); if (response.ok) setThreads(await response.json()); } finally { setLoading(false); } };
   useEffect(() => { void load(); }, []);
+  useEffect(() => {
+    publishPageContext({
+      routeKind: "history",
+      pageTitle: "History",
+      visibleActions: [
+        { id: "open-conversation", label: "Open", description: "Loads that conversation in the persistent assistant; Matter conversations also open their Matter." },
+        { id: "delete-conversation", label: "Delete conversation", description: "Deletes the conversation while preserving associated Work Product." },
+      ],
+    });
+  }, [publishPageContext]);
   const groups = useMemo(() => {
     const ordered = [...threads].sort((a, b) => new Date(b.last_activity_at || b.created_at).getTime() - new Date(a.last_activity_at || a.created_at).getTime());
     const result: { id: string; title: string; threads: Thread[] }[] = [{ id: "general", title: "General Assistant", threads: ordered.filter((thread) => thread.case_id === null) }];
