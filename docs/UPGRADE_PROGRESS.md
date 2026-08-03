@@ -1290,3 +1290,47 @@ Deliberate limitations:
 
 - Retrieval uses lightweight PostgreSQL keyword matching and transparent local reranking; no new search service or extension was added.
 - Rolling memory is conversation-scoped and is not persistent user-profile memory or an independent source of private facts.
+
+## Professional Word/DOCX Generation Repair
+
+Status: Complete.
+
+Implemented:
+
+- Replaced the shared line-by-line Markdown converter with a typed, export-only normalization, block parsing, inline parsing, and DOCX rendering pipeline behind the unchanged `markdownToDocxDocument(title, markdown)` façade.
+- Removed consecutive opening title duplicates in memory without rewriting stored content, normalized line endings and blank space, omitted thematic breaks, and unwrapped accidental whole-document Markdown fences.
+- Added soft-wrapped paragraph joining with explicit hard-break preservation; H1-H6 and conservative legal heading recognition; bounded nested lists with independent ordered-list numbering and authored starts; blockquotes; code blocks; and safe fallback behavior for malformed tables and inline syntax.
+- Added real GFM tables with repeating neutral header rows and conservative two-column signature-table treatment. Signature drafting blanks remain verbatim.
+- Added typed inline bold, italic, underline, code, safe `http:`, `https:`, and `mailto:` hyperlinks, including actual external Word hyperlink relationships. Unsupported schemes remain ordinary text.
+- Added US Letter sizing, 0.9-inch margins, Arial title/body/heading styles, legal heading pagination controls, an unobtrusive title header omitted on the first page, dynamic `Page X of Y` fields, and page breaks for signature sections, exhibits, schedules, appendices, and annexes.
+- Kept all five existing Matter Work Product, standalone assistant-document, client, legacy client portal, and Matter Intelligence routes on the shared renderer without route changes.
+
+Schema changes:
+
+- None. No migration was added and no stored document row was changed.
+
+Dependencies:
+
+- Added `jszip` 3.10.1 as a direct development-only dependency. The same version was already present transitively through `docx` and `mammoth`; it is used only to inspect generated Word XML, relationships, numbering, tables, headers, and footer fields in tests.
+
+Tests:
+
+- Added nine focused tests covering duplicate titles, subtitles, outer fences, line and blank handling, hard breaks, H1-H6 and legal headings, thematic breaks, independent list restarts and authored starts, bounded nesting, safe inline formatting and links, preserved drafting blanks, GFM and signature tables, malformed-table fallback, signature/exhibit page breaks, DOCX styles, page fields, first-page header behavior, packed-DOCX readability through Mammoth, and continued shared-renderer route use.
+- Existing authentication, Matter isolation, Work Product, assistant-document, client, Matter Intelligence, drafting, and presentation regressions remain passing.
+
+Verification:
+
+- `npm run lint`: passed via `npm.cmd`.
+- `npm test`: passed, 235/235 tests.
+- `npm run build`: passed outside the filesystem sandbox because Vite requires parent-directory access on this host.
+- `npm run verify`: passed outside the filesystem sandbox for the same Vite requirement.
+- Existing Vite warnings remain for `.env` `NODE_ENV=production` handling and the JavaScript chunk exceeding 500 kB.
+
+Manual verification not available:
+
+- Microsoft Word, LibreOffice, and another compatible interactive Word viewer were not installed in this non-interactive environment. Automated validation packed representative DOCX files in memory, read them with Mammoth, and inspected their Word XML for real tables, hyperlink relationships, numbering definitions, pagination controls, first-page headers, and dynamic page fields.
+
+Deliberate phase boundary:
+
+- Draft prompts, model selection, evidence gathering, stored wording, cleanup behavior, database content, frontend Preview, frontend Editor, authentication, uploads, and collaboration were not changed.
+- This focused parser covers the Markdown structures Exepts generates and intentionally does not attempt full CommonMark compatibility. Browser Preview and Editor presentation remain separate follow-up work.
