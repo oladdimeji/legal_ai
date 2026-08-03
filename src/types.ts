@@ -48,7 +48,13 @@ export type WorkspacePageContext = {
     | "settings"
     | "assistantDocument";
   pageTitle: string;
+  pageDescription?: string;
   activeSection?: string;
+  visibleSections?: Array<{
+    id: string;
+    title: string;
+    description: string;
+  }>;
   matter?: {
     id: string;
     name: string;
@@ -175,6 +181,7 @@ export interface Message {
   metadata?: {
     suggestions?: string[];
     attachments?: Array<{ name: string }> | string[];
+    pageContext?: WorkspacePageContext;
     document?: AssistantDocumentReference;
     [key: string]: unknown;
   };

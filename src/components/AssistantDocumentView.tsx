@@ -44,7 +44,11 @@ export default function AssistantDocumentView({ documentId }: { documentId: stri
     publishPageContext({
       routeKind: "assistantDocument",
       pageTitle: document?.title || "Assistant document",
+      pageDescription: "A private standalone assistant document that can be edited, previewed, saved, and downloaded as Word.",
       activeSection: "Document editor",
+      visibleSections: [
+        { id: "document-editor", title: "Document editor", description: "Edits the title and body of this authenticated lawyer's private standalone document." },
+      ],
       selectedItem: document ? { kind: "assistantDocument", id: document.id, title: document.title } : undefined,
       visibleActions: [
         { id: "save-assistant-document", label: "Save", description: "Saves title and content edits to this private assistant document." },

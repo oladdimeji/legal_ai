@@ -12,7 +12,7 @@ import ClientWorkspace from "./components/ClientWorkspace";
 import LandingPage from "./components/LandingPage";
 import OnboardingView from "./components/OnboardingView";
 import SiteLockScreen from "./components/SiteLockScreen";
-import { Account, AssistantDocumentReference, Case } from "./types";
+import { Account, AssistantDocumentReference, Case, WorkspacePageContext } from "./types";
 import { parseRoute, routePath, safeReturnTo } from "./lib/routes";
 import {
   WorkspacePageContextProvider,
@@ -47,6 +47,59 @@ const clientRouteKinds = new Set([
   "clientSettings",
 ]);
 
+function assistantContextForRoute(
+  route: ReturnType<typeof parseRoute>,
+  published: WorkspacePageContext,
+  matters: Case[]
+): WorkspacePageContext {
+  if (route.kind === "matter") {
+    if (published.routeKind === "matter" && published.matter?.id === route.matterId) {
+      return published;
+    }
+    const matter = matters.find((item) => item.id === route.matterId);
+    return {
+      routeKind: "matter",
+      pageTitle: matter?.name || "Matter",
+      pageDescription: "The current Matter workspace. Its tabs organize overview details, Sources, Matter Intelligence, Work Product, and Collaboration.",
+      activeSection: "Overview",
+      matter: {
+        id: route.matterId,
+        name: matter?.name || "Matter",
+        clientName: matter?.client_name || null,
+        status: matter?.status || null,
+      },
+    };
+  }
+  if (route.kind === "assistantDocument") {
+    if (
+      published.routeKind === "assistantDocument" &&
+      published.selectedItem?.kind === "assistantDocument" &&
+      published.selectedItem.id === route.documentId
+    ) {
+      return published;
+    }
+    return {
+      routeKind: "assistantDocument",
+      pageTitle: "Assistant document",
+      pageDescription: "A private standalone document created by the assistant.",
+      activeSection: "Document editor",
+      selectedItem: {
+        kind: "assistantDocument",
+        id: route.documentId,
+        title: "Assistant document",
+      },
+    };
+  }
+  const routeDefaults: Partial<Record<typeof route.kind, WorkspacePageContext>> = {
+    matters: { routeKind: "matters", pageTitle: "Matters", pageDescription: "The Firm's Matter list and Matter creation workspace." },
+    library: { routeKind: "library", pageTitle: "Firm Library", pageDescription: "The Firm's reusable document library and search workspace." },
+    history: { routeKind: "history", pageTitle: "History", pageDescription: "Past assistant conversations grouped by their origin." },
+    settings: { routeKind: "settings", pageTitle: "Settings", pageDescription: "Account, Firm, and session settings for the authenticated lawyer." },
+  };
+  const expected = routeDefaults[route.kind];
+  return expected && published.routeKind !== expected.routeKind ? expected : published;
+}
+
 export default function App() {
   return (
     <WorkspacePageContextProvider>
@@ -61,25 +114,14 @@ function AppContent() {
   );
   const route = useMemo(() => parseRoute(window.location.pathname), [locationKey]);
   const [cases, setCases] = useState<Case[]>([]);
-  const activeCaseId = route.kind === "matter" ? route.matterId : null;
   const [account, setAccount] = useState<Account | null>(null);
   const [siteStatus, setSiteStatus] = useState<PublicSiteStatus | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [initialDraftId, setInitialDraftId] = useState<string | null>(null);
-  const [activeThreadIds, setActiveThreadIds] = useState<Record<string, string>>({});
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+  const [newConversationVersion, setNewConversationVersion] = useState(0);
   const { pageContext } = useWorkspacePageContext();
-  const assistantContextKey = activeCaseId ? `matter:${activeCaseId}` : "general";
-  const activeThreadId = activeThreadIds[assistantContextKey] || null;
-  const setActiveThreadId = useCallback((id: string | null) => {
-    setActiveThreadIds((current) => {
-      if (!id) {
-        const next = { ...current };
-        delete next[assistantContextKey];
-        return next;
-      }
-      return { ...current, [assistantContextKey]: id };
-    });
-  }, [assistantContextKey]);
+  const assistantPageContext = assistantContextForRoute(route, pageContext, cases);
 
   const navigate = useCallback((path: string, replace = false) => {
     if (`${window.location.pathname}${window.location.search}${window.location.hash}` === path) {
@@ -232,6 +274,7 @@ function AppContent() {
 
   const handleStartNewThread = () => {
     setActiveThreadId(null);
+    setNewConversationVersion((current) => current + 1);
   };
 
   const handleLogout = async () => {
@@ -239,7 +282,8 @@ function AppContent() {
       await fetch("/api/auth/logout", { method: "POST" });
     } finally {
       setAccount(null);
-      setActiveThreadIds({});
+      setActiveThreadId(null);
+      setNewConversationVersion((current) => current + 1);
       setInitialDraftId(null);
       navigate("/", true);
     }
@@ -319,12 +363,12 @@ function AppContent() {
 
   const activeNavigation = route.kind === "matter"
     ? "matters"
-    : route.kind === "matters" || route.kind === "library" || route.kind === "history"
+    : route.kind === "matters" || route.kind === "library" || route.kind === "history" || route.kind === "settings"
       ? route.kind
       : null;
-  const assistantContextLabel = pageContext.matter
-    ? `Matter · ${pageContext.matter.name}${pageContext.activeSection ? ` · ${pageContext.activeSection}` : ""}`
-    : `${pageContext.pageTitle}${pageContext.activeSection ? ` · ${pageContext.activeSection}` : ""}`;
+  const assistantContextLabel = assistantPageContext.matter
+    ? `Matter · ${assistantPageContext.matter.name}${assistantPageContext.activeSection ? ` · ${assistantPageContext.activeSection}` : ""}`
+    : `${assistantPageContext.pageTitle}${assistantPageContext.activeSection ? ` · ${assistantPageContext.activeSection}` : ""}`;
 
   return (
     <LawyerWorkspaceShell
@@ -332,14 +376,13 @@ function AppContent() {
       activeNavigation={activeNavigation}
       assistantContextLabel={assistantContextLabel}
       navigate={navigate}
-      onLogout={handleLogout}
       onStartNewConversation={handleStartNewThread}
       assistant={
         <AssistantView
-          cases={cases}
-          activeCaseId={activeCaseId}
+          pageContext={assistantPageContext}
           activeThreadId={activeThreadId}
           setActiveThreadId={setActiveThreadId}
+          newConversationVersion={newConversationVersion}
           onMessagesChange={() => undefined}
           onOpenDocument={handleOpenAssistantDocument}
           compact
@@ -352,6 +395,7 @@ function AppContent() {
       {route.kind === "library" && <FirmLibraryView />}
       {route.kind === "matter" && (
         <MatterWorkspaceView
+          key={route.matterId}
           matterId={route.matterId}
           onBack={() => navigate("/matters")}
           onMatterChange={handleMatterChange}
@@ -364,8 +408,7 @@ function AppContent() {
           cases={cases}
           activeThreadId={activeThreadId}
           onSelectThread={(thread) => {
-            const key = thread.case_id ? `matter:${thread.case_id}` : "general";
-            setActiveThreadIds((current) => ({ ...current, [key]: thread.id }));
+            setActiveThreadId(thread.id);
             if (thread.case_id) navigate(`/matters/${encodeURIComponent(thread.case_id)}`);
           }}
         />

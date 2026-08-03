@@ -11,8 +11,9 @@ import {
 } from "../src/lib/assistantPanelWidth.js";
 import { routeAssistantRequest } from "../src/lib/assistantRequestRouting.js";
 import {
+  conversationMessageForPrompt,
+  currentMatterIdForAssistant,
   pageContextForPrompt,
-  validatePageContextThreadBoundary,
 } from "../server/assistantRouting.js";
 import { sanitizeWorkspacePageContext } from "../src/lib/workspacePageContext.js";
 import type { WorkspacePageContext } from "../src/types.js";
@@ -40,7 +41,7 @@ test("lawyer authentication and onboarding default to Matters while assistant bo
   assert.match(routes, /if \(path === "\/assistant"\) return \{ kind: "assistant" \}/);
 });
 
-test("lawyer top navigation has exactly the three confirmed destinations", async () => {
+test("lawyer top navigation has exactly Matters, Firm Library, History, and Settings", async () => {
   const shell = await readFile("src/components/LawyerWorkspaceShell.tsx", "utf8");
   const navigation = shell.slice(
     shell.indexOf("export const LAWYER_TOP_NAVIGATION"),
@@ -49,10 +50,10 @@ test("lawyer top navigation has exactly the three confirmed destinations", async
   assert.match(navigation, /label: "Matters"/);
   assert.match(navigation, /label: "Firm Library"/);
   assert.match(navigation, /label: "History"/);
-  assert.doesNotMatch(navigation, /Assistant|Settings/);
+  assert.match(navigation, /label: "Settings"/);
+  assert.doesNotMatch(navigation, /Assistant|Log out/);
   assert.match(shell, /activeNavigation === item\.id/);
-  assert.match(shell, /> Settings/);
-  assert.match(shell, /> Log out/);
+  assert.doesNotMatch(shell, /profileMenuOpen|Account menu|account\.user\.email|> Log out/);
 });
 
 test("assistant panel is persistent, pointer and keyboard resizable, and stores its width", async () => {
@@ -107,11 +108,21 @@ test("page context sanitizer bounds browser-authored strings and action counts",
       ignoredContent: "private document body",
     })),
     injected: { documentContents: "must not survive" },
+    pageDescription: `Overview ${"p".repeat(700)} https://cloud.invalid/private`,
+    visibleSections: Array.from({ length: 14 }, (_, index) => ({
+      id: `section-${index}`,
+      title: `Section ${index}`,
+      description: index === 0 ? "Invitation code: SECRET-CODE" : "s".repeat(700),
+    })),
   });
   assert.ok(sanitized);
   assert.equal(sanitized.pageTitle.length, 160);
   assert.equal(sanitized.visibleActions?.length, 12);
   assert.equal(sanitized.visibleActions?.[0].description.length, 320);
+  assert.equal(sanitized.pageDescription?.length, 600);
+  assert.equal(sanitized.visibleSections?.length, 10);
+  assert.equal(sanitized.visibleSections?.[1].description.length, 500);
+  assert.doesNotMatch(pageContextForPrompt(sanitized), /cloud\.invalid|SECRET-CODE/);
   assert.doesNotMatch(pageContextForPrompt(sanitized), /private document body|must not survive/);
   assert.equal(sanitizeWorkspacePageContext({ routeKind: "matter", pageTitle: "Missing Matter" }), null);
 });
@@ -125,25 +136,58 @@ test("deterministic assistant routing separates UI help, general chat, workspace
   assert.equal(routeAssistantRequest({ content: "Compare all relevant cases comprehensively", pageContext: matterContext }), "deep_research");
   assert.equal(routeAssistantRequest({ content: "Hello", pageContext: matterContext }), "general");
   assert.equal(routeAssistantRequest({ content: "Simple question", pageContext: generalContext, forceDeepResearch: true }), "deep_research");
+  const settingsContext: WorkspacePageContext = { routeKind: "settings", pageTitle: "Settings" };
+  assert.equal(routeAssistantRequest({ content: "Can you explain the content of the settings for me?", pageContext: settingsContext }), "ui_help");
+  assert.equal(routeAssistantRequest({ content: "Explain Windows settings generally.", pageContext: settingsContext }), "general");
 });
 
-test("thread boundary validation rejects Matter/general and cross-Matter combinations", () => {
-  assert.deepEqual(validatePageContextThreadBoundary(matterContext, "case_1"), { valid: true });
-  assert.equal(validatePageContextThreadBoundary(matterContext, "case_2").valid, false);
-  assert.equal(validatePageContextThreadBoundary(generalContext, "case_1").valid, false);
-  assert.deepEqual(validatePageContextThreadBoundary(generalContext, null), { valid: true });
+test("current assistant Matter comes only from the submitted page and history labels remain concise", () => {
+  assert.equal(currentMatterIdForAssistant(matterContext), "case_1");
+  assert.equal(currentMatterIdForAssistant(generalContext), null);
+  const labeled = conversationMessageForPrompt({
+    id: "message_1", thread_id: "thread_1", role: "user", content: "What does this cover?",
+    citations: [], steps: null, created_at: new Date(0).toISOString(), metadata: { pageContext: matterContext },
+  });
+  assert.match(labeled, /^USER \[Page: Acme dispute · Sources\]:/);
+  const legacy = conversationMessageForPrompt({
+    id: "message_2", thread_id: "thread_1", role: "user", content: "Legacy",
+    citations: [], steps: null, created_at: new Date(0).toISOString(),
+  });
+  assert.equal(legacy, "USER: Legacy");
 });
 
-test("manual scope is absent and route context maintains one active thread per General or Matter context", async () => {
+test("App owns one fresh session-only active thread and navigation never replaces it", async () => {
   const [app, assistant] = await Promise.all([
     readFile("src/App.tsx", "utf8"),
     readFile("src/components/AssistantView.tsx", "utf8"),
   ]);
   assert.doesNotMatch(assistant, /<select[\s\S]{0,500}General Assistant|setActiveCaseId/);
-  assert.match(app, /assistantContextKey = activeCaseId \? `matter:\$\{activeCaseId\}` : "general"/);
-  assert.match(app, /activeThreadIds\[assistantContextKey\]/);
-  assert.match(app, /const key = thread\.case_id \? `matter:/);
-  assert.match(assistant, /data\.some\(\(thread\) => thread\.id === activeThreadId\)/);
+  assert.match(app, /const \[activeThreadId, setActiveThreadId\] = useState<string \| null>\(null\)/);
+  assert.doesNotMatch(app, /activeThreadIds|assistantContextKey|localStorage.*Thread|sessionStorage.*Thread/);
+  assert.match(app, /onSelectThread=\{\(thread\) => \{[\s\S]*setActiveThreadId\(thread\.id\)/);
+  assert.match(app, /if \(thread\.case_id\) navigate\(`\/matters\//);
+  assert.doesNotMatch(assistant, /fetchThreads|data\[0\]|\/api\/threads\?caseId/);
+  assert.match(assistant, /if \(!activeThreadId\) return/);
+  assert.match(assistant, /AbortController/);
+  assert.match(assistant, /caseId: originContext\.routeKind === "matter"/);
+  assert.match(assistant, /const handleAsk[\s\S]*await handleStartNewThread/);
+  assert.match(app, /const handleStartNewThread = \(\) => \{\s*setActiveThreadId\(null\);\s*setNewConversationVersion/);
+  assert.doesNotMatch(app.slice(app.indexOf("const handleStartNewThread"), app.indexOf("const handleLogout")), /fetch\(/);
+  assert.ok(app.indexOf("const navigate") < app.indexOf("setActiveThreadId(thread.id)"));
+});
+
+test("navigation preserves the single conversation across every lawyer destination", async () => {
+  const [app, shell] = await Promise.all([
+    readFile("src/App.tsx", "utf8"),
+    readFile("src/components/LawyerWorkspaceShell.tsx", "utf8"),
+  ]);
+  const navigate = app.slice(app.indexOf("const navigate"), app.indexOf("useEffect(() =>", app.indexOf("const navigate")));
+  assert.doesNotMatch(navigate, /setActiveThreadId|setNewConversationVersion/);
+  for (const destination of ["/matters", "/library", "/history", "/settings"]) {
+    assert.match(shell, new RegExp(destination.replaceAll("/", "\\/")));
+  }
+  assert.match(app, /`\/documents\/\$\{encodeURIComponent\(document\.id\)\}`/);
+  assert.match(app, /key=\{route\.matterId\}/);
 });
 
 test("workspace views publish useful bounded context and visible action descriptions", async () => {
@@ -161,17 +205,45 @@ test("workspace views publish useful bounded context and visible action descript
   assert.match(sources[2], /kind: "libraryDocument"/);
 });
 
-test("server validates page/thread and selected-entity context before routing", async () => {
+test("server validates current page entities independently from thread History grouping", async () => {
   const server = await readFile("server.ts", "utf8");
   const endpoint = server.slice(
     server.indexOf('app.post("/api/threads/:id/messages"'),
     server.indexOf('// PUT route for updating a message')
   );
   assert.match(endpoint, /sanitizeWorkspacePageContext/);
-  assert.match(endpoint, /validatePageContextThreadBoundary/);
-  assert.match(endpoint, /return res\.status\(409\)/);
-  assert.match(endpoint, /getDocumentById\(selectedItem\.id, requestOwnership, thread\.case_id\)/);
-  assert.match(endpoint, /getDraftById\(selectedItem\.id, thread\.case_id, requestOwnership\)/);
+  assert.doesNotMatch(endpoint, /validatePageContextThreadBoundary|thread\.case_id/);
+  assert.match(endpoint, /getCaseById\(submittedCurrentMatterId, requestOwnership\)/);
+  assert.match(endpoint, /getDocumentById\(selectedItem\.id, requestOwnership, currentMatterId\)/);
+  assert.match(endpoint, /getDocumentById\(selectedItem\.id, requestOwnership, null\)/);
+  assert.match(endpoint, /getDraftById\(selectedItem\.id, currentMatterId, requestOwnership\)/);
+  assert.match(endpoint, /getAssistantDocumentById\(selectedItem\.id, requestOwnership\)/);
+  assert.match(endpoint, /const retrievalScope = currentMatterId \|\| "wide"/);
+  assert.match(endpoint, /pageContext \}/);
+  assert.ok(endpoint.indexOf("getCaseById(submittedCurrentMatterId") < endpoint.indexOf("db.addMessage"));
+  assert.ok(endpoint.indexOf("const retrievalScope = currentMatterId") < endpoint.indexOf("db.vectorSearch", endpoint.indexOf("const retrievalScope")));
+});
+
+test("Settings publishes role-aware page contents without publishing the invitation value", async () => {
+  const settings = await readFile("src/components/SettingsView.tsx", "utf8");
+  const publisher = settings.slice(settings.indexOf("publishPageContext({"), settings.indexOf("});", settings.indexOf("publishPageContext({")));
+  assert.match(publisher, /title: "Account"/);
+  assert.match(publisher, /title: "Firm administration"/);
+  assert.match(publisher, /title: "Session"/);
+  assert.match(publisher, /isAdmin \? \[/);
+  assert.match(publisher, /Log out ends the current authenticated session/);
+  assert.doesNotMatch(publisher, /value:\s*invitationCode|`[^`]*\$\{invitationCode\}/);
+});
+
+test("continuous threads can save to the current Matter or outside it with independent ownership checks", async () => {
+  const database = await readFile("server/db.ts", "utf8");
+  const createDraft = database.slice(database.indexOf("public async createDraft"), database.indexOf("public async createManualDraft"));
+  const createStandalone = database.slice(database.indexOf("public async createAssistantDocument"), database.indexOf("public async getAssistantDocumentById"));
+  assert.match(createDraft, /JOIN cases c ON c\.id = \$3/);
+  assert.match(createDraft, /t\.user_id = \$7[\s\S]*c\.firm_id = \$8/);
+  assert.doesNotMatch(createDraft, /t\.case_id = \$3/);
+  assert.match(createStandalone, /t\.user_id = \$3[\s\S]*u\.firm_id = \$4/);
+  assert.doesNotMatch(createStandalone, /AND t\.case_id IS NULL/);
 });
 
 test("UI help and general modes return before vector retrieval while workspace research retains evidence refusal", async () => {
@@ -189,13 +261,11 @@ test("UI help and general modes return before vector retrieval while workspace r
   assert.match(endpoint.slice(directReturn), /I could not find any relevant documents in the permitted context regarding this topic/);
 });
 
-test("Improve is task-aware and receives page and Draft context", async () => {
-  const [server, assistant] = await Promise.all([
-    readFile("server.ts", "utf8"),
-    readFile("src/components/AssistantView.tsx", "utf8"),
-  ]);
-  const improve = server.slice(server.indexOf('app.post("/api/improve-prompt"'), server.indexOf('app.post("/api/extract-files"'));
-  assert.match(improve, /Do not turn ordinary chat or product-help questions into formal legal research queries/);
-  assert.match(improve, /pageContextForPrompt/);
-  assert.match(assistant, /JSON\.stringify\(\{ prompt: rawPrompt, pageContext, responseMode: draftMode \? "draft" : "chat" \}\)/);
+test("composer keeps sources and Draft while removing manual Improve and Deep Research", async () => {
+  const assistant = await readFile("src/components/AssistantView.tsx", "utf8");
+  assert.match(assistant, />Research sources</);
+  assert.match(assistant, /id="draft-mode-toggle"/);
+  assert.match(assistant, /draftMode \? "Create Draft" : "Ask"/);
+  assert.match(assistant, /FileSourcePicker/);
+  assert.doesNotMatch(assistant, /handleImprovePrompt|btn-improve-query|forceDeepResearch|deepResearchEnabled|setDeepResearchEnabled/);
 });

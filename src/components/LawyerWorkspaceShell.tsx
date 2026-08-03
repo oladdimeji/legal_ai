@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { LogOut, Plus, Settings, UserRound } from "lucide-react";
+import { Plus } from "lucide-react";
 import { Account } from "../types";
 import {
   ASSISTANT_PANEL_STORAGE_KEY,
@@ -14,16 +14,16 @@ export const LAWYER_TOP_NAVIGATION = [
   { id: "matters", label: "Matters", path: "/matters" },
   { id: "library", label: "Firm Library", path: "/library" },
   { id: "history", label: "History", path: "/history" },
+  { id: "settings", label: "Settings", path: "/settings" },
 ] as const;
 
 interface LawyerWorkspaceShellProps {
   account: Account;
-  activeNavigation: "matters" | "library" | "history" | null;
+  activeNavigation: "matters" | "library" | "history" | "settings" | null;
   assistantContextLabel: string;
   assistant: React.ReactNode;
   children: React.ReactNode;
   navigate: (path: string) => void;
-  onLogout: () => void;
   onStartNewConversation: () => void;
 }
 
@@ -34,13 +34,11 @@ export default function LawyerWorkspaceShell({
   assistant,
   children,
   navigate,
-  onLogout,
   onStartNewConversation,
 }: LawyerWorkspaceShellProps) {
   const [panelWidth, setPanelWidth] = useState(() =>
     readAssistantPanelWidth(window.innerWidth)
   );
-  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const resizeStartRef = useRef<{ clientX: number; width: number } | null>(null);
 
   const updateWidth = (nextWidth: number) => {
@@ -83,8 +81,6 @@ export default function LawyerWorkspaceShell({
     };
   });
 
-  const initial = (account.user.name || account.user.email || "U").charAt(0).toUpperCase();
-
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-white font-sans text-zinc-900">
       <aside
@@ -122,54 +118,6 @@ export default function LawyerWorkspaceShell({
 
         <div className="min-h-0 flex-1 overflow-hidden">{assistant}</div>
 
-        <div className="relative shrink-0 border-t border-zinc-200 p-3">
-          {profileMenuOpen && (
-            <div
-              className="absolute bottom-[calc(100%-4px)] left-3 z-40 w-56 overflow-hidden rounded border border-zinc-200 bg-white py-1 shadow-lg"
-              role="menu"
-              aria-label="Account menu"
-            >
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  setProfileMenuOpen(false);
-                  navigate("/settings");
-                }}
-                className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-zinc-700 hover:bg-zinc-50 hover:text-zinc-950"
-              >
-                <Settings className="h-3.5 w-3.5" /> Settings
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                onClick={onLogout}
-                className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-zinc-700 hover:bg-zinc-50 hover:text-zinc-950"
-              >
-                <LogOut className="h-3.5 w-3.5" /> Log out
-              </button>
-            </div>
-          )}
-          <button
-            type="button"
-            onClick={() => setProfileMenuOpen((current) => !current)}
-            className="flex w-full min-w-0 items-center gap-3 rounded px-2 py-1.5 text-left hover:bg-zinc-50"
-            aria-haspopup="menu"
-            aria-expanded={profileMenuOpen}
-          >
-            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-zinc-200 bg-zinc-100 font-mono text-[10px] text-zinc-700">
-              {initial || <UserRound className="h-3.5 w-3.5" />}
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-xs font-semibold">
-                {account.user.name || "Counsel"}
-              </span>
-              <span className="block truncate font-mono text-[9px] text-zinc-500">
-                {account.user.email}
-              </span>
-            </span>
-          </button>
-        </div>
       </aside>
 
       <div

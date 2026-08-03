@@ -88,7 +88,7 @@ test("composer removes post-response three-format drafting and renders persisted
   assert.doesNotMatch(assistant, /action-draft-|drafting-modal|draftFormat|Drafting Format Style|Generate Draft/);
 });
 
-test("message Draft flow creates Matter Work Product or an owned standalone document", async () => {
+test("message Draft destination follows the current page rather than thread origin", async () => {
   const server = await readFile("server.ts", "utf8");
   const endpoint = server.slice(
     server.indexOf('app.post("/api/threads/:id/messages"'),
@@ -98,7 +98,8 @@ test("message Draft flow creates Matter Work Product or an owned standalone docu
     endpoint.indexOf('assistantMode === "draft"'),
     endpoint.indexOf('assistantMode === "ui_help"')
   );
-  assert.match(draftBranch, /thread\.case_id[\s\S]*db\.createDraft\(threadId, thread\.case_id/);
+  assert.doesNotMatch(draftBranch, /thread\.case_id/);
+  assert.match(draftBranch, /currentMatterId[\s\S]*db\.createDraft\(threadId, currentMatterId/);
   assert.match(draftBranch, /db\.createAssistantDocument\(threadId, title, draftContent, requestOwnership\)/);
   assert.match(draftBranch, /kind: "matterWorkProduct"/);
   assert.match(draftBranch, /kind: "assistantDocument"/);
@@ -124,7 +125,8 @@ test("standalone fetch, update, selected-context, and export require both user a
     readFile("server.ts", "utf8"),
   ]);
   const databaseMethods = database.slice(database.indexOf("public async createAssistantDocument"));
-  assert.match(databaseMethods, /t\.user_id = \$3[\s\S]*u\.firm_id = \$4[\s\S]*t\.case_id IS NULL/);
+  assert.match(databaseMethods, /t\.user_id = \$3[\s\S]*u\.firm_id = \$4[\s\S]*t\.scope <> 'client'/);
+  assert.doesNotMatch(databaseMethods.slice(0, databaseMethods.indexOf("public async getAssistantDocumentById")), /t\.case_id IS NULL\s+AND t\.scope/);
   assert.match(databaseMethods, /WHERE id = \$1 AND user_id = \$2 AND firm_id = \$3/);
   assert.match(databaseMethods, /WHERE id = \$4 AND user_id = \$5 AND firm_id = \$6/);
 

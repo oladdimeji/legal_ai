@@ -34,7 +34,14 @@ export default function FirmLibraryView() {
     publishPageContext({
       routeKind: "library",
       pageTitle: "Firm Library",
+      pageDescription: "Browse, search, preview, upload, and organize reusable documents available to the authenticated Firm.",
       activeSection: preview ? "Document preview" : section || "All documents",
+      visibleSections: [
+        { id: "library-search", title: "Search", description: "Searches authorized Firm Library documents by keyword or semantic similarity." },
+        { id: "library-documents", title: section || "All documents", description: "Lists reusable Firm Library documents in the selected section." },
+        { id: "library-upload", title: "Add Firm Library Document", description: "Uploads and indexes PDF, DOCX, or TXT files selected from Device, Google Drive, or Dropbox." },
+        ...(preview ? [{ id: "document-preview", title: "Document preview", description: "Shows the selected authorized Firm Library document in a read-only preview." }] : []),
+      ],
       ...(preview ? { selectedItem: { kind: "libraryDocument" as const, id: preview.id, title: preview.title } } : {}),
       visibleActions: [
         { id: "search-library", label: "Search", description: "Searches authorized Firm Library documents using the selected keyword or semantic mode." },

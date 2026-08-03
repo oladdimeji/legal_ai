@@ -10,6 +10,14 @@ import { useWorkspacePageContext } from "../lib/WorkspacePageContextProvider";
 
 const tabs = ["Overview", "Matter Intelligence", "Sources", "Work Product", "Collaboration"] as const;
 
+const MATTER_SECTION_DESCRIPTIONS: Record<(typeof tabs)[number], string> = {
+  Overview: "Shows and edits the Matter's assignment, client, practice area, jurisdiction, objectives, and status.",
+  "Matter Intelligence": "Generates and edits a source-backed working analysis from the current Matter's authorized Sources.",
+  Sources: "Manages notes, direct Matter uploads, and Firm Library documents explicitly linked to this Matter.",
+  "Work Product": "Creates, edits, shares, and exports documents belonging to this Matter.",
+  Collaboration: "Manages the Matter's client collaborator, shared Work Product, requests, and responses.",
+};
+
 function visibleActionsForTab(tab: (typeof tabs)[number]): NonNullable<WorkspacePageContext["visibleActions"]> {
   if (tab === "Overview") return [
     { id: "edit-matter-overview", label: "Edit Overview", description: "Enables editing of the Matter name, client, jurisdiction, objectives, and status." },
@@ -84,7 +92,13 @@ export default function MatterWorkspaceView({
     publishPageContext({
       routeKind: "matter",
       pageTitle: matter.name,
+      pageDescription: "An individual Matter workspace whose tabs organize overview details, Sources, Matter Intelligence, Work Product, and client Collaboration.",
       activeSection: tab,
+      visibleSections: [{
+        id: tab.toLowerCase().replace(/\s+/g, "-"),
+        title: tab,
+        description: MATTER_SECTION_DESCRIPTIONS[tab],
+      }],
       matter: {
         id: matter.id,
         name: matter.name,

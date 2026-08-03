@@ -36,6 +36,12 @@ export default function MattersView({ matters, onRefresh, onOpenMatter }: Props)
     publishPageContext({
       routeKind: "matters",
       pageTitle: "Matters",
+      pageDescription: "Browse, search, sort, and create the Firm's Matter workspaces.",
+      activeSection: "Matter list",
+      visibleSections: [
+        { id: "matter-list", title: "Matter list", description: "Shows authorized Matters as cards or a list, with client, status, and activity information." },
+        { id: "new-matter", title: "New Matter", description: "Creates a Matter from an assignment with optional Device, Google Drive, Dropbox, or linked Firm Library sources." },
+      ],
       visibleActions: [
         { id: "create-matter", label: "New Matter", description: "Creates a Matter workspace from an assignment, with optional sources." },
         { id: "search-matters", label: "Search", description: "Filters the visible Matters by Matter or client name." },

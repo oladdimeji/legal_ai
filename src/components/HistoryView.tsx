@@ -14,6 +14,12 @@ export default function HistoryView({ cases, activeThreadId, onSelectThread, onR
     publishPageContext({
       routeKind: "history",
       pageTitle: "History",
+      pageDescription: "Past assistant conversations grouped under General Assistant or the Matter where each conversation originated.",
+      activeSection: "Conversation groups",
+      visibleSections: [
+        { id: "general-assistant", title: "General Assistant", description: "Conversations that began outside an individual Matter." },
+        { id: "matter-groups", title: "Matter groups", description: "Conversations grouped by the Matter where they originated; grouping does not change current retrieval scope." },
+      ],
       visibleActions: [
         { id: "open-conversation", label: "Open", description: "Loads that conversation in the persistent assistant; Matter conversations also open their Matter." },
         { id: "delete-conversation", label: "Delete conversation", description: "Deletes the conversation while preserving associated Work Product." },

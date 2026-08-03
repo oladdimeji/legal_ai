@@ -46,7 +46,7 @@ test("Assistant uses rotating working statuses and completes designed response s
   assert.match(assistant, /Reviewing the visible page and actions…/);
   assert.match(assistant, /hasAttachments[\s\S]*Reviewing attached documents…/);
   assert.match(assistant, /if \(webSearchEnabled\) activities\.push\("Searching the web…"\)/);
-  assert.match(assistant, /deepResearchEnabled \|\| requestMode === "deep_research"[\s\S]*Breaking the question into research steps…/);
+  assert.match(assistant, /if \(requestMode === "deep_research"\)[\s\S]*Breaking the question into research steps…/);
   assert.match(assistant, /Searching the web…/);
   assert.match(assistant, /Checking research depth…/);
   assert.match(assistant, /Refining the response…/);
@@ -79,18 +79,18 @@ test("Assistant message wrappers no longer include a bottom separator", async ()
   assert.doesNotMatch(wrapperLine, /border-b|last:border-0|border-zinc-150/);
 });
 
-test("Assistant user messages persist only temporary attachment filenames in metadata", async () => {
+test("Assistant user messages persist sanitized page context with attachment names only", async () => {
   const [server, assistant] = await Promise.all([
     readFile("server.ts", "utf8"),
     readFile("src/components/AssistantView.tsx", "utf8"),
   ]);
   const metadataHelper = server.slice(server.indexOf("function temporaryAttachmentMetadata"), server.indexOf("function sanitizePlainEditableText"));
   const metadataBody = metadataHelper.slice(metadataHelper.indexOf("const attachments"));
-  assert.match(server, /temporaryAttachmentMetadata\(temporaryFiles\)/);
+  assert.match(server, /\{ \.\.\.temporaryAttachmentMetadata\(temporaryFiles\), pageContext \}/);
   assert.match(metadataHelper, /map\(\(name\) => \(\{ name \}\)\)/);
   assert.match(metadataHelper, /filename\.trim\(\)\.slice\(0, 180\)/);
   assert.doesNotMatch(metadataBody, /\.text|text:/);
-  assert.match(assistant, /metadata: submittedAttachments\.length \? \{ attachments: submittedAttachments \} : \{\}/);
+  assert.match(assistant, /metadata: \{[\s\S]*attachments: submittedAttachments[\s\S]*pageContext: submittedPageContext/);
   assert.match(assistant, /submittedTemporaryFiles = temporaryFiles\.filter\(\(file\) => file\.status === "ready"\)/);
   assert.match(assistant, /attachmentNamesForMessage/);
   assert.match(assistant, /title=\{name\}/);

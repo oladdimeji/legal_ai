@@ -2317,11 +2317,17 @@ class DatabaseService {
 
     const inserted = await this.query(
       `INSERT INTO drafts (id, thread_id, case_id, title, content, created_at, updated_at, origin)
-       SELECT $1, t.id, t.case_id, $4, $5, $6, $6, 'Generated from conversation'
+       SELECT $1, t.id, c.id, $4, $5, $6, $6, 'Generated from conversation'
        FROM threads t
-       JOIN cases c ON c.id = t.case_id
-       WHERE t.id = $2 AND t.case_id = $3
-         AND t.user_id = $7 AND c.firm_id = $8
+       JOIN cases c ON c.id = $3
+       WHERE t.id = $2 AND t.user_id = $7 AND t.scope <> 'client'
+         AND c.firm_id = $8
+         AND (
+           t.case_id IS NULL OR EXISTS (
+             SELECT 1 FROM cases origin
+             WHERE origin.id = t.case_id AND origin.firm_id = $8
+           )
+         )
        RETURNING id`,
       [draftId, threadId, caseId, title, content, createdAt, context.userId, context.firmId]
     );
@@ -2442,12 +2448,17 @@ class DatabaseService {
        WHERE t.id = $2
          AND t.user_id = $3
          AND u.firm_id = $4
-         AND t.case_id IS NULL
          AND t.scope <> 'client'
+         AND (
+           t.case_id IS NULL OR EXISTS (
+             SELECT 1 FROM cases origin
+             WHERE origin.id = t.case_id AND origin.firm_id = $4
+           )
+         )
        RETURNING *`,
       [id, threadId, context.userId, context.firmId, title, content, now]
     );
-    if (!rows[0]) throw new Error("General conversation not found");
+    if (!rows[0]) throw new Error("Conversation not found");
     return rows[0];
   }
 

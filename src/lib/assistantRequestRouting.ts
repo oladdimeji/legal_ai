@@ -7,7 +7,7 @@ export type AssistantRequestMode =
   | "deep_research"
   | "draft";
 
-const UI_HELP_PATTERN = /\b(what (?:am i looking at|is (?:this|on this page)|does (?:this|the) (?:button|control|action) do)|what happens if i (?:click|press)|how do i use (?:this|the) (?:page|screen|button|control)|where (?:am i|is the)|explain (?:this|the) (?:page|screen|button|control)|matter intelligence|share with client)\b/i;
+const UI_HELP_PATTERN = /\b(what (?:am i looking at|is (?:this|on this page|this section)|does (?:this|the) (?:button|control|action) do|do these options mean)|what happens if i (?:click|press)|how (?:do i use|does) (?:this|the) (?:page|screen|button|control)|where (?:am i|is the)|explain (?:this|the|these) (?:page|screen|button|control|settings|options)|explain (?:the )?content of (?:this|the) (?:page|screen|settings)|explain what i am seeing|can you explain (?:this|the) (?:page|screen)|can you explain (?:the )?content of (?:this|the) settings|what can i do here|what is the purpose of this page|matter intelligence|share with client)\b/i;
 const WORKSPACE_PATTERN = /\b(this|the|our|my) (matter|case|client|source|document|work product|firm library|workspace|file|record)\b|\b(according to|based on|in) (?:the )?(?:matter|sources?|documents?|firm library|work product)\b/i;
 const MATTER_ANALYSIS_PATTERN = /\b(analy[sz]e|assess|evaluate|review|summarize|timeline|strategy|liability|claims?|defen[cs]es?|arguments?|key facts?)\b/i;
 const DEEP_PATTERN = /\b(deep research|comprehensive(?:ly)?|multi[- ]jurisdiction|compare (?:the )?laws?|survey (?:the )?authorit|conflicting authorit|all relevant cases|detailed legal research)\b/i;

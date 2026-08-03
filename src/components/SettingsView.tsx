@@ -53,14 +53,43 @@ export default function SettingsView({
     publishPageContext({
       routeKind: "settings",
       pageTitle: "Settings",
+      pageDescription: "Account, Firm, and session settings for the authenticated lawyer.",
       activeSection: isAdmin ? "Account and Firm administration" : "Account",
+      visibleSections: [
+        {
+          id: "account",
+          title: "Account",
+          description: "Shows the authenticated lawyer's account and professional information, including name, email, professional role, Firm role, and workspace name.",
+        },
+        ...(isAdmin ? [{
+          id: "firm-administration",
+          title: "Firm administration",
+          description: "Allows a Firm administrator to review and update the Firm name, view Firm members, and generate or rotate the lawyer invitation code.",
+        }] : [{
+          id: "firm-details",
+          title: "Firm details",
+          description: "Shows the shared Firm workspace name. Firm administration controls are available only to administrators.",
+        }]),
+        {
+          id: "session",
+          title: "Session",
+          description: "Log out ends the current authenticated session.",
+        },
+      ],
       visibleActions: [
-        { id: "save-firm-name", label: "Save Firm name", description: "Updates the Firm name for this workspace; this is available to Firm administrators." },
-        { id: "regenerate-invitation-code", label: "Generate invitation code", description: "Rotates the Firm invitation code used to invite lawyers to this workspace." },
+        ...(isAdmin ? [
+          { id: "save-firm-name", label: "Save Firm name", description: "Updates the Firm name for this workspace." },
+          ...(adminLoaded ? [{
+            id: "regenerate-invitation-code",
+            label: invitationCode ? "Regenerate code" : "Generate code",
+            description: invitationCode ? "Rotates the lawyer invitation code for this Firm." : "Generates a lawyer invitation code for this Firm.",
+          }] : []),
+          ...(adminLoaded && invitationCode ? [{ id: "copy-invitation-code", label: "Copy", description: "Copies the currently displayed invitation code without placing its value in assistant page context." }] : []),
+        ] : []),
         { id: "logout-settings", label: "Log out", description: "Ends the current authenticated session." },
       ],
     });
-  }, [isAdmin, publishPageContext]);
+  }, [adminLoaded, invitationCode, isAdmin, publishPageContext]);
 
   useEffect(() => {
     setFirmName(account.firm?.name || "");

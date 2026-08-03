@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { 
-  MessageSquare, Send, Sparkles, Search, AlertCircle,
+  MessageSquare, Send, Search, AlertCircle,
   ChevronDown, ChevronUp, FileText, Check, Paperclip, RefreshCw, 
   ExternalLink, BookOpen, Copy, Pencil, X, Briefcase, 
   Folder, Globe, ThumbsUp, ThumbsDown,
@@ -9,12 +9,11 @@ import {
   AlignLeft, AlignCenter, AlignRight, Scissors,
   Clipboard, Undo2, Redo2, Save, Link as LinkIcon, Download
 } from "lucide-react";
-import { AssistantDocumentReference, Case, Thread, Message, Citation, ResearchStep } from "../types";
+import { AssistantDocumentReference, Message, Citation, ResearchStep, WorkspacePageContext } from "../types";
 import FormattedMarkdown from "./FormattedMarkdown";
 import FileSourcePicker from "./FileSourcePicker";
 import { browserFileIdentity, MAX_SELECTED_FILES } from "../hooks/useCumulativeFileSelection";
 import { assistantCitationsToDisplayText } from "../lib/assistantCitations";
-import { useWorkspacePageContext } from "../lib/WorkspacePageContextProvider";
 import { routeAssistantRequest } from "../lib/assistantRequestRouting";
 
 type TemporaryFile = {
@@ -28,10 +27,10 @@ type TemporaryFile = {
 };
 
 interface AssistantViewProps {
-  cases: Case[];
-  activeCaseId: string | null;
+  pageContext: WorkspacePageContext;
   activeThreadId: string | null;
   setActiveThreadId: (id: string | null) => void;
+  newConversationVersion: number;
   onMessagesChange: (count: number) => void;
   onOpenDocument: (document: AssistantDocumentReference) => void;
   compact?: boolean;
@@ -48,14 +47,12 @@ function buildWorkingActivities({
   hasMatter,
   hasAttachments,
   webSearchEnabled,
-  deepResearchEnabled,
   requestMode,
 }: {
   queryText: string;
   hasMatter: boolean;
   hasAttachments: boolean;
   webSearchEnabled: boolean;
-  deepResearchEnabled: boolean;
   requestMode: ReturnType<typeof routeAssistantRequest>;
 }): string[] {
   const usesWorkspaceEvidence = ["workspace_research", "deep_research"].includes(requestMode)
@@ -76,7 +73,7 @@ function buildWorkingActivities({
   }
   if (webSearchEnabled) activities.push("Searching the web…");
 
-  if (deepResearchEnabled || requestMode === "deep_research") {
+  if (requestMode === "deep_research") {
     activities.push(
       "Breaking the question into research steps…",
       "Examining the legal issues…",
@@ -195,19 +192,16 @@ function getProcessedSnippet(snippet: string, queryText: string, maxLen: number 
 }
 
 export default function AssistantView({ 
-  cases, 
-  activeCaseId, 
+  pageContext,
   activeThreadId,
   setActiveThreadId,
+  newConversationVersion,
   onMessagesChange,
   onOpenDocument,
   compact = false,
 }: AssistantViewProps) {
-  const { pageContext } = useWorkspacePageContext();
-  const [threads, setThreads] = useState<Thread[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState("");
-  const [deepResearchEnabled, setDeepResearchEnabled] = useState(false);
   const [draftMode, setDraftMode] = useState(false);
   const [loading, setLoading] = useState(false);
   const [streaming, setStreaming] = useState(false);
@@ -222,14 +216,20 @@ export default function AssistantView({
   const [temporaryFiles, setTemporaryFiles] = useState<TemporaryFile[]>([]);
   const [temporaryFileError, setTemporaryFileError] = useState("");
   const [cloudFilesBusy, setCloudFilesBusy] = useState(false);
-  const [improving, setImproving] = useState(false);
   const fileExtracting = temporaryFiles.some((file) => file.status === "extracting");
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const workingActivityTimerRef = useRef<number | null>(null);
   const responseStreamTimerRef = useRef<number | null>(null);
+  const responseStreamResolveRef = useRef<(() => void) | null>(null);
   const componentMountedRef = useRef(true);
+  const messageRequestSequenceRef = useRef(0);
+  const submissionSequenceRef = useRef(0);
+  const conversationVersionRef = useRef(newConversationVersion);
+  const activeThreadIdRef = useRef(activeThreadId);
+  const skipNextMessageLoadThreadRef = useRef<string | null>(null);
+  activeThreadIdRef.current = activeThreadId;
 
   // New docked side editor state declarations
   const [sideEditorMessageId, setSideEditorMessageId] = useState<string | null>(null);
@@ -327,18 +327,71 @@ export default function AssistantView({
     };
   }, []);
 
-  // Load threads on mount / change active case
   useEffect(() => {
-    fetchThreads();
-  }, [activeCaseId]);
-
-  // Load messages when thread changes
-  useEffect(() => {
-    if (activeThreadId) {
-      fetchMessages(activeThreadId);
-    } else {
-      setMessages([]);
+    conversationVersionRef.current = newConversationVersion;
+    messageRequestSequenceRef.current += 1;
+    submissionSequenceRef.current += 1;
+    setMessages([]);
+    setInputValue("");
+    setTemporaryFiles([]);
+    setTemporaryFileError("");
+    setEnableWebSearch(false);
+    setDraftMode(false);
+    setFilesAndSourcesOpen(false);
+    setCitationPanelSource(null);
+    setActiveMessageCitations([]);
+    setLoading(false);
+    setStreaming(false);
+    if (workingActivityTimerRef.current !== null) {
+      window.clearTimeout(workingActivityTimerRef.current);
+      workingActivityTimerRef.current = null;
     }
+    if (responseStreamTimerRef.current !== null) {
+      window.clearTimeout(responseStreamTimerRef.current);
+      responseStreamTimerRef.current = null;
+    }
+    responseStreamResolveRef.current?.();
+    responseStreamResolveRef.current = null;
+  }, [newConversationVersion]);
+
+  // Load messages only for an explicitly selected active conversation. Abort stale loads.
+  useEffect(() => {
+    const sequence = ++messageRequestSequenceRef.current;
+    if (activeThreadId && skipNextMessageLoadThreadRef.current === activeThreadId) {
+      skipNextMessageLoadThreadRef.current = null;
+      return;
+    }
+    submissionSequenceRef.current += 1;
+    if (workingActivityTimerRef.current !== null) {
+      window.clearTimeout(workingActivityTimerRef.current);
+      workingActivityTimerRef.current = null;
+    }
+    if (responseStreamTimerRef.current !== null) {
+      window.clearTimeout(responseStreamTimerRef.current);
+      responseStreamTimerRef.current = null;
+    }
+    responseStreamResolveRef.current?.();
+    responseStreamResolveRef.current = null;
+    setLoading(false);
+    setStreaming(false);
+    setMessages([]);
+    if (!activeThreadId) return;
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const response = await fetch(`/api/threads/${activeThreadId}/messages`, {
+          signal: controller.signal,
+        });
+        if (!response.ok) throw new Error("Unable to load conversation messages");
+        const data = await response.json() as Message[];
+        if (!controller.signal.aborted && sequence === messageRequestSequenceRef.current) {
+          setMessages(data);
+        }
+      } catch (error) {
+        if (!controller.signal.aborted) console.error("Error fetching messages:", error);
+      }
+    })();
+    return () => controller.abort();
   }, [activeThreadId]);
 
   // Notify messages change
@@ -380,34 +433,15 @@ export default function AssistantView({
       if (responseStreamTimerRef.current !== null) {
         window.clearTimeout(responseStreamTimerRef.current);
       }
+      responseStreamResolveRef.current?.();
+      responseStreamResolveRef.current = null;
     };
   }, []);
 
-  const fetchThreads = async () => {
-    try {
-      const url = activeCaseId ? `/api/threads?caseId=${activeCaseId}` : "/api/threads?caseId=null";
-      const res = await fetch(url);
-      const data = await res.json() as Thread[];
-      setThreads(data);
-      if (!activeThreadId || !data.some((thread) => thread.id === activeThreadId)) {
-        setActiveThreadId(data[0]?.id || null);
-      }
-    } catch (err) {
-      console.error("Error fetching threads:", err);
-    }
-  };
-
-  const fetchMessages = async (threadId: string) => {
-    try {
-      const res = await fetch(`/api/threads/${threadId}/messages`);
-      const data = await res.json();
-      setMessages(data);
-    } catch (err) {
-      console.error("Error fetching messages:", err);
-    }
-  };
-
-  const handleStartNewThread = async () => {
+  const handleStartNewThread = async (
+    originContext: WorkspacePageContext,
+    expectedConversationVersion: number
+  ) => {
     try {
       const title = inputValue.trim() 
         ? (inputValue.trim().substring(0, 45) + "...") 
@@ -418,12 +452,16 @@ export default function AssistantView({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           title,
-          caseId: activeCaseId
+          caseId: originContext.routeKind === "matter" ? originContext.matter?.id || null : null
         })
       });
+      if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || "Unable to create conversation");
       const newThread = await res.json();
-      setThreads((prev) => [newThread, ...prev]);
-      setActiveThreadId(newThread.id);
+      if (conversationVersionRef.current === expectedConversationVersion) {
+        skipNextMessageLoadThreadRef.current = newThread.id;
+        activeThreadIdRef.current = newThread.id;
+        setActiveThreadId(newThread.id);
+      }
       return newThread.id;
     } catch (err) {
       console.error("Error creating thread:", err);
@@ -444,21 +482,22 @@ export default function AssistantView({
       responseStreamTimerRef.current = null;
     }
     setLoading(true);
+    const submissionSequence = ++submissionSequenceRef.current;
     setStreaming(false);
     setWorkingStageIndex(0);
+    const submittedPageContext = pageContext;
+    const submittedConversationVersion = conversationVersionRef.current;
     const requestMode = routeAssistantRequest({
       content: queryText,
-      pageContext,
-      forceDeepResearch: deepResearchEnabled,
+      pageContext: submittedPageContext,
       responseMode: draftMode ? "draft" : "chat",
       hasTemporaryFiles: temporaryFiles.some((file) => file.status === "ready"),
     });
     setWorkingStages(buildWorkingActivities({
       queryText,
-      hasMatter: activeCaseId !== null,
+      hasMatter: submittedPageContext.routeKind === "matter",
       hasAttachments: temporaryFiles.some((file) => file.status === "ready"),
       webSearchEnabled: enableWebSearch,
-      deepResearchEnabled,
       requestMode,
     }));
     setInputValue("");
@@ -466,7 +505,10 @@ export default function AssistantView({
 
     let currentThreadId = activeThreadId;
     if (!currentThreadId) {
-      currentThreadId = await handleStartNewThread();
+      currentThreadId = await handleStartNewThread(
+        submittedPageContext,
+        submittedConversationVersion
+      );
     }
 
     if (!currentThreadId) {
@@ -487,9 +529,14 @@ export default function AssistantView({
       citations: [],
       steps: null,
       created_at: new Date().toISOString(),
-      metadata: submittedAttachments.length ? { attachments: submittedAttachments } : {},
+      metadata: {
+        ...(submittedAttachments.length ? { attachments: submittedAttachments } : {}),
+        pageContext: submittedPageContext,
+      },
     };
-    setMessages((prev) => [...prev, tempUserMsg]);
+    if (conversationVersionRef.current === submittedConversationVersion) {
+      setMessages((prev) => [...prev, tempUserMsg]);
+    }
 
     try {
       const res = await fetch(`/api/threads/${currentThreadId}/messages`, {
@@ -497,10 +544,9 @@ export default function AssistantView({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           content: queryText,
-          forceDeepResearch: deepResearchEnabled,
           enableWebSearch,
           responseMode: draftMode ? "draft" : "chat",
-          pageContext,
+          pageContext: submittedPageContext,
           temporaryFiles: submittedTemporaryFiles
             .map(({ filename, text }) => ({ filename, text }))
         })
@@ -510,8 +556,11 @@ export default function AssistantView({
       if (data.error) {
         throw new Error(data.error);
       }
-      void fetchThreads();
-      if (!componentMountedRef.current) return;
+      if (
+        !componentMountedRef.current ||
+        conversationVersionRef.current !== submittedConversationVersion ||
+        activeThreadIdRef.current !== currentThreadId
+      ) return;
       if (workingActivityTimerRef.current !== null) {
         window.clearTimeout(workingActivityTimerRef.current);
         workingActivityTimerRef.current = null;
@@ -546,6 +595,7 @@ export default function AssistantView({
         ));
       } else {
         await new Promise<void>((resolve) => {
+          responseStreamResolveRef.current = resolve;
           const revealNextChunk = () => {
             responseStreamTimerRef.current = window.setTimeout(() => {
               revealedTokenCount = Math.min(revealedTokenCount + tokensPerStep, wordCount);
@@ -560,6 +610,7 @@ export default function AssistantView({
                 return;
               }
               responseStreamTimerRef.current = null;
+              responseStreamResolveRef.current = null;
               setMessages((prev) => prev.map((message) =>
                 message.id === savedAssistantMessage.id ? savedAssistantMessage : message
               ));
@@ -570,7 +621,13 @@ export default function AssistantView({
         });
       }
 
-      setTemporaryFiles([]);
+      if (
+        componentMountedRef.current &&
+        conversationVersionRef.current === submittedConversationVersion &&
+        activeThreadIdRef.current === currentThreadId
+      ) {
+        setTemporaryFiles([]);
+      }
     } catch (err: any) {
       if (workingActivityTimerRef.current !== null) {
         window.clearTimeout(workingActivityTimerRef.current);
@@ -580,8 +637,14 @@ export default function AssistantView({
         window.clearTimeout(responseStreamTimerRef.current);
         responseStreamTimerRef.current = null;
       }
+      responseStreamResolveRef.current?.();
+      responseStreamResolveRef.current = null;
       setStreaming(false);
       console.error("Error processing request:", err);
+      if (
+        conversationVersionRef.current !== submittedConversationVersion ||
+        activeThreadIdRef.current !== currentThreadId
+      ) return;
       const errAssistantMsg: Message = {
         id: `temp_err_${Date.now()}`,
         thread_id: currentThreadId,
@@ -593,31 +656,13 @@ export default function AssistantView({
       };
       setMessages((prev) => [...prev, errAssistantMsg]);
     } finally {
-      setStreaming(false);
-      setLoading(false);
-    }
-  };
-
-  // Enhance / Improve Prompt using AI
-  const handleImprovePrompt = async () => {
-    const rawPrompt = inputValue.trim();
-    if (!rawPrompt || improving) return;
-
-    setImproving(true);
-    try {
-      const res = await fetch("/api/improve-prompt", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: rawPrompt, pageContext, responseMode: draftMode ? "draft" : "chat" })
-      });
-      const data = await res.json();
-      if (data.improved) {
-        setInputValue(data.improved);
+      if (
+        componentMountedRef.current &&
+        submissionSequenceRef.current === submissionSequence
+      ) {
+        setStreaming(false);
+        setLoading(false);
       }
-    } catch (err) {
-      console.error("Failed to improve prompt:", err);
-    } finally {
-      setImproving(false);
     }
   };
 
@@ -830,7 +875,7 @@ export default function AssistantView({
             ref={textareaRef}
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
-            placeholder={draftMode ? "Describe the document you want to create..." : activeCaseId ? "Ask about this Matter or anything else..." : "Ask about this page, your workspace, or anything else..."}
+            placeholder={draftMode ? "Describe the document you want to create..." : pageContext.routeKind === "matter" ? "Ask about this Matter or anything else..." : "Ask about this page, your workspace, or anything else..."}
             className="w-full min-h-[64px] max-h-[180px] p-1.5 border-none outline-none focus:ring-0 text-sm text-zinc-900 placeholder-zinc-400 font-sans transition-all resize-none bg-white"
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
@@ -913,18 +958,6 @@ export default function AssistantView({
                 )}
               </div>
 
-              {/* Improve button */}
-              <button
-                type="button"
-                onClick={handleImprovePrompt}
-                disabled={!inputValue.trim() || improving}
-                id="btn-improve-query"
-                className="flex items-center gap-1 px-2 py-1 text-xs font-mono font-bold text-zinc-600 hover:text-zinc-950 border border-zinc-200 rounded-md bg-white transition-all disabled:opacity-50 cursor-pointer shadow-xs hover:border-zinc-300"
-                title="Optimize query with legal-grade framing"
-              >
-                <Sparkles className={`h-3.5 w-3.5 text-zinc-800 ${improving ? "animate-spin" : ""}`} />
-                <span>{improving ? "Improving..." : "Improve"}</span>
-              </button>
             </div>
 
             {/* Right Side Controls */}
@@ -940,19 +973,6 @@ export default function AssistantView({
                 <FileText className="h-3.5 w-3.5" />
                 Draft
               </button>
-              <label className="inline-flex items-center gap-1.5 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={deepResearchEnabled}
-                  onChange={(e) => setDeepResearchEnabled(e.target.checked)}
-                  className="sr-only peer"
-                />
-                <div className="relative w-8 h-4.5 bg-zinc-200 peer-focus:outline-none rounded-full peer peer-checked:bg-zinc-950 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-3.5 after:w-3.5 after:transition-all peer-checked:after:translate-x-3.5 border border-transparent shadow-inner"></div>
-                <span className="text-[11px] font-mono uppercase font-bold text-zinc-500 peer-checked:text-zinc-950">
-                  Deep Research
-                </span>
-              </label>
-
               <button
                 type="submit"
                 disabled={!inputValue.trim() || loading || fileExtracting || cloudFilesBusy}
@@ -1082,17 +1102,20 @@ export default function AssistantView({
             {/* Simple Thread Title Header (Only if there are messages) */}
             <div className={`${compact ? "hidden" : "flex"} px-8 py-4.5 bg-zinc-50 border-b border-zinc-100 items-center justify-between z-10 select-none shrink-0`} id="active-thread-header">
               <div>
-                <span className="text-xs font-mono font-semibold uppercase text-zinc-400 tracking-wider">{activeCaseId ? `Matter Context · ${cases.find((matter) => matter.id === activeCaseId)?.name || "Matter"}` : "General Assistant Context"}</span>
+                <span className="text-xs font-mono font-semibold uppercase text-zinc-400 tracking-wider">{pageContext.routeKind === "matter" ? `Matter Context · ${pageContext.matter?.name || "Matter"}` : `${pageContext.pageTitle} Context`}</span>
                 <h2 className="text-sm font-sans font-semibold text-zinc-800 line-clamp-1 mt-0.5">
-                  {activeThreadId ? threads.find(t => t.id === activeThreadId)?.title || "Consultation Thread" : "New Consultation"}
+                  {activeThreadId ? "Consultation Thread" : "New Consultation"}
                 </h2>
               </div>
               
               <button 
                 onClick={() => {
                   setActiveThreadId(null);
+                  activeThreadIdRef.current = null;
                   setMessages([]);
                   setEnableWebSearch(false);
+                  setTemporaryFiles([]);
+                  setDraftMode(false);
                 }}
                 id="header-new-thread-btn"
                 className="text-xs uppercase font-mono font-bold border border-zinc-950 text-zinc-950 px-4 py-2 rounded hover:bg-zinc-100 transition-all cursor-pointer"

@@ -1129,3 +1129,48 @@ Deliberate limitations:
 - This is immediate browser-side selection, not synchronization or a persistent connector.
 - Google Sheets, Google Slides, Dropbox Paper, folders, OneDrive, offline access, and background imports are not supported.
 - Live provider popup verification requires configured provider applications and interactive Google/Dropbox accounts.
+
+## Persistent Lawyer Assistant Corrective Patch
+
+Status: Complete.
+
+Implemented:
+
+- Replaced the route-keyed General/Matter active-thread map with one session-only `activeThreadId`. Fresh loads start empty, navigation leaves the selected conversation unchanged, History remains the only conversation discovery surface, and New conversation clears the transcript and temporary composer state without creating a database thread.
+- Removed Assistant thread-list initialization and newest-thread fallback behavior. Messages load only for an explicitly active thread, with abort/sequence guards preventing stale conversation loads or response streams from overwriting a later selection.
+- Preserved History grouping and navigation semantics. A new thread keeps the Matter where it originated as `case_id` metadata, but that association no longer controls the current page, retrieval, selected-entity authorization, or Draft destination.
+- Made the sanitized current-page snapshot mandatory for lawyer Ask and Draft requests. The server independently validates the current Matter and selected Source, Firm Library document, Work Product, Matter, or standalone assistant document against the authenticated user and Firm before saving the message or performing retrieval.
+- Changed all lawyer Assistant retrieval, citation labels, drafting evidence, Matter metadata, and document destination decisions to use the server-validated current Matter. Non-Matter pages use Firm Library scope and cannot retrieve a Matter merely because the conversation originated there.
+- Persisted sanitized page context alongside attachment filenames in lawyer user-message metadata and added concise historical page labels to bounded prior-conversation prompts. UI help, general chat, workspace research, and Draft prompts now all receive appropriate current-page context and prior conversation.
+- Expanded deterministic current-page help recognition, including the exact Settings question, while leaving unrelated requests such as general Windows settings explanations in ordinary chat.
+- Added bounded page descriptions and visible-section metadata, with URL/secret-shaped text scrubbing, and enriched Matters, individual Matter tabs, Firm Library, History, Settings, and standalone assistant-document publishers. Settings publishes role-aware Account, Firm administration/details, and Session descriptions without the invitation-code value.
+- Removed the Assistant Improve button and manual Deep Research toggle while retaining automatic deep-research routing, historical research-step rendering, Research sources, Web Search, Device/Google Drive/Dropbox attachments, Draft mode, and Ask/Create Draft.
+- Restored Settings as the fourth top-navigation item and removed the assistant-panel account/profile footer. Settings-page logout remains available.
+- Preserved the client workspace, authentication model, `.docx` generation, citations, streaming, document editors, existing conversation records, and cloud upload paths.
+
+Schema changes:
+
+- None. No migration was added.
+
+Tests:
+
+- Updated rejected route-keyed-thread expectations and older Improve/Deep Research UI assertions.
+- Added focused coverage for the single fresh active-thread model, lazy thread creation, navigation persistence, explicit History selection, stale message-load protection, current-page Matter derivation, context sanitization and historical labels, exact Settings UI-help routing, current-page selected-entity and retrieval scoping, role-aware Settings context, and current-page Draft persistence independent of thread origin.
+- Existing isolation, cloud file selection, Draft/Word generation, History, authentication, and client workspace regressions remain passing.
+
+Verification:
+
+- `npm run lint`: passed.
+- `npm run build`: passed after rerunning outside the filesystem sandbox; the sandboxed attempt could not resolve `vite.config.ts` because parent-directory reads were denied.
+- `npm run verify`: passed, including TypeScript, 207/207 tests, and the production build.
+- Existing Vite warnings remain for `.env` `NODE_ENV=production` handling and the JavaScript chunk exceeding 500 kB.
+
+Manual verification not available:
+
+- Interactive browser navigation with a live authenticated database and live Google Drive/Dropbox provider popups was not available in the non-interactive implementation environment.
+
+Deliberate limitations:
+
+- Active assistant state intentionally resets on a full browser refresh and is not stored in browser storage or a URL.
+- Existing `thread.case_id` and `thread.scope` values remain unchanged for History grouping and backward compatibility.
+- The legacy Improve endpoint and backward-compatible server handling for `forceDeepResearch` remain available to internal callers, but the lawyer Assistant UI no longer invokes them.

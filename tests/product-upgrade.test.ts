@@ -48,12 +48,12 @@ test("migration 005 adds only additive Matter and Source metadata", async () => 
   assert.match(migrations, /ADD COLUMN IF NOT EXISTS link_origin/);
 });
 
-test("Phase 5 Assistant now receives automatic General and Matter context", async () => {
+test("Phase 5 Assistant receives the current page context without a manual scope selector", async () => {
   const assistant = await readFile("src/components/AssistantView.tsx", "utf8");
   assert.doesNotMatch(assistant, />General Assistant<\/option>/);
-  assert.match(assistant, /General Assistant Context/);
+  assert.match(assistant, /pageContext\.pageTitle/);
   assert.match(assistant, /Matter Context/);
-  assert.match(assistant, /useWorkspacePageContext/);
+  assert.match(assistant, /pageContext: WorkspacePageContext/);
   assert.doesNotMatch(assistant, /setActiveCaseId/);
   assert.doesNotMatch(assistant, />📁 Wide Library<\/option>/);
 });
@@ -227,15 +227,14 @@ test("Phase 11 Assistant remains mounted in the lawyer workspace shell", async (
   assert.match(app, /onMessagesChange=\{\(\) => undefined\}/);
 });
 
-test("Phase 11 Improve returns plain editable text", async () => {
+test("legacy Improve endpoint remains compatible while its Assistant control is removed", async () => {
   const [server, assistant] = await Promise.all([
     readFile("server.ts", "utf8"),
     readFile("src/components/AssistantView.tsx", "utf8"),
   ]);
   assert.match(server, /sanitizePlainEditableText/);
   assert.match(server, /Do not use Markdown headings, bold, italics, bullet markers/);
-  assert.match(assistant, /const \[improving, setImproving\]/);
-  assert.match(assistant, /Improving\.\.\./);
+  assert.doesNotMatch(assistant, /const \[improving, setImproving\]|handleImprovePrompt|Improving\.\.\./);
 });
 
 test("Phase 11 Assistant uses bounded history and persists dynamic follow-ups", async () => {

@@ -105,7 +105,7 @@ test("History remains a stored-title reader with unchanged grouping, open, and d
   assert.match(history, /thread\.case_id === matter\.id/);
   assert.match(history, /onClick=\{\(\) => onSelectThread\(thread\)\}/);
   assert.match(history, /method: "DELETE"/);
-  assert.match(assistant, /caseId: activeCaseId/);
-  assert.match(assistant, /void fetchThreads\(\)/);
+  assert.match(assistant, /caseId: originContext\.routeKind === "matter"/);
+  assert.doesNotMatch(assistant, /fetchThreads|data\[0\]/);
   assert.match(migrations, /title TEXT NOT NULL/);
 });

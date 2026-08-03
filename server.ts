@@ -33,9 +33,10 @@ import { getWorkProductFormatInstructions, isWorkProductFormat } from "./server/
 import { canonicalizeAssistantCitations, rewriteGoogleGroundingCitations, stripInternalCitationsForWorkProduct } from "./src/lib/assistantCitations.js";
 import { sanitizeWorkspacePageContext } from "./src/lib/workspacePageContext.js";
 import {
+  conversationMessageForPrompt,
+  currentMatterIdForAssistant,
   pageContextForPrompt,
   routeAssistantRequest,
-  validatePageContextThreadBoundary,
 } from "./server/assistantRouting.js";
 import {
   assistantDraftNeedsWorkspaceEvidence,
@@ -1932,61 +1933,61 @@ ${sourceText}`;
         return res.status(404).json({ error: "Thread not found" });
       }
       let pageContext = sanitizeWorkspacePageContext(req.body.pageContext);
-      if (req.body.pageContext !== undefined && !pageContext) {
+      if (!pageContext) {
         return res.status(400).json({ error: "Page context is invalid" });
       }
-      const matter = thread.case_id
-        ? await db.getCaseById(thread.case_id, requestOwnership)
-        : undefined;
-      if (thread.case_id && !matter) {
+      const submittedCurrentMatterId = currentMatterIdForAssistant(pageContext);
+      const currentMatter = submittedCurrentMatterId
+        ? await db.getCaseById(submittedCurrentMatterId, requestOwnership)
+        : null;
+      if (submittedCurrentMatterId && !currentMatter) {
         return res.status(404).json({ error: "Matter not found" });
       }
-      if (!pageContext) {
-        pageContext = matter
-          ? {
-              routeKind: "matter",
-              pageTitle: matter.name,
-              matter: {
-                id: matter.id,
-                name: matter.name,
-                clientName: matter.client_name || null,
-                status: matter.status || null,
-              },
-            }
-          : { routeKind: "matters", pageTitle: "Matters" };
-      }
-      const contextBoundary = validatePageContextThreadBoundary(pageContext, thread.case_id);
-      if (contextBoundary.valid === false) {
-        return res.status(409).json({ error: contextBoundary.error });
-      }
-      if (matter) {
+      const currentMatterId = currentMatter?.id || null;
+      if (currentMatter) {
         pageContext = {
           ...pageContext,
-          pageTitle: matter.name,
+          pageTitle: currentMatter.name,
           matter: {
-            id: matter.id,
-            name: matter.name,
-            clientName: matter.client_name || null,
-            status: matter.status || null,
+            id: currentMatter.id,
+            name: currentMatter.name,
+            clientName: currentMatter.client_name || null,
+            status: currentMatter.status || null,
           },
         };
       }
 
       let selectedEntityEvidence: { title: string; text: string; sourceName: string } | null = null;
       const selectedItem = pageContext.selectedItem;
+      if (selectedItem && !selectedItem.id) {
+        return res.status(400).json({ error: "Selected page item is invalid" });
+      }
       if (selectedItem?.id) {
-        if (selectedItem.kind === "source" || selectedItem.kind === "libraryDocument") {
-          const selectedDocument = await db.getDocumentById(selectedItem.id, requestOwnership, thread.case_id);
+        if (selectedItem.kind === "source") {
+          if (!currentMatterId) return res.status(409).json({ error: "Selected Source requires a current Matter" });
+          const selectedDocument = await db.getDocumentById(selectedItem.id, requestOwnership, currentMatterId);
           if (!selectedDocument) return res.status(404).json({ error: "Selected document not found in this context" });
           selectedEntityEvidence = {
             title: selectedDocument.title,
             text: selectedDocument.extracted_text.slice(0, 12000),
-            sourceName: thread.case_id ? "Matter Sources" : "Firm Library",
+            sourceName: "Matter Sources",
+          };
+          pageContext = { ...pageContext, selectedItem: { ...selectedItem, title: selectedDocument.title } };
+        } else if (selectedItem.kind === "libraryDocument") {
+          if (pageContext.routeKind !== "library") {
+            return res.status(409).json({ error: "Selected Firm Library document does not match the current page" });
+          }
+          const selectedDocument = await db.getDocumentById(selectedItem.id, requestOwnership, null);
+          if (!selectedDocument) return res.status(404).json({ error: "Selected Firm Library document not found" });
+          selectedEntityEvidence = {
+            title: selectedDocument.title,
+            text: selectedDocument.extracted_text.slice(0, 12000),
+            sourceName: "Firm Library",
           };
           pageContext = { ...pageContext, selectedItem: { ...selectedItem, title: selectedDocument.title } };
         } else if (selectedItem.kind === "workProduct") {
-          if (!thread.case_id) return res.status(409).json({ error: "Selected Work Product requires its Matter context" });
-          const selectedDraft = await db.getDraftById(selectedItem.id, thread.case_id, requestOwnership);
+          if (!currentMatterId) return res.status(409).json({ error: "Selected Work Product requires its Matter context" });
+          const selectedDraft = await db.getDraftById(selectedItem.id, currentMatterId, requestOwnership);
           if (!selectedDraft) return res.status(404).json({ error: "Selected Work Product not found in this Matter" });
           selectedEntityEvidence = {
             title: selectedDraft.title,
@@ -1995,11 +1996,14 @@ ${sourceText}`;
           };
           pageContext = { ...pageContext, selectedItem: { ...selectedItem, title: selectedDraft.title } };
         } else if (selectedItem.kind === "matter") {
-          if (!matter || selectedItem.id !== matter.id) {
-            return res.status(409).json({ error: "Selected Matter does not match the conversation" });
+          if (!currentMatter || selectedItem.id !== currentMatter.id) {
+            return res.status(409).json({ error: "Selected Matter does not match the current page" });
           }
+          pageContext = { ...pageContext, selectedItem: { ...selectedItem, title: currentMatter.name } };
         } else if (selectedItem.kind === "assistantDocument") {
-          if (thread.case_id) return res.status(409).json({ error: "Standalone assistant documents require a general conversation" });
+          if (pageContext.routeKind !== "assistantDocument") {
+            return res.status(409).json({ error: "Selected assistant document does not match the current page" });
+          }
           const selectedAssistantDocument = await db.getAssistantDocumentById(selectedItem.id, requestOwnership);
           if (!selectedAssistantDocument) return res.status(404).json({ error: "Selected assistant document not found" });
           selectedEntityEvidence = {
@@ -2028,7 +2032,7 @@ ${sourceText}`;
         requestOwnership,
         [],
         null,
-        temporaryAttachmentMetadata(temporaryFiles)
+        { ...temporaryAttachmentMetadata(temporaryFiles), pageContext }
       );
       const isFirstUserMessage = !priorHistory.some((message) => message.role === "user");
       if (isFirstUserMessage) {
@@ -2045,13 +2049,13 @@ ${sourceText}`;
       }
       const conversationHistory = boundedConversation([...priorHistory, userMessage], 12000);
       const conversationContext = conversationHistory
-        .map((message) => `${message.role.toUpperCase()}: ${message.content}`)
+        .map(conversationMessageForPrompt)
         .join("\n\n");
       const retrievalQuery = [...conversationHistory.filter((m) => m.role === "user").slice(-3).map((m) => m.content), content].join("\n");
 
       if (assistantMode === "draft") {
         const shouldRetrieveWorkspace = assistantDraftNeedsWorkspaceEvidence({
-          hasMatter: Boolean(thread.case_id),
+          hasMatter: Boolean(currentMatterId),
           hasTemporaryFiles: temporaryFiles.length > 0,
           hasSelectedEntity: Boolean(selectedEntityEvidence),
           instruction: content,
@@ -2090,7 +2094,7 @@ ${sourceText}`;
           for (const question of draftResearchQuestions) {
             const retrieved = await db.vectorSearch(
               question.slice(0, 4000),
-              thread.case_id || "wide",
+              currentMatterId || "wide",
               requestOwnership,
               4
             );
@@ -2108,11 +2112,11 @@ ${sourceText}`;
             const sourceDocument = await db.getDocumentById(
               chunk.document_id,
               requestOwnership,
-              thread.case_id
+              currentMatterId
             );
             if (!sourceDocument) continue;
             evidenceParts.push(
-              `${thread.case_id ? "Matter Source" : "Firm Library document"}: ${sourceDocument.title}\n${cleanSourceText(chunk.chunk_text).slice(0, 3500)}`
+              `${currentMatterId ? "Matter Source" : "Firm Library document"}: ${sourceDocument.title}\n${cleanSourceText(chunk.chunk_text).slice(0, 3500)}`
             );
           }
         }
@@ -2125,13 +2129,13 @@ ${sourceText}`;
           timeZone: "UTC",
         });
         const accountMetadata = [
-          matter ? `Matter name: ${matter.name}` : "",
-          matter?.description ? `Assignment description: ${matter.description}` : "",
-          matter?.client_name ? `Client name: ${matter.client_name}` : "",
-          matter?.client_email ? `Client email: ${matter.client_email}` : "",
-          matter?.matter_type ? `Practice area: ${matter.matter_type}` : "",
-          matter?.jurisdiction ? `Jurisdiction: ${matter.jurisdiction}` : "",
-          matter?.preliminary_objectives ? `Preliminary objectives: ${matter.preliminary_objectives}` : "",
+          currentMatter ? `Matter name: ${currentMatter.name}` : "",
+          currentMatter?.description ? `Assignment description: ${currentMatter.description}` : "",
+          currentMatter?.client_name ? `Client name: ${currentMatter.client_name}` : "",
+          currentMatter?.client_email ? `Client email: ${currentMatter.client_email}` : "",
+          currentMatter?.matter_type ? `Practice area: ${currentMatter.matter_type}` : "",
+          currentMatter?.jurisdiction ? `Jurisdiction: ${currentMatter.jurisdiction}` : "",
+          currentMatter?.preliminary_objectives ? `Preliminary objectives: ${currentMatter.preliminary_objectives}` : "",
           `Author name: ${auth.user.name || auth.user.email}`,
           `Firm name: ${auth.firm!.name}`,
         ].filter(Boolean).join("\n");
@@ -2155,11 +2159,11 @@ ${sourceText}`;
         if (!draftContent) throw new Error("The model did not return document content");
         const title = titleForAssistantDraft(draftContent, content, thread.title);
 
-        const document = thread.case_id
-          ? await db.createDraft(threadId, thread.case_id, title, draftContent, requestOwnership)
+        const document = currentMatterId
+          ? await db.createDraft(threadId, currentMatterId, title, draftContent, requestOwnership)
           : await db.createAssistantDocument(threadId, title, draftContent, requestOwnership);
-        const documentReference = thread.case_id
-          ? { id: document.id, kind: "matterWorkProduct" as const, title: document.title, matterId: thread.case_id }
+        const documentReference = currentMatterId
+          ? { id: document.id, kind: "matterWorkProduct" as const, title: document.title, matterId: currentMatterId }
           : { id: document.id, kind: "assistantDocument" as const, title: document.title };
         const assistantMessage = await db.addMessage(
           threadId,
@@ -2188,8 +2192,14 @@ ${pageContextForPrompt(pageContext)}
 
 Server-validated selected entity: ${selectedEntityEvidence ? `${selectedEntityEvidence.sourceName}: ${selectedEntityEvidence.title}` : "None"}
 
+Prior conversation:
+${conversationContext || "No prior conversation."}
+
 Question: ${content}`
-          : `Answer the user's ordinary question using your normal capabilities. Do not claim to have searched internal workspace documents because no internal retrieval was performed. Do not fabricate citations or present general knowledge as private Matter facts. Do not add generic AI or legal-advice disclaimer boilerplate. Express genuine uncertainty directly and specifically.
+          : `Answer the user's ordinary question using your normal capabilities. Treat the current page context as optional ambient context: use it when the request refers to the current page and ignore it when irrelevant. Do not claim to have searched internal workspace documents because no internal retrieval was performed. Do not fabricate controls, citations, or present general knowledge as private Matter facts. Do not add generic AI or legal-advice disclaimer boilerplate. Express genuine uncertainty directly and specifically.
+
+Current page context:
+${pageContextForPrompt(pageContext)}
 
 Prior conversation:
 ${conversationContext || "No prior conversation."}
@@ -2231,7 +2241,7 @@ User question: ${content}`;
         return res.status(201).json({ userMessage, assistantMessage, requestMode: assistantMode });
       }
 
-      const scope = thread.case_id || "wide";
+      const retrievalScope = currentMatterId || "wide";
 
       // Deep Research is selected deterministically before this point; only split a genuinely deep request.
       const needsDeepResearch = assistantMode === "deep_research";
@@ -2309,7 +2319,7 @@ User question: ${content}`;
           }
           
           // Vector Search Chunks with similarity threshold
-          const allLocalChunks = await db.vectorSearch(`${subQ}\n${retrievalQuery}`.slice(0, 4000), scope, requestOwnership, 2);
+          const allLocalChunks = await db.vectorSearch(`${subQ}\n${retrievalQuery}`.slice(0, 4000), retrievalScope, requestOwnership, 2);
           const localChunks = allLocalChunks.filter(c => c.similarity >= SIMILARITY_THRESHOLD);
           
           // Register retrieved context to citations
@@ -2319,13 +2329,13 @@ User question: ${content}`;
             const doc = await db.getDocumentById(
               c.document_id,
               requestOwnership,
-              thread.case_id
+              currentMatterId
             );
             const cit = registerCitation({
               type: "workspace",
               title: doc ? doc.title : "Workspace Document",
               textSnippet: cleanSourceText(c.chunk_text),
-              sourceName: thread.case_id ? "Matter Sources" : "Firm Library"
+              sourceName: currentMatterId ? "Matter Sources" : "Firm Library"
             });
             stepCitations.push(`[${cit.id}] ${cit.title}`);
           }
@@ -2388,6 +2398,9 @@ Do not append generic legal-advice, AI, lawyer-review, consultation, information
 Gathered legal references to use and reference:
 ${totalGatheredContext || "No internal document matches."}
 
+Current page context:
+${pageContextForPrompt(pageContext)}
+
 Prior conversation for resolving follow-up references only. This is not a legal source:
 ${conversationContext || "No prior conversation."}
 
@@ -2437,7 +2450,7 @@ ${citationInstSearch}`;
         // STANDARD RESEARCH FLOW (Single shot lookup)
         console.log(`[Standard Research] Performing single-shot legal lookup for: "${content}"...`);
 
-        const allLocalChunks = await db.vectorSearch(retrievalQuery.slice(0, 4000), scope, requestOwnership, 3);
+        const allLocalChunks = await db.vectorSearch(retrievalQuery.slice(0, 4000), retrievalScope, requestOwnership, 3);
 
         const localChunks = allLocalChunks.filter(c => c.similarity >= SIMILARITY_THRESHOLD);
 
@@ -2446,13 +2459,13 @@ ${citationInstSearch}`;
           const doc = await db.getDocumentById(
             c.document_id,
             requestOwnership,
-            thread.case_id
+            currentMatterId
           );
           registerCitation({
             type: "workspace",
             title: doc ? doc.title : "Workspace Document",
             textSnippet: cleanSourceText(c.chunk_text),
-            sourceName: thread.case_id ? "Matter Sources" : "Firm Library"
+            sourceName: currentMatterId ? "Matter Sources" : "Firm Library"
           });
         }
 
@@ -2489,6 +2502,9 @@ Do not append generic legal-advice, AI, lawyer-review, consultation, information
 
 Provided Sources:
 ${totalGatheredContext || "No internal document matches."}
+
+Current page context:
+${pageContextForPrompt(pageContext)}
 
 Prior conversation for resolving follow-up references only. This is not a legal source:
 ${conversationContext || "No prior conversation."}
