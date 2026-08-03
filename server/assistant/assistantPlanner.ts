@@ -108,6 +108,17 @@ function fallbackToolCalls(input: AssistantPlannerInput, intent: AssistantIntent
   if (/which matters?|list (?:my )?matters?|matters? (?:are|on|waiting|recent)/.test(text)) {
     return [{ name: "list_matters", arguments: {} }];
   }
+  if (/conversation history|\bmy history\b|previous conversation|what did we conclude/.test(text)) {
+    return [{ name: "search_conversation_history", arguments: { query: input.content } }];
+  }
+  if (/assistant documents?|standalone documents?/.test(text)) {
+    return [{ name: "list_assistant_documents", arguments: {} }];
+  }
+  if (/firm library/.test(text)) {
+    return /\b(?:which|list|show)\b/.test(text)
+      ? [{ name: "list_firm_library_documents", arguments: {} }]
+      : [{ name: "search_workspace_documents", arguments: { query: input.content } }];
+  }
   const comparisonMatter = input.currentMatterId && /\bcompare\b/.test(text)
     ? input.content.match(/(?:with|and)\s+(?:the\s+)?(.{2,80}?)\s+Matter\b/i)?.[1]?.trim()
     : null;
@@ -119,6 +130,9 @@ function fallbackToolCalls(input: AssistantPlannerInput, intent: AssistantIntent
   }
   if (input.currentMatterId) {
     const calls: AssistantToolCall[] = [];
+    if (/matter intelligence|intelligence record/.test(text)) {
+      calls.push({ name: "get_matter_intelligence", arguments: { matterId: input.currentMatterId } });
+    }
     if (/client (?:say|said|response)|collaboration|waiting for the client|comments?/.test(text)) {
       calls.push({ name: "get_matter_collaboration_summary", arguments: { matterId: input.currentMatterId } });
     }
@@ -128,7 +142,28 @@ function fallbackToolCalls(input: AssistantPlannerInput, intent: AssistantIntent
     if (/work product|draft/.test(text)) {
       calls.push({ name: "list_matter_work_products", arguments: { matterId: input.currentMatterId } });
     }
+    if (/\b(?:which|list|show) (?:matter )?sources?\b/.test(text)) {
+      calls.push({ name: "list_matter_sources", arguments: { matterId: input.currentMatterId } });
+    }
+    if (/facts we have|based on the facts|legal issues should we investigate/.test(text)) {
+      calls.push(
+        { name: "get_matter_overview", arguments: { matterId: input.currentMatterId } },
+        { name: "get_matter_intelligence", arguments: { matterId: input.currentMatterId } },
+        { name: "search_workspace_documents", arguments: { matterId: input.currentMatterId, query: input.content } }
+      );
+    }
     if (calls.length) return calls;
+  }
+  const selectedDocument = input.pageContext.selectedItem;
+  if (selectedDocument?.id && ["source", "libraryDocument"].includes(selectedDocument.kind)) {
+    return [{
+      name: "search_workspace_documents",
+      arguments: {
+        ...(input.currentMatterId ? { matterId: input.currentMatterId } : {}),
+        documentId: selectedDocument.id,
+        query: input.content,
+      },
+    }];
   }
   if (input.currentMatterId) {
     return [{ name: "search_workspace_documents", arguments: { matterId: input.currentMatterId, query: input.content } }];
@@ -151,7 +186,7 @@ export function fallbackAssistantPlan(input: AssistantPlannerInput): AssistantPl
   const pageReference = /\b(this|current) page\b|\bwhat can i do here\b|\bthese controls\b/.test(text);
   const selectedDocument = input.hasTemporaryFiles || Boolean(input.pageContext.selectedItem &&
     ["source", "libraryDocument", "workProduct", "assistantDocument"].includes(input.pageContext.selectedItem.kind));
-  const workspaceFact = /\b(my|our|this|the) (?:matter|client|draft|work product|sources?|account|profile|firm|professional role|practice areas?)\b|\bwhich matters?\b|\bworkspace\b|\bcollaboration\b/.test(text);
+  const workspaceFact = /\b(my|our|this|the) (?:matter|client|draft|work product|sources?|account|profile|firm|professional role|practice areas?|history)\b|\bwhich matters?\b|\bworkspace\b|\bcollaboration\b|\bfirm library\b|\bassistant documents?\b|\bprevious conversation\b|\bwhat did we conclude\b|\bfacts we have\b|\bbased on the facts\b/.test(text);
   const legalAnalysis = /\b(?:law|legal|clause|contract|liability|claim|defen[cs]e|jurisdiction|statute|case law|issue|promissory estoppel|estoppel)\b/.test(text);
   const intent: AssistantIntent = selectedDocument
     ? "document_analysis"

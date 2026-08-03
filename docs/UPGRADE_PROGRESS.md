@@ -1245,3 +1245,48 @@ Deliberate Phase 2 boundary:
 
 - Document passage search still calls the existing semantic search implementation; hybrid ranking and retry replace that path in Phase 3.
 - Rolling conversation summaries and their additive migration are implemented in Phase 3.
+
+## Legal LLM Plus — Phase 3: Hybrid Retrieval and Rolling Memory
+
+Status: Complete.
+
+Implemented:
+
+- Added Firm- and Matter-scoped PostgreSQL keyword/title passage search alongside the existing Gemini embedding search.
+- Added understandable hybrid reranking across exact title, partial title, keyword overlap, semantic similarity, and selected-document preference; results are deduplicated and weak unrelated candidates are excluded without using the former 0.65 semantic cutoff as the sole existence test.
+- Added dynamic passage limits: four for brief lookup, eight for standard analysis, ten for standard Draft evidence, and twelve for thorough analysis.
+- Added direct authorized selected-document chunk retrieval and one optional weak-result query reformulation/retry. Retry never changes the original Firm Library or Matter scope and cannot loop.
+- Routed the Assistant document-search tool and Draft evidence gathering through hybrid retrieval. The previous Draft-only fixed semantic lookup was removed.
+- Added bounded rolling thread memory using the lighter Gemini model. Initial summary begins at 16 messages or 18,000 recent characters and refreshes after eight more messages.
+- Memory captures durable references, goals, confirmed facts, conclusions, preferences, terms, decisions, open questions, and unfinished tasks. It is capped at 6,000 characters, secret-redacted, treated as continuity rather than evidence, and combined with a bounded recent-message window.
+- Memory generation and persistence are best-effort: either may fail without failing the user request. Existing messages remain intact and History behavior is unchanged.
+
+Schema changes:
+
+- Added migration 24, `lawyer_assistant_thread_memory`:
+  - `threads.memory_summary TEXT`
+  - `threads.memory_message_count INTEGER NOT NULL DEFAULT 0`
+  - `threads.memory_updated_at TEXT`
+- The migration is additive, repeatable through `IF NOT EXISTS`, and does not rewrite or delete messages.
+
+Tests:
+
+- Added exact-title, semantic, keyword, deduplication, dynamic-depth, one-retry/same-scope, memory threshold, refresh cadence, secret redaction, summary failure fallback, and additive migration tests.
+- All existing History, Draft/Word, authentication, isolation, cloud upload, client workspace, Collaboration, and document presentation regressions remain passing.
+
+Verification:
+
+- `npm run lint`: passed via `npm.cmd`.
+- `npm test`: passed, 226/226 tests.
+- `npm run build`: passed outside the filesystem sandbox because Vite requires parent-directory access on this host.
+- Existing Vite warnings remain for `.env` `NODE_ENV=production` handling and the JavaScript chunk exceeding 500 kB.
+
+Manual verification not available:
+
+- Live authenticated browser flows with populated Matter/Collaboration/History data and live Gemini/Google Search grounding were not available in the non-interactive implementation environment.
+- Live Google Drive and Dropbox picker/account flows were not repeated; their automated regression coverage remains passing and those paths were not modified.
+
+Deliberate limitations:
+
+- Retrieval uses lightweight PostgreSQL keyword matching and transparent local reranking; no new search service or extension was added.
+- Rolling memory is conversation-scoped and is not persistent user-profile memory or an independent source of private facts.

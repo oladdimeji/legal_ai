@@ -38,7 +38,6 @@ import {
   pageContextForPrompt,
 } from "./server/assistantRouting.js";
 import {
-  assistantDraftNeedsWorkspaceEvidence,
   buildAssistantDraftPrompt,
   titleForAssistantDraft,
 } from "./server/assistantDrafting.js";
@@ -48,6 +47,11 @@ import { legacyRequestMode, planAssistantRequest } from "./server/assistant/assi
 import { executeAssistantToolPlan } from "./server/assistant/assistantToolExecutor.js";
 import { wrapAuthorizedEvidence } from "./server/assistant/assistantEvidence.js";
 import { adaptiveAssistantTemperature, buildAssistantTaskPrompt } from "./server/assistant/assistantPrompts.js";
+import {
+  conversationContextWithMemory,
+  refreshAssistantMemory,
+  shouldRefreshThreadMemory,
+} from "./server/assistant/assistantMemory.js";
 import {
   SESSION_COOKIE_NAME,
   SESSION_TTL_MS,
@@ -85,7 +89,6 @@ const isProduction = process.env.NODE_ENV === "production";
 const PORT = Number(process.env.PORT) || 3000;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const SIMILARITY_THRESHOLD = 0.65;
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: MAX_FILE_SIZE_BYTES, files: MAX_FILE_COUNT },
@@ -2063,9 +2066,45 @@ ${sourceText}`;
         );
       }
       const conversationHistory = boundedConversation([...priorHistory, userMessage], 12000);
-      const conversationContext = conversationHistory
+      const recentConversationContext = conversationHistory
         .map(conversationMessageForPrompt)
         .join("\n\n");
+      const messageCount = await db.getThreadMessageCount(threadId, requestOwnership);
+      const recentCharacterCount = conversationHistory.reduce(
+        (total, message) => total + message.content.length,
+        0
+      );
+      let memorySummary = thread.memory_summary || "";
+      if (shouldRefreshThreadMemory({
+        messageCount,
+        memoryMessageCount: thread.memory_message_count || 0,
+        memorySummary,
+        recentCharacterCount,
+      })) {
+        const memoryMessages = await db.getRecentMessages(threadId, requestOwnership, 32);
+        const refreshedMemory = await refreshAssistantMemory({
+          thread,
+          messages: memoryMessages,
+          messageCount,
+        });
+        if (refreshedMemory.updated) {
+          memorySummary = refreshedMemory.summary;
+          try {
+            await db.updateThreadMemory(
+              threadId,
+              refreshedMemory.summary,
+              messageCount,
+              requestOwnership
+            );
+          } catch (error) {
+            console.error("Assistant memory persistence failed; continuing with recent messages:", error);
+          }
+        }
+      }
+      const conversationContext = conversationContextWithMemory(
+        memorySummary,
+        recentConversationContext
+      );
       const retrievalQuery = [...conversationHistory.filter((m) => m.role === "user").slice(-3).map((m) => m.content), content].join("\n");
       const toolRun = await executeAssistantToolPlan({
         plan: assistantPlan,
@@ -2123,12 +2162,6 @@ ${sourceText}`;
       }
 
       if (assistantMode === "draft") {
-        const shouldRetrieveWorkspace = assistantDraftNeedsWorkspaceEvidence({
-          hasMatter: Boolean(currentMatterId),
-          hasTemporaryFiles: temporaryFiles.length > 0,
-          hasSelectedEntity: Boolean(selectedEntityEvidence),
-          instruction: content,
-        });
         const evidenceParts: string[] = [];
         for (const item of toolRun.evidence) {
           evidenceParts.push(`${item.sourceName}: ${item.title}\n${cleanSourceText(item.text).slice(0, 15000)}`);
@@ -2161,38 +2194,6 @@ ${sourceText}`;
         for (const file of temporaryFiles) {
           evidenceParts.push(`Temporary attachment: ${file.filename}\n${cleanSourceText(file.text).slice(0, 6000)}`);
         }
-        if (shouldRetrieveWorkspace) {
-          const retrievedById = new Map<string, Awaited<ReturnType<typeof db.vectorSearch>>[number]>();
-          for (const question of draftResearchQuestions) {
-            const retrieved = await db.vectorSearch(
-              question.slice(0, 4000),
-              currentMatterId || "wide",
-              requestOwnership,
-              4
-            );
-            for (const chunk of retrieved) {
-              if (chunk.similarity < SIMILARITY_THRESHOLD) continue;
-              const key = `${chunk.document_id}:${chunk.id}`;
-              const existing = retrievedById.get(key);
-              if (!existing || chunk.similarity > existing.similarity) retrievedById.set(key, chunk);
-            }
-          }
-          const permittedChunks = [...retrievedById.values()]
-            .sort((left, right) => right.similarity - left.similarity)
-            .slice(0, forceDeepResearch === true ? 8 : 4);
-          for (const chunk of permittedChunks) {
-            const sourceDocument = await db.getDocumentById(
-              chunk.document_id,
-              requestOwnership,
-              currentMatterId
-            );
-            if (!sourceDocument) continue;
-            evidenceParts.push(
-              `${currentMatterId ? "Matter Source" : "Firm Library document"}: ${sourceDocument.title}\n${cleanSourceText(chunk.chunk_text).slice(0, 3500)}`
-            );
-          }
-        }
-
         const auth = (req as AuthenticatedRequest).auth!;
         const currentDate = new Date().toLocaleDateString("en-US", {
           year: "numeric",
@@ -2468,7 +2469,7 @@ User question: ${content}`;
           
           // Vector Search Chunks with similarity threshold
           const allLocalChunks = await db.vectorSearch(`${subQ}\n${retrievalQuery}`.slice(0, 4000), retrievalScope, requestOwnership, 2);
-          const localChunks = allLocalChunks.filter(c => c.similarity >= SIMILARITY_THRESHOLD);
+          const localChunks = allLocalChunks;
           
           // Register retrieved context to citations
           const stepCitations: string[] = [];
@@ -2599,7 +2600,7 @@ ${citationInstSearch}`;
 
         const allLocalChunks = await db.vectorSearch(retrievalQuery.slice(0, 4000), retrievalScope, requestOwnership, 3);
 
-        const localChunks = allLocalChunks.filter(c => c.similarity >= SIMILARITY_THRESHOLD);
+        const localChunks = allLocalChunks;
 
         // Register in citations list
         for (const c of localChunks) {

@@ -10,6 +10,17 @@ import {
 import type { AssistantPlannerInput } from "../server/assistant/assistantTypes.js";
 import { executeAssistantToolPlan, ASSISTANT_TOOL_LIMITS } from "../server/assistant/assistantToolExecutor.js";
 import { ASSISTANT_READ_ONLY_TOOLS, mapSafeCollaboration } from "../server/assistant/assistantTools.js";
+import {
+  rankHybridCandidates,
+  retrieveAssistantPassages,
+  retrievalLimit,
+} from "../server/assistant/assistantRetrieval.js";
+import {
+  ASSISTANT_MEMORY_POLICY,
+  conversationContextWithMemory,
+  refreshAssistantMemory,
+  shouldRefreshThreadMemory,
+} from "../server/assistant/assistantMemory.js";
 
 const page = {
   routeKind: "matter" as const,
@@ -210,4 +221,92 @@ test("tool-call budget is enforced", async () => {
   });
   assert.equal(result.attemptedCalls, ASSISTANT_TOOL_LIMITS.calls);
   assert.equal(result.limitReached, true);
+});
+
+test("hybrid ranker promotes exact titles, preserves semantic results, and deduplicates passages", () => {
+  const ranked = rankHybridCandidates("Termination Agreement", [
+    { id: "k1", documentId: "doc_title", title: "Termination Agreement", text: "Notice terms", keywordScore: 0.2 },
+    { id: "s1", documentId: "doc_semantic", title: "Other", text: "Termination notice provision", semanticScore: 0.8 },
+    { id: "s2", documentId: "doc_semantic", title: "Other", text: "Termination   notice provision", semanticScore: 0.7 },
+  ], 8);
+  assert.equal(ranked[0].documentId, "doc_title");
+  assert.equal(ranked.filter((item) => item.documentId === "doc_semantic").length, 1);
+  assert.ok(ranked.some((item) => item.semanticScore === 0.8));
+});
+
+test("retrieval depth is dynamic and bounded", () => {
+  assert.equal(retrievalLimit("brief", "lookup"), 4);
+  assert.equal(retrievalLimit("standard", "analysis"), 8);
+  assert.equal(retrievalLimit("standard", "draft"), 10);
+  assert.equal(retrievalLimit("thorough", "analysis"), 12);
+});
+
+test("weak hybrid retrieval retries at most once without broadening Matter scope", async () => {
+  const scopes: string[] = [];
+  let plannerCalls = 0;
+  const database = {
+    keywordSearch: async (query: string, scope: string) => {
+      scopes.push(scope);
+      return query === "termination provision"
+        ? [{ id: "chunk_1", document_id: "doc_1", chunk_text: "The termination provision requires notice.", title: "Agreement", keyword_score: 0.8 }]
+        : [];
+    },
+    vectorSearch: async (_query: string, scope: string) => { scopes.push(scope); return []; },
+    getAuthorizedDocumentChunks: async () => [],
+    getDocumentById: async () => undefined,
+  } as any;
+  const result = await retrieveAssistantPassages({
+    query: "ending clause",
+    scope: "case_current",
+    ownership: { userId: "user_1", firmId: "firm_1" },
+    depth: "standard",
+    database,
+    model: (async () => {
+      plannerCalls += 1;
+      return { text: JSON.stringify({ query: "termination provision" }), groundingMetadata: null };
+    }) as any,
+  });
+  assert.equal(result.retried, true);
+  assert.equal(plannerCalls, 1);
+  assert.deepEqual(new Set(scopes), new Set(["case_current"]));
+  assert.equal(result.passages[0].documentId, "doc_1");
+});
+
+test("rolling memory starts and refreshes only at bounded thresholds", () => {
+  assert.equal(shouldRefreshThreadMemory({ messageCount: 15, memoryMessageCount: 0, memorySummary: null, recentCharacterCount: 1000 }), false);
+  assert.equal(shouldRefreshThreadMemory({ messageCount: 16, memoryMessageCount: 0, memorySummary: null, recentCharacterCount: 1000 }), true);
+  assert.equal(shouldRefreshThreadMemory({ messageCount: 10, memoryMessageCount: 0, memorySummary: null, recentCharacterCount: ASSISTANT_MEMORY_POLICY.initialCharacterCount }), true);
+  assert.equal(shouldRefreshThreadMemory({ messageCount: 23, memoryMessageCount: 16, memorySummary: "Stored", recentCharacterCount: 1000 }), false);
+  assert.equal(shouldRefreshThreadMemory({ messageCount: 24, memoryMessageCount: 16, memorySummary: "Stored", recentCharacterCount: 1000 }), true);
+});
+
+test("memory summary is bounded, secret-redacted, and failure keeps existing continuity", async () => {
+  const thread = {
+    id: "thread_1", user_id: "user_1", case_id: null, scope: "wide" as const,
+    title: "Conversation", created_at: "2026-01-01", memory_summary: null, memory_message_count: 0,
+  };
+  const messages = Array.from({ length: 16 }, (_, index) => ({
+    id: `m${index}`, thread_id: "thread_1", role: index % 2 ? "assistant" as const : "user" as const,
+    content: index === 0 ? "password=hunter2 decision: use English law" : `Message ${index}`,
+    citations: [], steps: null, created_at: "2026-01-01",
+  }));
+  const refreshed = await refreshAssistantMemory({
+    thread, messages, messageCount: 16,
+    model: (async () => ({
+      text: JSON.stringify({ summary: "Decision: use English law. password=hunter2" }),
+      groundingMetadata: null,
+    })) as any,
+  });
+  assert.equal(refreshed.updated, true);
+  assert.match(refreshed.summary, /English law/);
+  assert.doesNotMatch(refreshed.summary, /hunter2/);
+  assert.ok(refreshed.summary.length <= ASSISTANT_MEMORY_POLICY.maxSummaryCharacters);
+
+  const failed = await refreshAssistantMemory({
+    thread: { ...thread, memory_summary: "Existing decision", memory_message_count: 8 },
+    messages, messageCount: 16,
+    model: (async () => { throw new Error("offline"); }) as any,
+  });
+  assert.deepEqual(failed, { summary: "Existing decision", updated: false });
+  assert.match(conversationContextWithMemory(failed.summary, "USER: Continue"), /Existing decision[\s\S]*USER: Continue/);
 });

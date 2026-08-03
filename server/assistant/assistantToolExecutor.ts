@@ -17,6 +17,7 @@ import {
   mapSafeCollaboration,
   mapWorkProductMetadata,
 } from "./assistantTools.js";
+import { retrieveAssistantPassages } from "./assistantRetrieval.js";
 
 export const ASSISTANT_TOOL_LIMITS = {
   planningRounds: 2,
@@ -241,7 +242,7 @@ export async function executeAssistantToolPlan(input: {
           break;
         }
         case "search_workspace_documents": {
-          const matterId = stringArgument(call, "matterId");
+          const matterId = stringArgument(call, "matterId") || input.currentMatterId;
           let scope: string = "wide";
           if (matterId) {
             const matter = await authorizeMatter(matterId);
@@ -251,14 +252,20 @@ export async function executeAssistantToolPlan(input: {
             result.checkedLocations.push("Firm Library document passages");
           }
           const query = stringArgument(call, "query", 4_000) || input.request.slice(0, 4_000);
-          const limit = input.plan.depth === "thorough" ? 12 : input.plan.depth === "brief" ? 4 : 8;
-          const chunks = await database.vectorSearch(query, scope, input.ownership, limit);
-          for (const chunk of chunks.slice(0, ASSISTANT_TOOL_LIMITS.passages)) {
-            const document = await database.getDocumentById(chunk.document_id, input.ownership, matterId);
-            if (!document) continue;
-            result.evidence.push(evidence(index * 100 + result.evidence.length, matterId ? "matterSource" : "firmLibrary", document.title, matterId ? "Matter Sources" : "Firm Library", {
-              passage: sanitizeEvidenceText(chunk.chunk_text, 4_000), similarity: chunk.similarity,
-            }, { entityId: document.id, ...(matterId ? { matterId } : {}) }));
+          const retrieval = await retrieveAssistantPassages({
+            query,
+            scope,
+            ownership: input.ownership,
+            depth: input.plan.depth,
+            intent: input.plan.intent === "draft" ? "draft" : input.plan.intent === "workspace_lookup" ? "lookup" : "analysis",
+            selectedDocumentId: stringArgument(call, "documentId"),
+            database,
+          });
+          for (const passage of retrieval.passages.slice(0, ASSISTANT_TOOL_LIMITS.passages)) {
+            result.evidence.push(evidence(index * 100 + result.evidence.length, matterId ? "matterSource" : "firmLibrary", passage.title, matterId ? "Matter Sources" : "Firm Library", {
+              passage: sanitizeEvidenceText(passage.text, 4_000),
+              retrievalScore: Number(passage.score.toFixed(4)),
+            }, { entityId: passage.documentId, ...(matterId ? { matterId } : {}) }));
           }
           break;
         }

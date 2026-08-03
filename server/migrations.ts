@@ -646,6 +646,17 @@ const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 24,
+    name: "lawyer_assistant_thread_memory",
+    async run(client) {
+      await client.query("ALTER TABLE threads ADD COLUMN IF NOT EXISTS memory_summary TEXT");
+      await client.query(
+        "ALTER TABLE threads ADD COLUMN IF NOT EXISTS memory_message_count INTEGER NOT NULL DEFAULT 0"
+      );
+      await client.query("ALTER TABLE threads ADD COLUMN IF NOT EXISTS memory_updated_at TEXT");
+    },
+  },
 ];
 
 export async function runMigrations(pool: Pool): Promise<void> {

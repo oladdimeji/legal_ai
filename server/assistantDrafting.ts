@@ -55,7 +55,9 @@ ${authorizedEvidence || "No authorized private workspace evidence was retrieved 
 </authorized_workspace_evidence>
 
 Prior conversation for task continuity only; it is not independent evidence:
+<conversation_memory>
 ${conversationContext || "No prior conversation."}
+</conversation_memory>
 
 Research configuration:
 - Live Google Search grounding is ${webSearchEnabled ? "enabled and may be used when useful" : "disabled; do not claim to have searched the web"}.

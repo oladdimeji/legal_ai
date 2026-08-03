@@ -153,6 +153,9 @@ export interface Thread {
   title: string;
   created_at: string;
   last_activity_at?: string;
+  memory_summary?: string | null;
+  memory_message_count?: number;
+  memory_updated_at?: string | null;
 }
 
 export interface Citation {

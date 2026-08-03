@@ -1934,6 +1934,84 @@ class DatabaseService {
     );
   }
 
+  public async keywordSearch(
+    query: string,
+    scope: "wide" | string,
+    context: OwnershipContext,
+    limit = 12
+  ): Promise<Array<DocumentChunk & { title: string; keyword_score: number }>> {
+    const terms = Array.from(new Set(
+      query.toLocaleLowerCase().match(/[\p{L}\p{N}]{3,}/gu) || []
+    )).filter((term) => ![
+      "the", "and", "for", "with", "that", "this", "from", "what", "which",
+      "matter", "document", "about", "into", "have", "does", "client",
+    ].includes(term)).slice(0, 12);
+    if (!query.trim() || terms.length === 0) return [];
+    const patterns = terms.map((term) => `%${term}%`);
+    const normalizedLimit = Math.max(1, Math.min(24, Math.trunc(limit)));
+    const scoring = `(
+      CASE
+        WHEN LOWER(d.title) = LOWER($1) THEN 0.9
+        WHEN d.title ILIKE $2 THEN 0.65
+        ELSE 0
+      END
+      + 0.35 * (
+        SELECT COUNT(*)::float / GREATEST(CARDINALITY($3::text[]), 1)
+        FROM UNNEST($3::text[]) pattern
+        WHERE dc.chunk_text ILIKE pattern OR d.title ILIKE pattern
+      )
+    )`;
+    if (scope === "wide") {
+      return await this.query(
+        `SELECT dc.id, dc.document_id, dc.chunk_text, d.title,
+           ${scoring} AS keyword_score
+         FROM document_chunks dc JOIN documents d ON d.id = dc.document_id
+         WHERE d.firm_id = $4 AND d.case_id IS NULL
+           AND d.is_generated_draft_duplicate = FALSE
+           AND (dc.chunk_text ILIKE ANY($3::text[]) OR d.title ILIKE ANY($3::text[]))
+         ORDER BY keyword_score DESC, d.uploaded_at DESC
+         LIMIT $5`,
+        [query.trim().slice(0, 500), `%${query.trim().slice(0, 300)}%`, patterns, context.firmId, normalizedLimit]
+      );
+    }
+    return await this.query(
+      `SELECT dc.id, dc.document_id, dc.chunk_text, d.title,
+         ${scoring} AS keyword_score
+       FROM document_chunks dc JOIN documents d ON d.id = dc.document_id
+       WHERE d.firm_id = $4 AND d.is_generated_draft_duplicate = FALSE
+         AND EXISTS (SELECT 1 FROM cases c WHERE c.id = $5 AND c.firm_id = $4)
+         AND (
+           d.case_id = $5 OR (
+             d.case_id IS NULL AND EXISTS (
+               SELECT 1 FROM case_documents cd
+               WHERE cd.case_id = $5 AND cd.document_id = d.id
+             )
+           )
+         )
+         AND (dc.chunk_text ILIKE ANY($3::text[]) OR d.title ILIKE ANY($3::text[]))
+       ORDER BY keyword_score DESC, d.uploaded_at DESC
+       LIMIT $6`,
+      [query.trim().slice(0, 500), `%${query.trim().slice(0, 300)}%`, patterns, context.firmId, scope, normalizedLimit]
+    );
+  }
+
+  public async getAuthorizedDocumentChunks(
+    documentId: string,
+    context: OwnershipContext,
+    caseId: string | null,
+    limit = 50
+  ): Promise<DocumentChunk[]> {
+    const document = await this.getDocumentById(documentId, context, caseId);
+    if (!document) return [];
+    return await this.query(
+      `SELECT dc.id, dc.document_id, dc.chunk_text
+       FROM document_chunks dc JOIN documents d ON d.id = dc.document_id
+       WHERE dc.document_id = $1 AND d.firm_id = $2
+       ORDER BY dc.id LIMIT $3`,
+      [document.id, context.firmId, Math.max(1, Math.min(80, Math.trunc(limit)))]
+    );
+  }
+
   public async getHistoryThreads(context: OwnershipContext): Promise<Thread[]> {
     return await this.query(
       `SELECT t.*, COALESCE(MAX(m.created_at), t.created_at) AS last_activity_at
@@ -2485,6 +2563,42 @@ class DatabaseService {
       throw new Error("Work Product not found");
     }
     return rows[0];
+  }
+
+  public async getThreadMessageCount(
+    threadId: string,
+    context: OwnershipContext
+  ): Promise<number> {
+    const rows = await this.query(
+      `SELECT COUNT(m.id)::int AS message_count
+       FROM threads t LEFT JOIN messages m ON m.thread_id = t.id
+       WHERE t.id = $1 AND t.user_id = $2 AND t.scope <> 'client'
+         AND (t.case_id IS NULL OR EXISTS (
+           SELECT 1 FROM cases c WHERE c.id = t.case_id AND c.firm_id = $3
+         ))
+       GROUP BY t.id`,
+      [threadId, context.userId, context.firmId]
+    );
+    return rows[0] ? Number(rows[0].message_count) : 0;
+  }
+
+  public async updateThreadMemory(
+    threadId: string,
+    summary: string,
+    messageCount: number,
+    context: OwnershipContext
+  ): Promise<boolean> {
+    const rows = await this.query(
+      `UPDATE threads t SET memory_summary = $1, memory_message_count = $2,
+         memory_updated_at = $3
+       WHERE t.id = $4 AND t.user_id = $5 AND t.scope <> 'client'
+         AND (t.case_id IS NULL OR EXISTS (
+           SELECT 1 FROM cases c WHERE c.id = t.case_id AND c.firm_id = $6
+         ))
+       RETURNING t.id`,
+      [summary, Math.max(0, Math.trunc(messageCount)), new Date().toISOString(), threadId, context.userId, context.firmId]
+    );
+    return rows.length === 1;
   }
 
   public async searchAssistantConversationHistory(
