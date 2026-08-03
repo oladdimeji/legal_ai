@@ -176,7 +176,7 @@ test("Firm Library upload keeps multi-file selection and sends one file per requ
   assert.match(library, /uploadPersistentFilesSequentially/);
   assert.match(library, /form\.append\("files", file\)/);
   assert.doesNotMatch(library, /fileSelection\.files\.forEach\(\(file\) => form\.append\("files", file\)\)/);
-  assert.match(library, /type="file" multiple/);
+  assert.match(library, /FileSourcePicker/);
   assert.match(library, /SelectedFileList/);
   assert.match(library, /setUploadError/);
   assert.match(library, /setUploading/);

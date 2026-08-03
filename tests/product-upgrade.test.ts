@@ -263,7 +263,7 @@ test("Phase 11 temporary Assistant file sources are extracted and cited without 
   assert.match(server, /\/api\/extract-files/);
   assert.match(server, /Temporary File Attachment/);
   assert.match(assistant, /temporaryFiles/);
-  assert.match(assistant, /accept=".pdf,.docx,.txt/);
+  assert.match(assistant, /FileSourcePicker/);
   assert.match(extractor, /MAX_FILE_SIZE_BYTES/);
   assert.match(extractor, /OCR is not supported/);
   assert.doesNotMatch(server, /INSERT INTO documents[\s\S]{0,120}temporaryFiles/);
@@ -333,9 +333,10 @@ test("Phase 12 Work Product uses formatted preview/editor and sharing progress",
 });
 
 test("Focused UX fix uses cumulative multi-file pickers and removable selections", async () => {
-  const [hook, selectedList, matters, sources, library, portal] = await Promise.all([
+  const [hook, selectedList, picker, matters, sources, library, portal] = await Promise.all([
     readFile("src/hooks/useCumulativeFileSelection.ts", "utf8"),
     readFile("src/components/SelectedFileList.tsx", "utf8"),
+    readFile("src/components/FileSourcePicker.tsx", "utf8"),
     readFile("src/components/MattersView.tsx", "utf8"),
     readFile("src/components/MatterSources.tsx", "utf8"),
     readFile("src/components/FirmLibraryView.tsx", "utf8"),
@@ -346,12 +347,17 @@ test("Focused UX fix uses cumulative multi-file pickers and removable selections
   assert.match(hook, /\.\.\.current, \.\.\.uniqueIncoming/);
   assert.match(hook, /Select at most/);
   assert.match(selectedList, /aria-label=\{`Remove \$\{file\.name\}`\}/);
-  for (const view of [matters, sources, library, portal]) {
-    assert.match(view, /multiple/);
-    assert.match(view, /addFiles|appendUniqueFiles/);
+  assert.match(picker, /multiple/);
+  assert.match(picker, /event\.currentTarget\.value = ""/);
+  for (const view of [matters, sources, library]) {
+    assert.match(view, /FileSourcePicker/);
+    assert.match(view, /addFiles/);
     assert.match(view, /SelectedFileList/);
-    assert.match(view, /event\.currentTarget\.value = ""/);
   }
+  assert.match(portal, /multiple/);
+  assert.match(portal, /appendUniqueFiles/);
+  assert.match(portal, /SelectedFileList/);
+  assert.match(portal, /event\.currentTarget\.value = ""/);
 });
 
 test("persistent lawyer uploads opt into 25 files while Assistant and client uploads remain restricted", async () => {

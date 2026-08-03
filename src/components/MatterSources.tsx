@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Eye, FileText, Plus, Search, Trash2, Upload, X } from "lucide-react";
+import { Eye, FileText, Plus, Search, Trash2, X } from "lucide-react";
 import { Document, WorkspacePageContext } from "../types";
 import SelectedFileList from "./SelectedFileList";
+import FileSourcePicker from "./FileSourcePicker";
 import WorkProductDocument from "./WorkProductDocument";
 import { MAX_PERSISTENT_UPLOAD_FILES, useCumulativeFileSelection } from "../hooks/useCumulativeFileSelection";
 import {
@@ -27,6 +28,7 @@ export default function MatterSources({ matterId, onSelectedItemChange }: { matt
   const [uploadFailures, setUploadFailures] = useState<PersistentUploadFailure[]>([]);
   const [uploadProgress, setUploadProgress] = useState<PersistentUploadProgress | null>(null);
   const [uploadSummary, setUploadSummary] = useState("");
+  const [cloudFilesBusy, setCloudFilesBusy] = useState(false);
   const fileSelection = useCumulativeFileSelection(MAX_PERSISTENT_UPLOAD_FILES);
 
   const load = async () => {
@@ -60,7 +62,7 @@ export default function MatterSources({ matterId, onSelectedItemChange }: { matt
 
   const add = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (processing) return;
+    if (processing || cloudFilesBusy) return;
     setProcessing(true);
     setError("");
     setUploadFailures([]);
@@ -191,11 +193,20 @@ export default function MatterSources({ matterId, onSelectedItemChange }: { matt
               </div>
             ) : type === "upload" ? (
               <div className="space-y-2">
-                <label className="flex cursor-pointer items-center justify-between rounded border border-dashed p-5 text-xs text-zinc-500 hover:bg-zinc-50">
-                  <span className="flex items-center gap-2"><Upload className="h-4 w-4" />Choose PDF, DOCX, or TXT</span>
-                  <span>{fileSelection.files.length ? fileSelection.selectedLabel : ""}</span>
-                  <input type="file" multiple disabled={processing} className="sr-only" accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" onChange={(event) => { fileSelection.addFiles(event.target.files); event.currentTarget.value = ""; }} />
-                </label>
+                <div className="rounded border border-dashed p-4">
+                  <div className="mb-3 flex items-center justify-between gap-3 text-xs text-zinc-500">
+                    <span>Choose PDF, DOCX, or TXT</span>
+                    <span>{fileSelection.files.length ? fileSelection.selectedLabel : "No files selected"}</span>
+                  </div>
+                  <FileSourcePicker
+                    disabled={processing}
+                    maxFiles={MAX_PERSISTENT_UPLOAD_FILES}
+                    selectedCount={fileSelection.files.length}
+                    onFilesSelected={fileSelection.addFiles}
+                    onError={fileSelection.setFileError}
+                    onBusyChange={setCloudFilesBusy}
+                  />
+                </div>
                 {fileSelection.fileError && <p className="text-xs text-red-700">{fileSelection.fileError}</p>}
                 <SelectedFileList files={fileSelection.files} onRemove={removePendingFile} disabled={processing} />
                 <input value={title} disabled={processing} onChange={(event) => setTitle(event.target.value)} className="w-full rounded border px-3 py-2 text-xs disabled:bg-zinc-50" placeholder="Optional title for one-file upload only" />
@@ -212,7 +223,7 @@ export default function MatterSources({ matterId, onSelectedItemChange }: { matt
             {error && <p className="text-xs text-red-700">{error}</p>}
             <div className="flex justify-end gap-2">
               <button type="button" disabled={processing} onClick={() => { resetAddForm(); setShowAdd(false); }} className="rounded border px-4 py-2 text-[10px] uppercase disabled:cursor-not-allowed disabled:opacity-40">Cancel</button>
-              <button disabled={processing || (type === "library" ? selectedLibraryIds.length === 0 : type === "upload" ? fileSelection.files.length === 0 : !text.trim())} className="rounded bg-zinc-950 px-4 py-2 text-[10px] font-bold uppercase text-white disabled:cursor-not-allowed disabled:opacity-40">{processing ? "Processing..." : "Add Source"}</button>
+              <button disabled={processing || cloudFilesBusy || (type === "library" ? selectedLibraryIds.length === 0 : type === "upload" ? fileSelection.files.length === 0 : !text.trim())} className="rounded bg-zinc-950 px-4 py-2 text-[10px] font-bold uppercase text-white disabled:cursor-not-allowed disabled:opacity-40">{processing ? "Processing..." : "Add Source"}</button>
             </div>
           </form>
         </div>

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Database, Eye, FileText, FolderOpen, Search, Trash2, Upload, X } from "lucide-react";
 import { Document } from "../types";
 import SelectedFileList from "./SelectedFileList";
+import FileSourcePicker from "./FileSourcePicker";
 import WorkProductDocument from "./WorkProductDocument";
 import { MAX_PERSISTENT_UPLOAD_FILES, useCumulativeFileSelection } from "../hooks/useCumulativeFileSelection";
 import {
@@ -26,6 +27,7 @@ export default function FirmLibraryView() {
   const [uploadFailures, setUploadFailures] = useState<PersistentUploadFailure[]>([]);
   const [uploadProgress, setUploadProgress] = useState<PersistentUploadProgress | null>(null);
   const [uploadSummary, setUploadSummary] = useState("");
+  const [cloudFilesBusy, setCloudFilesBusy] = useState(false);
   const fileSelection = useCumulativeFileSelection(MAX_PERSISTENT_UPLOAD_FILES);
 
   useEffect(() => {
@@ -73,7 +75,7 @@ export default function FirmLibraryView() {
 
   const upload = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (uploading || fileSelection.files.length === 0) return;
+    if (uploading || cloudFilesBusy || fileSelection.files.length === 0) return;
     const files = [...fileSelection.files];
     setUploading(true);
     setUploadError("");
@@ -162,18 +164,26 @@ export default function FirmLibraryView() {
 
           <form onSubmit={upload} className="h-fit space-y-3 rounded border border-zinc-200 bg-zinc-50 p-4">
             <div className="flex items-center gap-2"><Upload className="h-4 w-4" /><h3 className="text-[10px] font-mono font-bold uppercase">Add Firm Library Document</h3></div>
-            <label className="block rounded border border-dashed border-zinc-300 bg-white px-3 py-5 text-center text-xs text-zinc-500 hover:bg-zinc-50 cursor-pointer">
+            <div className="rounded border border-dashed border-zinc-300 bg-white px-3 py-4 text-xs text-zinc-500">
               <span className="block">Choose PDF, DOCX, or TXT</span>
-              <span className="mt-1 block text-[10px] font-mono uppercase">{fileSelection.files.length ? fileSelection.selectedLabel : "No files selected"}</span>
-              <input type="file" multiple disabled={uploading} className="sr-only" accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" onChange={(event) => { fileSelection.addFiles(event.target.files); event.currentTarget.value = ""; }} />
-            </label>
+              <span className="mb-3 mt-1 block text-[10px] font-mono uppercase">{fileSelection.files.length ? fileSelection.selectedLabel : "No files selected"}</span>
+              <FileSourcePicker
+                disabled={uploading}
+                maxFiles={MAX_PERSISTENT_UPLOAD_FILES}
+                selectedCount={fileSelection.files.length}
+                compact
+                onFilesSelected={fileSelection.addFiles}
+                onError={fileSelection.setFileError}
+                onBusyChange={setCloudFilesBusy}
+              />
+            </div>
             {fileSelection.fileError && <p className="text-xs text-red-700">{fileSelection.fileError}</p>}
             <SelectedFileList files={fileSelection.files} onRemove={removePendingFile} disabled={uploading} />
             {uploadProgress && <p className="text-xs text-zinc-600">Uploading and indexing {uploadProgress.current} of {uploadProgress.total}: {uploadProgress.file.name}</p>}
             {uploadFailures.map((failure) => <p key={failure.identity} className="text-xs text-red-700">{failure.file.name}: {failure.error}</p>)}
             {uploadError && <p className="text-xs text-red-700">{uploadError}</p>}
             {uploadSummary && <p className="text-xs text-zinc-700">{uploadSummary}</p>}
-            <button disabled={uploading || fileSelection.files.length === 0} className="w-full rounded bg-zinc-950 px-3 py-2 text-[10px] font-mono font-bold uppercase text-white disabled:cursor-not-allowed disabled:opacity-40">{uploading ? "Processing..." : "Upload and index"}</button>
+            <button disabled={uploading || cloudFilesBusy || fileSelection.files.length === 0} className="w-full rounded bg-zinc-950 px-3 py-2 text-[10px] font-mono font-bold uppercase text-white disabled:cursor-not-allowed disabled:opacity-40">{uploading ? "Processing..." : "Upload and index"}</button>
           </form>
         </div>
       </div>

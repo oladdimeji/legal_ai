@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { AssistantDocumentReference, Case, Thread, Message, Citation, ResearchStep } from "../types";
 import FormattedMarkdown from "./FormattedMarkdown";
+import FileSourcePicker from "./FileSourcePicker";
 import { browserFileIdentity, MAX_SELECTED_FILES } from "../hooks/useCumulativeFileSelection";
 import { assistantCitationsToDisplayText } from "../lib/assistantCitations";
 import { useWorkspacePageContext } from "../lib/WorkspacePageContextProvider";
@@ -220,6 +221,7 @@ export default function AssistantView({
   const [filesAndSourcesOpen, setFilesAndSourcesOpen] = useState(false);
   const [temporaryFiles, setTemporaryFiles] = useState<TemporaryFile[]>([]);
   const [temporaryFileError, setTemporaryFileError] = useState("");
+  const [cloudFilesBusy, setCloudFilesBusy] = useState(false);
   const [improving, setImproving] = useState(false);
   const fileExtracting = temporaryFiles.some((file) => file.status === "extracting");
 
@@ -431,7 +433,7 @@ export default function AssistantView({
   const handleAsk = async (e?: React.FormEvent, customQuery?: string) => {
     if (e) e.preventDefault();
     const queryText = (customQuery || inputValue).trim();
-    if (!queryText || loading) return;
+    if (!queryText || loading || fileExtracting || cloudFilesBusy) return;
 
     if (workingActivityTimerRef.current !== null) {
       window.clearTimeout(workingActivityTimerRef.current);
@@ -619,7 +621,7 @@ export default function AssistantView({
     }
   };
 
-  const handleTemporaryFiles = async (files: FileList | null) => {
+  const handleTemporaryFiles = async (files: FileList | File[] | null) => {
     if (!files?.length) return;
     const selected = Array.from(files);
     const existing = new Set(temporaryFiles.map((file) => file.identity));
@@ -894,19 +896,15 @@ export default function AssistantView({
 
                     <div className="border-t border-zinc-100 pt-3">
                       <span className="text-[10px] font-mono uppercase text-zinc-400 font-bold block mb-2 tracking-wider">Temporary File Attachments</span>
-                      <label className="flex cursor-pointer items-center justify-between rounded-md border border-zinc-200 bg-white px-3 py-2 text-xs text-zinc-700 hover:bg-zinc-50 hover:text-zinc-950 hover:border-zinc-300 transition-all">
-                        <span className="flex items-center gap-2.5"><Paperclip className="h-4 w-4" />Add PDF, DOCX, or TXT</span>
-                        <input
-                          type="file"
-                          className="sr-only"
-                          multiple
-                          accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain"
-                          onChange={(event) => {
-                            void handleTemporaryFiles(event.target.files);
-                            event.currentTarget.value = "";
-                          }}
-                        />
-                      </label>
+                      <FileSourcePicker
+                        disabled={loading}
+                        maxFiles={MAX_SELECTED_FILES}
+                        selectedCount={temporaryFiles.length}
+                        compact
+                        onFilesSelected={handleTemporaryFiles}
+                        onError={setTemporaryFileError}
+                        onBusyChange={setCloudFilesBusy}
+                      />
                       {fileExtracting && <p className="mt-2 text-[10px] font-mono uppercase text-zinc-400">Extracting files...</p>}
                       {temporaryFileError && <p className="mt-2 text-xs text-red-700">{temporaryFileError}</p>}
                     </div>
@@ -957,7 +955,7 @@ export default function AssistantView({
 
               <button
                 type="submit"
-                disabled={!inputValue.trim() || loading || fileExtracting}
+                disabled={!inputValue.trim() || loading || fileExtracting || cloudFilesBusy}
                 id="btn-submit-ask"
                 className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-mono uppercase font-bold text-white bg-zinc-950 hover:bg-zinc-900 border border-zinc-950 rounded shadow-xs disabled:opacity-40 transition-all cursor-pointer"
               >

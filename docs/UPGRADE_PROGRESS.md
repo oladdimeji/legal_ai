@@ -1091,3 +1091,41 @@ Deliberate limitations:
 
 - Standalone assistant documents remain private to their creating lawyer and do not have Firm or client sharing controls.
 - The legacy memo/email/summary endpoint remains temporarily available for backward compatibility, but no current lawyer UI depends on it.
+
+## Lawyer Cloud File Selection
+
+Status: Complete.
+
+Implemented:
+
+- Added a shared lawyer-only file-source picker that always offers Device and conditionally offers Google Drive and Dropbox when their browser picker identifiers are configured.
+- Added lazy, deduplicated loading for Google Identity Services, Google Picker, and Dropbox Chooser without adding runtime dependencies.
+- Added in-memory Google `drive.file` authorization, Google Drive byte downloads, and native Google Docs export to DOCX. Tokens, selected file IDs, and download URLs are not stored or sent to Exepts.
+- Added Dropbox Chooser direct-link downloads without Dropbox OAuth. Direct links and selected item IDs are discarded after conversion.
+- Converted cloud selections to ordinary browser `File` objects with safe names, accepted MIME types, 10 MB and empty-file checks, sequential downloads, partial-success handling, and stable provider-derived file identity.
+- Integrated cloud selection with Assistant temporary extraction, Matter Sources, optional Create Matter files, and Firm Library while preserving the existing cumulative limits and upload flows.
+- Kept Device upload available and left all client portal upload surfaces unchanged.
+
+Schema changes:
+
+- None.
+
+Dependencies:
+
+- None added. The official provider browser scripts are loaded only after the corresponding user action.
+
+Tests:
+
+- Added focused coverage for provider availability, script deduplication, Google scope and memory-only tokens, Google and Dropbox conversion, native Google Docs export, unsupported Workspace types, size and empty-file validation, partial success, cumulative limits, stable duplicate identity, and the four lawyer integration paths.
+- Updated source-level upload tests only where the shared file-source picker intentionally replaces local-only input markup.
+
+Verification:
+
+- `npm run verify`: passed, including TypeScript lint, 204/204 tests, and the production build with the existing Vite `NODE_ENV` and large-chunk warnings.
+- Live Google Drive and Dropbox popup/account verification was not available in the non-interactive implementation environment.
+
+Deliberate limitations:
+
+- This is immediate browser-side selection, not synchronization or a persistent connector.
+- Google Sheets, Google Slides, Dropbox Paper, folders, OneDrive, offline access, and background imports are not supported.
+- Live provider popup verification requires configured provider applications and interactive Google/Dropbox accounts.
