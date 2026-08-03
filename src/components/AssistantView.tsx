@@ -55,49 +55,16 @@ function buildWorkingActivities({
   webSearchEnabled: boolean;
   requestMode: ReturnType<typeof routeAssistantRequest>;
 }): string[] {
-  const usesWorkspaceEvidence = ["workspace_research", "deep_research"].includes(requestMode)
-    || (requestMode === "draft" && (hasMatter || hasAttachments));
   const activities = [
     "Understanding your request…",
-    "Identifying the relevant context…",
+    "Checking the relevant context…",
   ];
-  if (usesWorkspaceEvidence) {
-    activities.push(hasMatter ? "Reviewing Matter sources…" : "Reviewing authorized workspace materials…");
-  } else if (requestMode === "ui_help") {
-    activities.push("Reviewing the visible page and actions…");
-  }
 
   if (hasAttachments) {
     activities.push("Reviewing attached documents…");
-    if (hasMatter) activities.push("Comparing the documents with the Matter…");
-  }
-  if (webSearchEnabled) activities.push("Searching the web…");
-
-  if (requestMode === "deep_research") {
-    activities.push(
-      "Breaking the question into research steps…",
-      "Examining the legal issues…",
-      "Checking supporting and conflicting evidence…",
-      "Connecting the relevant findings…",
-    );
-  } else if (requestMode === "workspace_research") {
-    activities.push(
-      "Checking research depth…",
-      /claim|liability|breach|cause of action/i.test(queryText)
-        ? "Determining the main legal claims…"
-        : "Examining the legal issues…",
-    );
-  }
-
-  if (usesWorkspaceEvidence) {
-    activities.push(
-      "Organizing the supporting sources…",
-      "Synthesizing the findings…",
-    );
-    if (requestMode !== "draft") activities.push("Preparing citations…");
   }
   activities.push(
-    requestMode === "draft" ? "Creating the document…" : "Drafting the response…",
+    requestMode === "draft" ? "Preparing the document…" : "Preparing the response…",
     requestMode === "draft" ? "Refining the document…" : "Refining the response…"
   );
 

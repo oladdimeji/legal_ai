@@ -710,6 +710,62 @@ class DatabaseService {
     };
   }
 
+  public async getAssistantSafeFirmSummary(
+    context: OwnershipContext,
+    includeMembers: boolean
+  ): Promise<{
+    firmName: string;
+    firmRole: FirmRole;
+    members?: Array<{
+      name: string | null;
+      email: string;
+      professionalRole: ProfessionalRole | null;
+      customProfessionalRole: string | null;
+      firmRole: FirmRole;
+    }>;
+  } | null> {
+    const rows = await this.query(
+      `SELECT f.name AS firm_name, u.firm_role
+       FROM users u JOIN firm f ON f.id = u.firm_id
+       WHERE u.id = $1 AND u.firm_id = $2 AND f.id = $2
+         AND u.account_type = 'lawyer'`,
+      [context.userId, context.firmId]
+    );
+    if (!rows[0]) return null;
+    const firmRole = rows[0].firm_role as FirmRole;
+    const result: {
+      firmName: string;
+      firmRole: FirmRole;
+      members?: Array<{
+        name: string | null;
+        email: string;
+        professionalRole: ProfessionalRole | null;
+        customProfessionalRole: string | null;
+        firmRole: FirmRole;
+      }>;
+    } = { firmName: String(rows[0].firm_name), firmRole };
+    if (includeMembers && firmRole === "admin") {
+      const members = await this.query(
+        `SELECT name, email, professional_role, custom_professional_role, firm_role
+         FROM users WHERE firm_id = $1 AND account_type = 'lawyer'
+         ORDER BY CASE firm_role WHEN 'admin' THEN 0 ELSE 1 END,
+           LOWER(COALESCE(name, email)), LOWER(email)
+         LIMIT 50`,
+        [context.firmId]
+      );
+      result.members = members.map((member) => ({
+        name: member.name ? String(member.name) : null,
+        email: String(member.email),
+        professionalRole: (member.professional_role || null) as ProfessionalRole | null,
+        customProfessionalRole: member.custom_professional_role
+          ? String(member.custom_professional_role)
+          : null,
+        firmRole: member.firm_role as FirmRole,
+      }));
+    }
+    return result;
+  }
+
   public async updateFirmName(
     name: string,
     context: OwnershipContext
@@ -2431,6 +2487,43 @@ class DatabaseService {
     return rows[0];
   }
 
+  public async searchAssistantConversationHistory(
+    context: OwnershipContext,
+    query: string,
+    limit = 10
+  ): Promise<Array<{
+    thread_id: string;
+    title: string;
+    case_id: string | null;
+    created_at: string;
+    snippet: string;
+  }>> {
+    const normalizedLimit = Math.max(1, Math.min(20, Math.trunc(limit)));
+    const search = `%${query.trim().slice(0, 300)}%`;
+    return await this.query(
+      `SELECT t.id AS thread_id, t.title, t.case_id,
+         COALESCE(MAX(m.created_at), t.created_at) AS created_at,
+         LEFT(COALESCE(
+           (ARRAY_AGG(m.content ORDER BY
+             CASE WHEN m.content ILIKE $3 THEN 0 ELSE 1 END,
+             m.created_at DESC
+           ) FILTER (WHERE m.content IS NOT NULL))[1],
+           t.title
+         ), 500) AS snippet
+       FROM threads t
+       LEFT JOIN messages m ON m.thread_id = t.id
+       WHERE t.user_id = $1 AND t.scope <> 'client'
+         AND (t.case_id IS NULL OR EXISTS (
+           SELECT 1 FROM cases c WHERE c.id = t.case_id AND c.firm_id = $2
+         ))
+         AND (t.title ILIKE $3 OR m.content ILIKE $3)
+       GROUP BY t.id
+       ORDER BY COALESCE(MAX(m.created_at), t.created_at) DESC
+       LIMIT $4`,
+      [context.userId, context.firmId, search, normalizedLimit]
+    );
+  }
+
   public async createAssistantDocument(
     threadId: string,
     title: string,
@@ -2472,6 +2565,19 @@ class DatabaseService {
       [id, context.userId, context.firmId]
     );
     return rows[0];
+  }
+
+  public async getAssistantDocuments(
+    context: OwnershipContext,
+    limit = 25
+  ): Promise<AssistantDocument[]> {
+    const normalizedLimit = Math.max(1, Math.min(25, Math.trunc(limit)));
+    return await this.query(
+      `SELECT * FROM assistant_documents
+       WHERE user_id = $1 AND firm_id = $2
+       ORDER BY updated_at DESC LIMIT $3`,
+      [context.userId, context.firmId, normalizedLimit]
+    );
   }
 
   public async updateAssistantDocument(

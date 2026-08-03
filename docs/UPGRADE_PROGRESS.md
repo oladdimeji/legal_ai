@@ -1209,3 +1209,39 @@ Deliberate Phase 1 boundary:
 
 - The typed tool names are planner-visible, but their server-only execution registry is implemented in Phase 2.
 - Hybrid retrieval and rolling thread memory are implemented in Phase 3.
+
+## Legal LLM Plus — Phase 2: Authorized Read-Only Workspace Tools
+
+Status: Complete.
+
+Implemented:
+
+- Added a server-only registry and bounded executor for exactly these read-only capabilities: `get_account_profile`, `get_firm_summary`, `list_matters`, `find_matter`, `get_matter_overview`, `list_matter_sources`, `get_matter_intelligence`, `list_matter_work_products`, `get_work_product`, `get_matter_collaboration_summary`, `list_firm_library_documents`, `get_firm_library_document`, `search_workspace_documents`, `list_assistant_documents`, `get_assistant_document`, `search_conversation_history`, and `get_conversation`.
+- Kept tool execution internal to the authenticated lawyer message endpoint; no browser-callable arbitrary tool API was added.
+- Enforced eight attempted calls, two non-current Matters, 50 Matter rows, 25 document rows, 12 passages, bounded History, per-record truncation, and a 26,000-character total evidence budget.
+- Made current-Matter access server-authoritative and rejected forged non-current Matter IDs before database access. Explicit named Matter resolution is conservative, bounded to owned Firm Matters, and produces one focused clarification for ambiguous matches.
+- Added safe Firm summary, owned assistant-document listing, and owned non-client conversation search DB methods. Every query is scoped by authenticated user and/or Firm as required.
+- Sanitized account, Firm, Matter, Source, Intelligence, Work Product, Collaboration, Firm Library, assistant-document, and History results. Collaboration omits portal/access IDs, token hashes, and authentication data; document results omit provider links and IDs; secret-shaped text is redacted before prompting.
+- Connected tool evidence to the unified response and Draft paths with provenance-aware citations for material records. The existing Draft creation operation remains the only Assistant write behavior.
+- Replaced speculative pre-plan activity messages with neutral context/response preparation text.
+
+Schema changes:
+
+- None in Phase 2.
+
+Tests:
+
+- Added registry, account-secret exclusion, forged Matter rejection, current-Matter authorization, Collaboration secret stripping, call-budget, evidence-redaction, and scoped-context tests.
+- Updated the loading-activity regression to enforce neutral language before server planning is known.
+
+Verification:
+
+- `npm run lint`: passed via `npm.cmd`.
+- `npm test`: passed, 220/220 tests.
+- `npm run build`: passed outside the filesystem sandbox because Vite requires parent-directory access on this host.
+- Existing Vite warnings remain for `.env` `NODE_ENV=production` handling and the JavaScript chunk exceeding 500 kB.
+
+Deliberate Phase 2 boundary:
+
+- Document passage search still calls the existing semantic search implementation; hybrid ranking and retry replace that path in Phase 3.
+- Rolling conversation summaries and their additive migration are implemented in Phase 3.

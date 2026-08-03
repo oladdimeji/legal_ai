@@ -7,6 +7,10 @@ export function sanitizeEvidenceText(value: unknown, maxChars = MAX_EVIDENCE_ITE
   if (typeof value !== "string") return "";
   return value
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, " ")
+    .replace(/\bEXE-[A-Z0-9-]{6,}\b/gi, "[redacted invitation code]")
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{12,}\b/gi, "Bearer [redacted]")
+    .replace(/\b(access_token|refresh_token|session_token|portal_token|token_hash|password|api_key|client_secret)\b\s*[:=]\s*[^\s,;]+/gi, "$1=[redacted]")
+    .replace(/([?&](?:access_token|refresh_token|token|code|api_key|key)=)[^&#\s]+/gi, "$1[redacted]")
     .replace(/<\/?authorized_workspace_evidence>/gi, "[evidence-boundary]")
     .replace(/<\/?conversation_memory>/gi, "[memory-boundary]")
     .replace(/\r\n?/g, "\n")
@@ -49,4 +53,3 @@ export function wrapAuthorizedEvidence(evidence: AssistantEvidence[]): string {
     .join("\n");
   return `<authorized_workspace_evidence>\n${body || "No authorized workspace evidence was retrieved."}\n</authorized_workspace_evidence>`;
 }
-

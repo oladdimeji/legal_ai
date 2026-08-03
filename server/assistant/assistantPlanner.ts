@@ -108,14 +108,27 @@ function fallbackToolCalls(input: AssistantPlannerInput, intent: AssistantIntent
   if (/which matters?|list (?:my )?matters?|matters? (?:are|on|waiting|recent)/.test(text)) {
     return [{ name: "list_matters", arguments: {} }];
   }
-  if (input.currentMatterId && /objectives?|jurisdiction|client|matter overview|assignment|status/.test(text)) {
-    return [{ name: "get_matter_overview", arguments: { matterId: input.currentMatterId } }];
+  const comparisonMatter = input.currentMatterId && /\bcompare\b/.test(text)
+    ? input.content.match(/(?:with|and)\s+(?:the\s+)?(.{2,80}?)\s+Matter\b/i)?.[1]?.trim()
+    : null;
+  if (input.currentMatterId && comparisonMatter) {
+    return [
+      { name: "get_matter_overview", arguments: { matterId: input.currentMatterId } },
+      { name: "find_matter", arguments: { query: comparisonMatter } },
+    ];
   }
-  if (input.currentMatterId && /client (?:say|said|response)|collaboration|waiting for the client|comments?/.test(text)) {
-    return [{ name: "get_matter_collaboration_summary", arguments: { matterId: input.currentMatterId } }];
-  }
-  if (input.currentMatterId && /work product|draft/.test(text)) {
-    return [{ name: "list_matter_work_products", arguments: { matterId: input.currentMatterId } }];
+  if (input.currentMatterId) {
+    const calls: AssistantToolCall[] = [];
+    if (/client (?:say|said|response)|collaboration|waiting for the client|comments?/.test(text)) {
+      calls.push({ name: "get_matter_collaboration_summary", arguments: { matterId: input.currentMatterId } });
+    }
+    if (/objectives?|jurisdiction|matter overview|assignment|matter status/.test(text)) {
+      calls.push({ name: "get_matter_overview", arguments: { matterId: input.currentMatterId } });
+    }
+    if (/work product|draft/.test(text)) {
+      calls.push({ name: "list_matter_work_products", arguments: { matterId: input.currentMatterId } });
+    }
+    if (calls.length) return calls;
   }
   if (input.currentMatterId) {
     return [{ name: "search_workspace_documents", arguments: { matterId: input.currentMatterId, query: input.content } }];
@@ -203,6 +216,6 @@ ${JSON.stringify({
 export function legacyRequestMode(plan: AssistantPlan): "ui_help" | "general" | "workspace_research" | "deep_research" | "draft" {
   if (plan.intent === "draft") return "draft";
   if (plan.intent === "product_help") return "ui_help";
-  if (plan.intent === "general_conversation" && !plan.needsWorkspace) return "general";
+  if (!plan.needsWorkspace) return "general";
   return plan.depth === "thorough" ? "deep_research" : "workspace_research";
 }

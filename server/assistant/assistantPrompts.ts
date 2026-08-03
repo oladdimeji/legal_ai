@@ -31,6 +31,7 @@ Current task requirements:
 - Live web research is ${input.webSearchEnabled && input.plan.needsWeb ? "enabled for this response" : "not being used for this response"}. Do not claim current-law verification unless live grounding is present.
 - Authorized locations actually checked: ${checked}
 - Never say a location was checked unless it appears in that list.
+- When an evidence record has an id beginning with cit_, cite supported material workspace claims inline using that exact bracketed id. Do not invent citation ids and do not force citations onto trivial account or UI answers.
 
 Server-validated session context:
 ${sessionContextForPrompt(input.session)}
@@ -45,4 +46,3 @@ ${input.evidenceBlock}
 User request:
 ${input.request}`;
 }
-

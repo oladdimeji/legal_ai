@@ -40,17 +40,12 @@ test("Assistant uses rotating working statuses and completes designed response s
 
   assert.doesNotMatch(assistant, /ANALYZING MATERIALS|Analyzing materials|connector API endpoints/i);
   assert.match(assistant, /Understanding your request…/);
-  assert.match(assistant, /Identifying the relevant context…/);
-  assert.match(assistant, /Reviewing Matter sources…/);
-  assert.doesNotMatch(assistant, /Reviewing Firm Library materials…/);
-  assert.match(assistant, /Reviewing the visible page and actions…/);
+  assert.match(assistant, /Checking the relevant context…/);
+  assert.doesNotMatch(assistant, /Reviewing Matter sources…|Reviewing Firm Library materials…/);
   assert.match(assistant, /hasAttachments[\s\S]*Reviewing attached documents…/);
-  assert.match(assistant, /if \(webSearchEnabled\) activities\.push\("Searching the web…"\)/);
-  assert.match(assistant, /if \(requestMode === "deep_research"\)[\s\S]*Breaking the question into research steps…/);
-  assert.match(assistant, /Searching the web…/);
-  assert.match(assistant, /Checking research depth…/);
+  assert.doesNotMatch(assistant, /Searching the web…|Breaking the question into research steps…|Checking research depth…/);
   assert.match(assistant, /Refining the response…/);
-  assert.doesNotMatch(assistant, /Preparing the response…/);
+  assert.match(assistant, /Preparing the response…/);
   assert.match(assistant, /const WORKING_ACTIVITY_DELAY_MS = 2000/);
   assert.match(assistant, /\(current \+ 1\) % workingStages\.length/);
   assert.doesNotMatch(assistant, /Math\.min\(current \+ 1, workingStages\.length - 1\)/);

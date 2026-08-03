@@ -45,6 +45,9 @@ import {
 import { LAWYER_ASSISTANT_CHARTER } from "./server/assistant/assistantCharter.js";
 import { buildAssistantSessionContext, sessionContextForPrompt } from "./server/assistant/assistantContext.js";
 import { legacyRequestMode, planAssistantRequest } from "./server/assistant/assistantPlanner.js";
+import { executeAssistantToolPlan } from "./server/assistant/assistantToolExecutor.js";
+import { wrapAuthorizedEvidence } from "./server/assistant/assistantEvidence.js";
+import { adaptiveAssistantTemperature, buildAssistantTaskPrompt } from "./server/assistant/assistantPrompts.js";
 import {
   SESSION_COOKIE_NAME,
   SESSION_TTL_MS,
@@ -2064,6 +2067,60 @@ ${sourceText}`;
         .map(conversationMessageForPrompt)
         .join("\n\n");
       const retrievalQuery = [...conversationHistory.filter((m) => m.role === "user").slice(-3).map((m) => m.content), content].join("\n");
+      const toolRun = await executeAssistantToolPlan({
+        plan: assistantPlan,
+        account: (req as AuthenticatedRequest).auth!,
+        ownership: requestOwnership,
+        currentMatterId,
+        request: content,
+      });
+      if (selectedEntityEvidence) {
+        toolRun.evidence.unshift({
+          id: "selected_entity",
+          sourceType: selectedItem?.kind === "workProduct"
+            ? "workProduct"
+            : selectedItem?.kind === "assistantDocument"
+              ? "assistantDocument"
+              : selectedItem?.kind === "libraryDocument"
+                ? "firmLibrary"
+                : "matterSource",
+          title: selectedEntityEvidence.title,
+          sourceName: selectedEntityEvidence.sourceName,
+          text: selectedEntityEvidence.text,
+          entityId: selectedItem?.id,
+          ...(currentMatterId ? { matterId: currentMatterId } : {}),
+        });
+      }
+      for (const [index, file] of temporaryFiles.entries()) {
+        toolRun.evidence.push({
+          id: `temporary_${index + 1}`,
+          sourceType: "temporaryAttachment",
+          title: file.filename,
+          sourceName: "Temporary File Attachment",
+          text: file.text,
+        });
+      }
+
+      const clarificationQuestion = assistantPlan.needsClarification
+        ? assistantPlan.clarificationQuestion
+        : toolRun.clarificationQuestion;
+      if (clarificationQuestion) {
+        const assistantMessage = await db.addMessage(
+          threadId,
+          "assistant",
+          clarificationQuestion,
+          requestOwnership,
+          [],
+          null,
+          { suggestions: [], requestMode: assistantMode, assistantIntent: assistantPlan.intent }
+        );
+        return res.status(201).json({
+          userMessage,
+          assistantMessage,
+          requestMode: assistantMode,
+          assistantIntent: assistantPlan.intent,
+        });
+      }
 
       if (assistantMode === "draft") {
         const shouldRetrieveWorkspace = assistantDraftNeedsWorkspaceEvidence({
@@ -2073,6 +2130,9 @@ ${sourceText}`;
           instruction: content,
         });
         const evidenceParts: string[] = [];
+        for (const item of toolRun.evidence) {
+          evidenceParts.push(`${item.sourceName}: ${item.title}\n${cleanSourceText(item.text).slice(0, 15000)}`);
+        }
         let draftResearchQuestions = [content];
         if (forceDeepResearch === true) {
           try {
@@ -2192,6 +2252,73 @@ ${sourceText}`;
           requestMode: assistantMode,
           assistantIntent: assistantPlan.intent,
           document: documentReference,
+        });
+      }
+
+      if (assistantPlan.needsWorkspace || toolRun.evidence.length > 0) {
+        const citations: Citation[] = toolRun.evidence
+          .filter((item) => !["account", "firm"].includes(item.sourceType))
+          .slice(0, 12)
+          .map((item, index) => ({
+            id: `cit_${index + 1}`,
+            type: "workspace" as const,
+            title: item.title,
+            textSnippet: cleanSourceText(item.text).slice(0, 4_000),
+            sourceName: item.sourceName,
+          }));
+        const evidenceWithCitationIds = toolRun.evidence.map((item) => {
+          const citation = citations.find((candidate) =>
+            candidate.title === item.title && candidate.sourceName === item.sourceName
+          );
+          return citation ? { ...item, id: citation.id } : item;
+        });
+        const prompt = buildAssistantTaskPrompt({
+          request: content,
+          plan: assistantPlan,
+          session: assistantSession,
+          conversationContext,
+          evidenceBlock: wrapAuthorizedEvidence(evidenceWithCitationIds),
+          checkedLocations: toolRun.checkedLocations,
+          webSearchEnabled: enableWebSearch === true,
+        });
+        const modelResult = await callModel("chat", [{ role: "user", content: prompt }], {
+          googleSearch: enableWebSearch === true && assistantPlan.needsWeb,
+          temperature: adaptiveAssistantTemperature(assistantPlan),
+          systemInstruction: LAWYER_ASSISTANT_CHARTER,
+        });
+        const groundingCitationIds: Record<number, string> = {};
+        if (modelResult.groundingMetadata?.groundingChunks) {
+          modelResult.groundingMetadata.groundingChunks.forEach((chunk: any, index: number) => {
+            if (!chunk.web) return;
+            const citation: Citation = {
+              id: `cit_${citations.length + 1}`,
+              type: "web",
+              title: chunk.web.title || "Web Reference",
+              url: chunk.web.uri,
+              textSnippet: "Live Web Search Grounding source.",
+              sourceName: "Google Search Grounding",
+            };
+            citations.push(citation);
+            groundingCitationIds[index] = citation.id;
+          });
+        }
+        const rewritten = rewriteGoogleGroundingCitations(modelResult.text, groundingCitationIds);
+        const finalContent = canonicalizeAssistantCitations(cleanGeneratedText(rewritten), citations);
+        const suggestions = await generateFollowUpSuggestions([...conversationHistory], finalContent);
+        const assistantMessage = await db.addMessage(
+          threadId,
+          "assistant",
+          finalContent,
+          requestOwnership,
+          citations,
+          null,
+          { suggestions, requestMode: assistantMode, assistantIntent: assistantPlan.intent }
+        );
+        return res.status(201).json({
+          userMessage,
+          assistantMessage,
+          requestMode: assistantMode,
+          assistantIntent: assistantPlan.intent,
         });
       }
 
