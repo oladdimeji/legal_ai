@@ -55,7 +55,7 @@ export function parseRoute(pathname: string): AppRoute {
   return { kind: "unknown" };
 }
 
-export function safeReturnTo(value: string | null, fallback = "/assistant"): string {
+export function safeReturnTo(value: string | null, fallback = "/matters"): string {
   if (!value || !value.startsWith("/") || value.startsWith("//") || value.includes("\\")) {
     return fallback;
   }

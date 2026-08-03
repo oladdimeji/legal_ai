@@ -995,3 +995,32 @@ Manual checks:
 - Aligned `.env.example`, deployment guidance, and focused regression coverage with the default-locked behavior.
 - No authentication flow, route enforcement, schema, dependency, account, session, or production data behavior changed beyond the lock default.
 - Verification passed: 11/11 focused tests, `npm run lint`, 167/167 full tests, and `npm run build` with the existing Vite warnings.
+
+## Lawyer Workspace Redesign — Phase 1
+
+Status: Complete.
+
+Implemented:
+
+- Replaced the lawyer sidebar with a persistent, full-height assistant panel and a lawyer-only top navigation containing Matters, Firm Library, and History.
+- Added pointer and keyboard resizing, viewport-safe width clamping, and saved width restoration through `exepts.assistantPanelWidth`.
+- Added a compact assistant header with the Exepts and Firm identity, current context, and New conversation action.
+- Added the lawyer profile footer and account menu with Settings and Log out; Settings continues to render in the main workspace.
+- Changed authenticated and onboarded lawyer defaults to `/matters`; `/assistant` remains parseable and return-to safe but redirects authenticated lawyers to Matters.
+- Kept the client workspace and its navigation branch unchanged.
+- Replaced the full-page assistant empty state with a compact panel state and made the response editor an overlay.
+- Removed the obsolete lawyer `Sidebar.tsx` after confirming there were no remaining imports.
+
+Schema changes:
+
+- None.
+
+Tests:
+
+- Added focused routing, top-navigation, profile-menu, persistent-panel, resize accessibility, stored-width clamping, compact-empty-state, client-shell preservation, and legacy-assistant-bookmark coverage.
+- Updated prior source-level regressions that intentionally referenced the retired lawyer sidebar or old lawyer default route.
+
+Verification:
+
+- `npm ci`: passed.
+- `npm run verify`: passed after the Phase 1 changes.

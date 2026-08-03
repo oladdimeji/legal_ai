@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import Sidebar from "./components/Sidebar";
 import AssistantView from "./components/AssistantView";
+import LawyerWorkspaceShell from "./components/LawyerWorkspaceShell";
 import FirmLibraryView from "./components/FirmLibraryView";
 import MattersView from "./components/MattersView";
 import SettingsView from "./components/SettingsView";
@@ -55,7 +55,6 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(true);
   const [initialDraftId, setInitialDraftId] = useState<string | null>(null);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
 
   const navigate = useCallback((path: string, replace = false) => {
     if (`${window.location.pathname}${window.location.search}${window.location.hash}` === path) {
@@ -145,7 +144,7 @@ export default function App() {
     }
     if (clientRouteKinds.has(route.kind)) {
       navigate(
-        account.user.onboarding_completed && account.firm ? "/assistant" : "/onboarding",
+        account.user.onboarding_completed && account.firm ? "/matters" : "/onboarding",
         true
       );
       return;
@@ -158,9 +157,10 @@ export default function App() {
       route.kind === "landing" ||
       route.kind === "auth" ||
       route.kind === "onboarding" ||
-      route.kind === "unknown"
+      route.kind === "unknown" ||
+      route.kind === "assistant"
     ) {
-      navigate("/assistant", true);
+      navigate("/matters", true);
     }
   }, [account, authLoading, navigate, route, siteStatus]);
 
@@ -189,7 +189,8 @@ export default function App() {
   useEffect(() => {
     if (route.kind === "matter") {
       setActiveCaseId(route.matterId);
-      setActiveThreadId(null);
+    } else {
+      setActiveCaseId(null);
     }
   }, [route]);
 
@@ -210,8 +211,6 @@ export default function App() {
 
   const handleStartNewThread = () => {
     setActiveThreadId(null);
-    setIsSidebarCollapsed(false);
-    navigate("/assistant");
   };
 
   const handleLogout = async () => {
@@ -247,7 +246,7 @@ export default function App() {
           accountMode={accountMode}
           returnTo={safeReturnTo(
             params.get("returnTo"),
-            accountMode === "client" ? "/client/assistant" : "/assistant"
+            accountMode === "client" ? "/client/assistant" : "/matters"
           )}
           initialError={params.get("authError") || ""}
           onAuthenticated={(nextAccount, redirectTo) => {
@@ -256,7 +255,7 @@ export default function App() {
               nextAccount.user.account_type === "client"
                 ? safeReturnTo(redirectTo, "/client/assistant")
                 : nextAccount.user.onboarding_completed
-                  ? safeReturnTo(redirectTo)
+                  ? safeReturnTo(redirectTo, "/matters")
                   : "/onboarding",
               true
             );
@@ -292,82 +291,82 @@ export default function App() {
         account={account}
         onCompleted={(nextAccount) => {
           setAccount(nextAccount);
-          navigate("/assistant", true);
+          navigate("/matters", true);
         }}
       />
     );
   }
 
-  const activeTab = route.kind === "matter" ? "matters" : route.kind;
-  const goToTab = (tab: string) => {
-    const paths: Record<string, string> = {
-      assistant: "/assistant",
-      matters: "/matters",
-      library: "/library",
-      history: "/history",
-      settings: "/settings",
-    };
-    navigate(paths[tab] || "/assistant");
-  };
+  const activeNavigation = route.kind === "matter"
+    ? "matters"
+    : route.kind === "matters" || route.kind === "library" || route.kind === "history"
+      ? route.kind
+      : null;
+  const activeMatter = route.kind === "matter"
+    ? cases.find((matter) => matter.id === route.matterId)
+    : null;
+  const assistantContextLabel = activeMatter
+    ? `Matter · ${activeMatter.name}`
+    : route.kind === "library"
+      ? "Firm Library"
+      : route.kind === "history"
+        ? "History"
+        : route.kind === "settings"
+          ? "Settings"
+          : "Matters";
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-white font-sans text-zinc-900">
-      <Sidebar
-        activeTab={activeTab}
-        setActiveTab={goToTab}
-        firmName={account.firm.name}
-        userName={account.user.name || ""}
-        userEmail={account.user.email}
-        onLogout={handleLogout}
-        isCollapsed={isSidebarCollapsed}
-        setIsCollapsed={setIsSidebarCollapsed}
-        onStartNewThread={handleStartNewThread}
-      />
-
-      <main className="flex h-full flex-1 flex-col overflow-hidden">
-        {route.kind === "assistant" && (
-          <AssistantView
-            cases={cases}
-            activeCaseId={activeCaseId}
-            setActiveCaseId={setActiveCaseId}
-            activeThreadId={activeThreadId}
-            setActiveThreadId={setActiveThreadId}
-            onMessagesChange={() => undefined}
-            onNavigateToDrafts={handleNavigateToDrafts}
-          />
-        )}
-        {route.kind === "matters" && (
-          <MattersView matters={cases} onRefresh={fetchCases} onOpenMatter={handleOpenMatter} />
-        )}
-        {route.kind === "library" && <FirmLibraryView />}
-        {route.kind === "matter" && (
-          <MatterWorkspaceView
-            matterId={route.matterId}
-            onBack={() => navigate("/matters")}
-            onMatterChange={handleMatterChange}
-            initialDraftId={initialDraftId}
-            onClearInitialDraftId={() => setInitialDraftId(null)}
-          />
-        )}
-        {route.kind === "history" && (
-          <HistoryView
-            cases={cases}
-            activeThreadId={activeThreadId}
-            onSelectThread={(thread) => {
-              setActiveCaseId(thread.case_id);
-              setActiveThreadId(thread.id);
-              navigate("/assistant");
-            }}
-          />
-        )}
-        {route.kind === "settings" && (
-          <SettingsView
-            account={account}
-            onAccountUpdated={setAccount}
-            onLogout={handleLogout}
-          />
-        )}
-      </main>
-    </div>
+    <LawyerWorkspaceShell
+      account={account}
+      activeNavigation={activeNavigation}
+      assistantContextLabel={assistantContextLabel}
+      navigate={navigate}
+      onLogout={handleLogout}
+      onStartNewConversation={handleStartNewThread}
+      assistant={
+        <AssistantView
+          cases={cases}
+          activeCaseId={activeCaseId}
+          setActiveCaseId={setActiveCaseId}
+          activeThreadId={activeThreadId}
+          setActiveThreadId={setActiveThreadId}
+          onMessagesChange={() => undefined}
+          onNavigateToDrafts={handleNavigateToDrafts}
+          compact
+        />
+      }
+    >
+      {route.kind === "matters" && (
+        <MattersView matters={cases} onRefresh={fetchCases} onOpenMatter={handleOpenMatter} />
+      )}
+      {route.kind === "library" && <FirmLibraryView />}
+      {route.kind === "matter" && (
+        <MatterWorkspaceView
+          matterId={route.matterId}
+          onBack={() => navigate("/matters")}
+          onMatterChange={handleMatterChange}
+          initialDraftId={initialDraftId}
+          onClearInitialDraftId={() => setInitialDraftId(null)}
+        />
+      )}
+      {route.kind === "history" && (
+        <HistoryView
+          cases={cases}
+          activeThreadId={activeThreadId}
+          onSelectThread={(thread) => {
+            setActiveCaseId(thread.case_id);
+            setActiveThreadId(thread.id);
+            if (thread.case_id) navigate(`/matters/${encodeURIComponent(thread.case_id)}`);
+          }}
+        />
+      )}
+      {route.kind === "settings" && (
+        <SettingsView
+          account={account}
+          onAccountUpdated={setAccount}
+          onLogout={handleLogout}
+        />
+      )}
+    </LawyerWorkspaceShell>
   );
 }

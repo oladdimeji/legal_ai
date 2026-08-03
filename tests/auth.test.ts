@@ -50,11 +50,11 @@ test("OTP values are six digits, salted, and only verify against the matching ha
 
 test("safe internal returns reject external and entry-flow redirects", () => {
   assert.equal(safeInternalPath("/matters/matter_1?tab=work"), "/matters/matter_1?tab=work");
-  assert.equal(safeInternalPath("https://attacker.example"), "/assistant");
-  assert.equal(safeInternalPath("//attacker.example/path"), "/assistant");
-  assert.equal(safeInternalPath("/\\attacker.example"), "/assistant");
-  assert.equal(safeInternalPath("/onboarding"), "/assistant");
-  assert.equal(safeInternalPath("/auth?returnTo=/settings"), "/assistant");
+  assert.equal(safeInternalPath("https://attacker.example"), "/matters");
+  assert.equal(safeInternalPath("//attacker.example/path"), "/matters");
+  assert.equal(safeInternalPath("/\\attacker.example"), "/matters");
+  assert.equal(safeInternalPath("/onboarding"), "/matters");
+  assert.equal(safeInternalPath("/auth?returnTo=/settings"), "/matters");
 });
 
 test("OAuth state is random, bound to its HTTP-only cookie payload, and single-context validated", () => {

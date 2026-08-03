@@ -4,10 +4,10 @@ import test from "node:test";
 import { cleanMatterIntelligenceContent } from "../server/matterIntelligenceContent.js";
 
 test("Phase 3 navigation separates Matters and Firm Library", async () => {
-  const sidebar = await readFile("src/components/Sidebar.tsx", "utf8");
-  assert.match(sidebar, /id: "matters", label: "Matters"/);
-  assert.match(sidebar, /id: "library", label: "Firm Library"/);
-  assert.doesNotMatch(sidebar, /Workspace & Library/);
+  const shell = await readFile("src/components/LawyerWorkspaceShell.tsx", "utf8");
+  assert.match(shell, /id: "matters", label: "Matters"/);
+  assert.match(shell, /id: "library", label: "Firm Library"/);
+  assert.doesNotMatch(shell, /Workspace & Library/);
 });
 
 test("Firm Library has no Matter navigation or creation controls", async () => {
@@ -69,12 +69,12 @@ test("Phase 5 History groups by stored context and recent activity", async () =>
 });
 
 test("Phase 6 Work Product is Matter-scoped and global Draft navigation is removed", async () => {
-  const [sidebar, workspace, server] = await Promise.all([
-    readFile("src/components/Sidebar.tsx", "utf8"),
+  const [shell, workspace, server] = await Promise.all([
+    readFile("src/components/LawyerWorkspaceShell.tsx", "utf8"),
     readFile("src/components/MatterWorkspaceView.tsx", "utf8"),
     readFile("server.ts", "utf8"),
   ]);
-  assert.doesNotMatch(sidebar, /Drafts & Documents/);
+  assert.doesNotMatch(shell, /Drafts & Documents/);
   assert.match(workspace, /<DraftEditorView[\s\S]*caseId=\{matter\.id\}/);
   assert.match(server, /\/api\/cases\/:caseId\/work-product/);
   assert.match(server, /Matter context is required/);
@@ -195,14 +195,14 @@ test("migration 009 keeps portal comments while Phase 13 removes temporary Assis
 });
 
 test("Phase 10 removes obsolete combined and global Draft surfaces", async () => {
-  const [app, sidebar, server] = await Promise.all([
+  const [app, shell, server] = await Promise.all([
     readFile("src/App.tsx", "utf8"),
-    readFile("src/components/Sidebar.tsx", "utf8"),
+    readFile("src/components/LawyerWorkspaceShell.tsx", "utf8"),
     readFile("server.ts", "utf8"),
   ]);
   await assert.rejects(readFile("src/components/WorkspaceView.tsx", "utf8"));
   assert.doesNotMatch(app, /components\/WorkspaceView|components\/DraftsView/);
-  assert.doesNotMatch(sidebar, /Wide Library|Drafts & Documents|Workspace & Library/);
+  assert.doesNotMatch(shell, /Wide Library|Drafts & Documents|Workspace & Library/);
   assert.doesNotMatch(server, /app\.get\("\/api\/drafts",/);
   assert.match(server, /app\.get\("\/api\/cases\/:caseId\/work-product"/);
 });
@@ -220,9 +220,9 @@ test("Phase 10 removes misleading editor and attachment controls", async () => {
   assert.doesNotMatch(editor, /Format Painter|Show Edits|version-selector|V3 \(Current Work Product\)/);
 });
 
-test("Phase 11 Assistant keeps sidebar state user-controlled", async () => {
+test("Phase 11 Assistant remains mounted in the lawyer workspace shell", async () => {
   const app = await readFile("src/App.tsx", "utf8");
-  assert.doesNotMatch(app, /setIsSidebarCollapsed\(true\)/);
+  assert.match(app, /assistant=\{[\s\S]*<AssistantView/);
   assert.match(app, /onMessagesChange=\{\(\) => undefined\}/);
 });
 

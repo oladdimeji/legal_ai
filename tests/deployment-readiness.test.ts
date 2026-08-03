@@ -2,21 +2,21 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-test("Exepts branding is text-only in the authentication and sidebar brand areas", async () => {
-  const [auth, sidebar, assistant, html, metadata] = await Promise.all([
+test("Exepts branding is text-only in the authentication and lawyer shell brand areas", async () => {
+  const [auth, shell, assistant, html, metadata] = await Promise.all([
     readFile("src/components/AuthView.tsx", "utf8"),
-    readFile("src/components/Sidebar.tsx", "utf8"),
+    readFile("src/components/LawyerWorkspaceShell.tsx", "utf8"),
     readFile("src/components/AssistantView.tsx", "utf8"),
     readFile("index.html", "utf8"),
     readFile("metadata.json", "utf8"),
   ]);
 
-  for (const source of [auth, sidebar]) {
+  for (const source of [auth, shell]) {
     assert.match(source, /Exepts/);
     assert.doesNotMatch(source, /\bScale\b|<Scale/);
   }
-  assert.match(sidebar, />E<\/span>/);
-  assert.match(sidebar, /aria-label=\{collapsedActual \? "Expand Sidebar" : "Collapse Sidebar"\}/);
+  assert.match(shell, /Exepts assistant panel/);
+  assert.match(shell, /account\.firm\?\.name/);
   assert.match(assistant, /Failed to contact Exepts model service/);
   assert.match(html, /<title>Exepts<\/title>/);
   assert.equal(JSON.parse(metadata).name, "Exepts");

@@ -682,7 +682,7 @@ async function startServer() {
         customPracticeArea: practiceAreas.includes("Other") ? customPracticeArea : null,
       });
       res.setHeader("Cache-Control", "no-store");
-      return res.json({ account, redirectTo: "/assistant" });
+      return res.json({ account, redirectTo: "/matters" });
     } catch (error) {
       if (error instanceof Error && error.message === "INVALID_INVITATION_CODE") {
         return res.status(400).json({ error: "That Firm invitation code is invalid." });

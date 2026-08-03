@@ -32,6 +32,7 @@ interface AssistantViewProps {
   setActiveThreadId: (id: string | null) => void;
   onMessagesChange: (count: number) => void;
   onNavigateToDrafts: (draftId: string) => void;
+  compact?: boolean;
 }
 
 const STOP_WORDS = new Set([
@@ -186,7 +187,8 @@ export default function AssistantView({
   activeThreadId,
   setActiveThreadId,
   onMessagesChange,
-  onNavigateToDrafts
+  onNavigateToDrafts,
+  compact = false,
 }: AssistantViewProps) {
   const [threads, setThreads] = useState<Thread[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -838,8 +840,8 @@ export default function AssistantView({
           />
 
           {/* Bottom control row inside the unified container */}
-          <div className="flex items-center justify-between select-none pt-2 border-t border-zinc-100 bg-white">
-            <div className="flex items-center gap-2 relative">
+          <div className="flex flex-wrap items-center justify-between gap-2 select-none pt-2 border-t border-zinc-100 bg-white">
+            <div className="flex min-w-0 flex-wrap items-center gap-2 relative">
               {/* Streamlined Workspace project selector dropdown */}
               <div className="relative inline-block">
                 <select
@@ -952,7 +954,7 @@ export default function AssistantView({
             </div>
 
             {/* Right Side Controls */}
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-2">
               <label className="inline-flex items-center gap-1.5 cursor-pointer select-none">
                 <input
                   type="checkbox"
@@ -1011,7 +1013,7 @@ export default function AssistantView({
   const renderCitationPanel = () => {
     if (!citationPanelSource) return null;
     return (
-      <div className="w-96 bg-white border-l border-zinc-200 flex flex-col h-full animate-fade-in shrink-0" id="citation-panel">
+      <div className="fixed inset-6 z-50 flex max-w-2xl flex-col overflow-hidden rounded border border-zinc-200 bg-white shadow-2xl animate-fade-in sm:left-auto sm:w-[min(38rem,calc(100vw-3rem))]" id="citation-panel">
         <div className="p-4.5 border-b border-zinc-200 flex items-center justify-between select-none">
           <span className="text-xs font-mono font-semibold uppercase tracking-wider text-zinc-500 font-sans">Source Citations</span>
           <button
@@ -1086,14 +1088,14 @@ export default function AssistantView({
   };
 
   return (
-    <div className="flex-1 flex h-full overflow-hidden bg-white text-zinc-900" id="assistant-view-container">
+    <div className="flex h-full min-w-0 flex-1 overflow-hidden bg-white text-zinc-900" id="assistant-view-container" data-compact={compact ? "true" : "false"}>
       {/* Central Consultation Screen */}
       <div className="flex-1 flex flex-col h-full overflow-hidden relative border-r border-zinc-100">
         
         {messages.length > 0 ? (
           <>
             {/* Simple Thread Title Header (Only if there are messages) */}
-            <div className="px-8 py-4.5 bg-zinc-50 border-b border-zinc-100 flex items-center justify-between z-10 select-none shrink-0" id="active-thread-header">
+            <div className={`${compact ? "hidden" : "flex"} px-8 py-4.5 bg-zinc-50 border-b border-zinc-100 items-center justify-between z-10 select-none shrink-0`} id="active-thread-header">
               <div>
                 <span className="text-xs font-mono font-semibold uppercase text-zinc-400 tracking-wider">{activeCaseId ? `Matter Context · ${cases.find((matter) => matter.id === activeCaseId)?.name || "Matter"}` : "General Assistant Context"}</span>
                 <h2 className="text-sm font-sans font-semibold text-zinc-800 line-clamp-1 mt-0.5">
@@ -1115,7 +1117,7 @@ export default function AssistantView({
             </div>
 
             {/* Message Thread History List */}
-            <div className="flex-1 overflow-y-auto px-8 py-6 space-y-2" id="chat-messages-scroll-area">
+            <div className={`flex-1 overflow-y-auto space-y-2 ${compact ? "px-4 py-4" : "px-8 py-6"}`} id="chat-messages-scroll-area">
               {messages.map((m, index) => {
                 const isLastMessage = index === messages.length - 1;
                 const lastAssistantMessageId = [...messages]
@@ -1318,33 +1320,21 @@ export default function AssistantView({
             </div>
 
             {/* Pinned bottom-anchored Ask Bar Form wrapper */}
-            <div className="px-8 py-6 bg-white border-t border-zinc-100 shrink-0" id="ask-bar-container">
+            <div className={`${compact ? "p-3" : "px-8 py-6"} bg-white border-t border-zinc-100 shrink-0`} id="ask-bar-container">
               {renderAskBarForm()}
             </div>
           </>
         ) : (
-          /* Centered first-message layout - fresh chat page */
-          <div className="flex-1 flex flex-col items-center justify-center px-8 overflow-y-auto bg-white" id="centered-chat-container">
-            <div className="w-full max-w-3xl py-12 space-y-10 flex flex-col items-center text-center">
-              
-              {/* Center Banner Title */}
-              <div className="flex flex-col items-center">
-                <div className="w-12 h-12 rounded-full bg-zinc-100 border border-zinc-200 flex items-center justify-center mb-5">
-                  <MessageSquare className="h-5 w-5 text-zinc-800" />
-                </div>
-                <h1 className="text-xl font-bold text-zinc-900 uppercase tracking-tight font-sans">Legal Assistant</h1>
-                <p className="text-sm text-zinc-500 mt-2.5 max-w-md leading-relaxed">
-                  {activeCaseId ? `Working only with Sources for ${cases.find((matter) => matter.id === activeCaseId)?.name || "this Matter"} and permitted external sources.` : "General context uses only the Firm Library and permitted external sources."}
+          <div className={`flex flex-1 flex-col overflow-y-auto bg-white ${compact ? "justify-end p-3" : "items-center justify-center px-8"}`} id="compact-empty-conversation">
+            <div className={`w-full ${compact ? "space-y-3" : "max-w-3xl space-y-8 py-12"}`}>
+              <div className={compact ? "rounded border border-dashed border-zinc-200 px-4 py-3" : "text-center"}>
+                <p className="text-xs font-semibold text-zinc-800">Start a conversation</p>
+                <p className="mt-1 text-xs leading-relaxed text-zinc-500">
+                  Ask about the page you are working on, research a question, or attach a temporary file.
                 </p>
               </div>
-
-              {/* Centered Ask Bar Box */}
-              <div className="w-full text-left">
-                {renderAskBarForm()}
-              </div>
-
-              {/* Suggestion pills directly beneath centered box */}
-              {renderFirstMessageSuggestions()}
+              <div className="w-full text-left">{renderAskBarForm()}</div>
+              {!compact && renderFirstMessageSuggestions()}
             </div>
           </div>
         )}
@@ -1355,7 +1345,7 @@ export default function AssistantView({
 
       {/* Docked Response Editor Panel */}
       {sideEditorMessageId && (
-        <div className="w-[450px] bg-white border-l border-zinc-200 flex flex-col h-full animate-fade-in shrink-0" id="response-editor-panel">
+        <div className="fixed inset-6 z-50 flex flex-col overflow-hidden rounded border border-zinc-200 bg-white shadow-2xl animate-fade-in" id="response-editor-panel" role="dialog" aria-modal="true" aria-label="Response editor">
           <div className="p-4 border-b border-zinc-200 flex items-center justify-between select-none bg-zinc-50">
             <div className="flex items-center gap-2">
               <FileText className="h-4 w-4 text-zinc-600" />

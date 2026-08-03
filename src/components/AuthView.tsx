@@ -82,7 +82,7 @@ export default function AuthView({
       if (!response.ok || !data.account) {
         throw new Error(data.error || "Unable to verify the code.");
       }
-      onAuthenticated(data.account, data.redirectTo || "/assistant");
+      onAuthenticated(data.account, data.redirectTo || "/matters");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to verify the code.");
     } finally {

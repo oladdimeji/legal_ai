@@ -142,7 +142,7 @@ export function isValidEmail(value: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeEmail(value));
 }
 
-export function safeInternalPath(value: unknown, fallback = "/assistant"): string {
+export function safeInternalPath(value: unknown, fallback = "/matters"): string {
   if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) {
     return fallback;
   }
@@ -231,20 +231,20 @@ export function validateOAuthState(
   cookieValue: string | null
 ): { valid: boolean; returnTo: string } {
   if (typeof suppliedState !== "string" || !cookieValue) {
-    return { valid: false, returnTo: "/assistant" };
+    return { valid: false, returnTo: "/matters" };
   }
   try {
     const parsed = JSON.parse(Buffer.from(cookieValue, "base64url").toString("utf8")) as {
       state?: unknown;
       returnTo?: unknown;
     };
-    if (typeof parsed.state !== "string") return { valid: false, returnTo: "/assistant" };
+    if (typeof parsed.state !== "string") return { valid: false, returnTo: "/matters" };
     const supplied = Buffer.from(suppliedState);
     const expected = Buffer.from(parsed.state);
     const valid = supplied.length === expected.length && timingSafeEqual(supplied, expected);
-    return { valid, returnTo: valid ? safeInternalPath(parsed.returnTo) : "/assistant" };
+    return { valid, returnTo: valid ? safeInternalPath(parsed.returnTo) : "/matters" };
   } catch {
-    return { valid: false, returnTo: "/assistant" };
+    return { valid: false, returnTo: "/matters" };
   }
 }
 
