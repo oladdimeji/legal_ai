@@ -2,6 +2,11 @@
 
 FROM node:22-bookworm-slim AS build
 
+ARG VITE_GOOGLE_DRIVE_CLIENT_ID
+ARG VITE_GOOGLE_DRIVE_API_KEY
+ARG VITE_GOOGLE_DRIVE_APP_ID
+ARG VITE_DROPBOX_APP_KEY
+
 WORKDIR /app
 
 COPY package.json package-lock.json ./
