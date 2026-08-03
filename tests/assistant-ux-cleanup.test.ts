@@ -66,7 +66,8 @@ test("Assistant uses rotating working statuses and completes designed response s
   assert.match(assistant, /message\.id === savedAssistantMessage\.id \? savedAssistantMessage : message/);
   assert.match(assistant, /message\.id !== savedUserMessage\.id && message\.id !== savedAssistantMessage\.id/);
   assert.match(assistant, /message\.id === tempUserMsg\.id \? savedUserMessage : message/);
-  assert.match(assistant, /streaming \? "Responding\.\.\." : loading \? "Sending\.\.\."/);
+  assert.match(assistant, /streaming \? \(draftMode \? "Creating\.\.\." : "Responding\.\.\."\)/);
+  assert.match(assistant, /draftMode \? "Create Draft" : "Ask"/);
   assert.match(assistant, /window\.clearTimeout\(workingActivityTimerRef\.current\)/);
   assert.match(assistant, /window\.clearTimeout\(responseStreamTimerRef\.current\)/);
 });

@@ -1,8 +1,7 @@
 import React, { useEffect, useState } from "react";
-import { Check, Copy, Download, Edit, Eye, FileText, FileWarning, RefreshCw, Save } from "lucide-react";
+import { Copy, FileText, FileWarning } from "lucide-react";
 import { Draft, WorkspacePageContext } from "../types";
-import RichDocumentEditor from "./RichDocumentEditor";
-import WorkProductDocument from "./WorkProductDocument";
+import DocumentEditorSurface from "./DocumentEditorSurface";
 
 interface DraftEditorViewProps {
   initialDraftId: string | null;
@@ -18,7 +17,6 @@ export default function DraftEditorView({ initialDraftId, onClearInitialDraftId,
   const [content, setContent] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">("idle");
-  const [editMode, setEditMode] = useState(true);
   const [sharingBusy, setSharingBusy] = useState<"sharing" | "stopping" | null>(null);
 
   useEffect(() => {
@@ -168,35 +166,23 @@ export default function DraftEditorView({ initialDraftId, onClearInitialDraftId,
 
       <div className="flex h-full flex-1 flex-col overflow-hidden" id="editor-canvas-column">
         {activeDraft ? (
-          <>
-            <div className="z-10 shrink-0 border-b border-zinc-100 bg-white px-8 py-4">
-              <div className="min-w-0">
-                <h2 className="whitespace-normal break-words text-sm font-bold uppercase tracking-tight text-zinc-900">{title}</h2>
-                <p className="mt-0.5 text-[10px] font-mono uppercase text-zinc-400">
-                  Updated {new Date(activeDraft.updated_at || activeDraft.created_at).toLocaleString()} · {activeDraft.origin || "Work Product"} · {activeDraft.shared_with_client ? "Shared with client" : "Private"}
-                </p>
-              </div>
-              <div className="mt-3 flex flex-wrap items-center gap-3">
+          <DocumentEditorSurface
+            title={title}
+            content={content}
+            onContentChange={setContent}
+            updatedAt={activeDraft.updated_at || activeDraft.created_at}
+            detail={`${activeDraft.origin || "Work Product"} · ${activeDraft.shared_with_client ? "Shared with client" : "Private"}`}
+            onSave={() => void handleSave()}
+            saving={saving}
+            saveStatus={saveStatus}
+            exportUrl={`/api/drafts/${activeDraft.id}/export?caseId=${encodeURIComponent(caseId || "")}`}
+            actions={(
+              <>
                 <button onClick={() => void handleDuplicate()} className="inline-flex items-center gap-1 rounded border border-zinc-300 px-3 py-1.5 text-[10px] font-mono font-bold uppercase"><Copy className="h-3.5 w-3.5" />Duplicate</button>
                 <button onClick={() => void handleSharing()} disabled={Boolean(sharingBusy)} className="rounded border border-zinc-300 px-3 py-1.5 text-[10px] font-mono font-bold uppercase hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50">{sharingBusy === "sharing" ? "Sharing..." : sharingBusy === "stopping" ? "Stopping..." : activeDraft.shared_with_client ? "Stop sharing" : "Share with client"}</button>
-                <div className="flex rounded border border-zinc-200 bg-zinc-100 p-0.5 text-[10px] font-mono font-semibold uppercase">
-                  <button onClick={() => setEditMode(true)} id="mode-edit-btn" className={`flex items-center gap-1 rounded px-3 py-1 ${editMode ? "bg-white font-bold text-zinc-900 shadow-sm" : "text-zinc-500"}`}><Edit className="h-3 w-3" />Editor</button>
-                  <button onClick={() => setEditMode(false)} id="mode-preview-btn" className={`flex items-center gap-1 rounded px-3 py-1 ${!editMode ? "bg-white font-bold text-zinc-900 shadow-sm" : "text-zinc-500"}`}><Eye className="h-3 w-3" />Preview</button>
-                </div>
-                <button onClick={() => void handleSave()} disabled={saving} id="editor-save-btn" className="inline-flex items-center gap-1.5 rounded border border-zinc-300 bg-white px-3 py-1.5 text-[10px] font-mono font-bold uppercase hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50">
-                  {saveStatus === "saving" ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : saveStatus === "saved" ? <Check className="h-3.5 w-3.5 text-green-700" /> : <Save className="h-3.5 w-3.5" />}
-                  {saveStatus === "saving" ? "Saving..." : saveStatus === "saved" ? "Saved" : "Save"}
-                </button>
-                <button onClick={() => caseId && window.open(`/api/drafts/${activeDraft.id}/export?caseId=${caseId}`, "_blank")} id="editor-export-btn" className="inline-flex items-center gap-1.5 rounded bg-zinc-950 px-3.5 py-1.5 text-[10px] font-mono font-bold uppercase text-white hover:bg-zinc-900"><Download className="h-3.5 w-3.5" />Export .docx</button>
-              </div>
-            </div>
-
-            <div className="h-full min-h-0 flex-1 overflow-y-auto bg-white" id="work-product-document-scroll">
-              <div id="paper-layout" className="mx-auto min-h-full w-full max-w-4xl bg-white px-8 py-10">
-                {editMode ? <RichDocumentEditor value={content} onChange={setContent} minHeight={900} /> : <WorkProductDocument content={content} />}
-              </div>
-            </div>
-          </>
+              </>
+            )}
+          />
         ) : (
           <div className="flex flex-1 flex-col items-center justify-center p-12 text-center">
             <FileText className="mb-3 h-12 w-12 text-zinc-300" />

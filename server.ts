@@ -38,6 +38,11 @@ import {
   validatePageContextThreadBoundary,
 } from "./server/assistantRouting.js";
 import {
+  assistantDraftNeedsWorkspaceEvidence,
+  buildAssistantDraftPrompt,
+  titleForAssistantDraft,
+} from "./server/assistantDrafting.js";
+import {
   SESSION_COOKIE_NAME,
   SESSION_TTL_MS,
   OAUTH_STATE_COOKIE_NAME,
@@ -1994,7 +1999,15 @@ ${sourceText}`;
             return res.status(409).json({ error: "Selected Matter does not match the conversation" });
           }
         } else if (selectedItem.kind === "assistantDocument") {
-          return res.status(409).json({ error: "Standalone assistant documents are not available in this phase" });
+          if (thread.case_id) return res.status(409).json({ error: "Standalone assistant documents require a general conversation" });
+          const selectedAssistantDocument = await db.getAssistantDocumentById(selectedItem.id, requestOwnership);
+          if (!selectedAssistantDocument) return res.status(404).json({ error: "Selected assistant document not found" });
+          selectedEntityEvidence = {
+            title: selectedAssistantDocument.title,
+            text: selectedAssistantDocument.content.slice(0, 12000),
+            sourceName: "Private assistant document",
+          };
+          pageContext = { ...pageContext, selectedItem: { ...selectedItem, title: selectedAssistantDocument.title } };
         }
       }
 
@@ -2035,6 +2048,135 @@ ${sourceText}`;
         .map((message) => `${message.role.toUpperCase()}: ${message.content}`)
         .join("\n\n");
       const retrievalQuery = [...conversationHistory.filter((m) => m.role === "user").slice(-3).map((m) => m.content), content].join("\n");
+
+      if (assistantMode === "draft") {
+        const shouldRetrieveWorkspace = assistantDraftNeedsWorkspaceEvidence({
+          hasMatter: Boolean(thread.case_id),
+          hasTemporaryFiles: temporaryFiles.length > 0,
+          hasSelectedEntity: Boolean(selectedEntityEvidence),
+          instruction: content,
+        });
+        const evidenceParts: string[] = [];
+        let draftResearchQuestions = [content];
+        if (forceDeepResearch === true) {
+          try {
+            const splitResult = await callModel(
+              "classify-complexity",
+              [{ role: "user", content: `Break this document request into 2 to 3 concise research questions that must be resolved before drafting. Return JSON with exactly this schema: {"subQuestions":["question"]}.\n\nRequest: ${content}` }],
+              { responseMimeType: "application/json" }
+            );
+            const parsed = JSON.parse(splitResult.text);
+            if (Array.isArray(parsed.subQuestions)) {
+              const questions = parsed.subQuestions
+                .filter((question: unknown): question is string => typeof question === "string" && question.trim().length > 0)
+                .map((question: string) => question.trim().slice(0, 1000))
+                .slice(0, 3);
+              if (questions.length) draftResearchQuestions = questions;
+            }
+          } catch (error) {
+            console.error("Draft Deep Research question split failed:", error);
+          }
+        }
+        if (selectedEntityEvidence) {
+          evidenceParts.push(
+            `Selected ${selectedEntityEvidence.sourceName}: ${selectedEntityEvidence.title}\n${cleanSourceText(selectedEntityEvidence.text).slice(0, 8000)}`
+          );
+        }
+        for (const file of temporaryFiles) {
+          evidenceParts.push(`Temporary attachment: ${file.filename}\n${cleanSourceText(file.text).slice(0, 6000)}`);
+        }
+        if (shouldRetrieveWorkspace) {
+          const retrievedById = new Map<string, Awaited<ReturnType<typeof db.vectorSearch>>[number]>();
+          for (const question of draftResearchQuestions) {
+            const retrieved = await db.vectorSearch(
+              question.slice(0, 4000),
+              thread.case_id || "wide",
+              requestOwnership,
+              4
+            );
+            for (const chunk of retrieved) {
+              if (chunk.similarity < SIMILARITY_THRESHOLD) continue;
+              const key = `${chunk.document_id}:${chunk.id}`;
+              const existing = retrievedById.get(key);
+              if (!existing || chunk.similarity > existing.similarity) retrievedById.set(key, chunk);
+            }
+          }
+          const permittedChunks = [...retrievedById.values()]
+            .sort((left, right) => right.similarity - left.similarity)
+            .slice(0, forceDeepResearch === true ? 8 : 4);
+          for (const chunk of permittedChunks) {
+            const sourceDocument = await db.getDocumentById(
+              chunk.document_id,
+              requestOwnership,
+              thread.case_id
+            );
+            if (!sourceDocument) continue;
+            evidenceParts.push(
+              `${thread.case_id ? "Matter Source" : "Firm Library document"}: ${sourceDocument.title}\n${cleanSourceText(chunk.chunk_text).slice(0, 3500)}`
+            );
+          }
+        }
+
+        const auth = (req as AuthenticatedRequest).auth!;
+        const currentDate = new Date().toLocaleDateString("en-US", {
+          year: "numeric",
+          month: "long",
+          day: "numeric",
+          timeZone: "UTC",
+        });
+        const accountMetadata = [
+          matter ? `Matter name: ${matter.name}` : "",
+          matter?.description ? `Assignment description: ${matter.description}` : "",
+          matter?.client_name ? `Client name: ${matter.client_name}` : "",
+          matter?.client_email ? `Client email: ${matter.client_email}` : "",
+          matter?.matter_type ? `Practice area: ${matter.matter_type}` : "",
+          matter?.jurisdiction ? `Jurisdiction: ${matter.jurisdiction}` : "",
+          matter?.preliminary_objectives ? `Preliminary objectives: ${matter.preliminary_objectives}` : "",
+          `Author name: ${auth.user.name || auth.user.email}`,
+          `Firm name: ${auth.firm!.name}`,
+        ].filter(Boolean).join("\n");
+        const draftPrompt = buildAssistantDraftPrompt({
+          instruction: content,
+          pageContext,
+          conversationContext,
+          authorizedEvidence: evidenceParts.join("\n\n").slice(0, 26000),
+          accountMetadata,
+          currentDate,
+          webSearchEnabled: enableWebSearch === true,
+          deepResearchEnabled: forceDeepResearch === true,
+          researchPlan: forceDeepResearch === true ? draftResearchQuestions : undefined,
+        });
+        const draftResult = await callModel(
+          "draft-generation",
+          [{ role: "user", content: draftPrompt }],
+          { googleSearch: enableWebSearch === true, temperature: 0.25 }
+        );
+        const draftContent = cleanGeneratedWorkProductContent(draftResult.text);
+        if (!draftContent) throw new Error("The model did not return document content");
+        const title = titleForAssistantDraft(draftContent, content, thread.title);
+
+        const document = thread.case_id
+          ? await db.createDraft(threadId, thread.case_id, title, draftContent, requestOwnership)
+          : await db.createAssistantDocument(threadId, title, draftContent, requestOwnership);
+        const documentReference = thread.case_id
+          ? { id: document.id, kind: "matterWorkProduct" as const, title: document.title, matterId: thread.case_id }
+          : { id: document.id, kind: "assistantDocument" as const, title: document.title };
+        const assistantMessage = await db.addMessage(
+          threadId,
+          "assistant",
+          `Created **${title}**. You can open it to edit or download the Word document.`,
+          requestOwnership,
+          [],
+          null,
+          { suggestions: [], requestMode: assistantMode, document: documentReference }
+        );
+        return res.status(201).json({
+          userMessage,
+          assistantMessage,
+          requestMode: assistantMode,
+          document: documentReference,
+        });
+      }
 
       if (assistantMode === "ui_help" || assistantMode === "general") {
         const modelPrompt = assistantMode === "ui_help"
@@ -2440,6 +2582,47 @@ ${citationInstSearch}`;
   });
 
   // Draft Generation and Editable View APIs
+  app.get("/api/assistant-documents/:id", async (req, res) => {
+    const document = await db.getAssistantDocumentById(req.params.id, ownership(req));
+    if (!document) return res.status(404).json({ error: "Assistant document not found" });
+    return res.json({ ...document, content: cleanWorkProductContent(document.content) });
+  });
+
+  app.put("/api/assistant-documents/:id", async (req, res) => {
+    try {
+      const title = typeof req.body.title === "string" ? req.body.title.trim() : "";
+      const rawContent = typeof req.body.content === "string" ? req.body.content : "";
+      if (!title) return res.status(400).json({ error: "Document title is required" });
+      if (title.length > 300) return res.status(413).json({ error: "Document title is too long" });
+      if (rawContent.length > 250000) return res.status(413).json({ error: "Document content is too long" });
+      const updated = await db.updateAssistantDocument(
+        req.params.id,
+        title,
+        cleanWorkProductContent(rawContent),
+        ownership(req)
+      );
+      return res.json({ ...updated, content: cleanWorkProductContent(updated.content) });
+    } catch (err: any) {
+      return res.status(ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/assistant-documents/:id/export", async (req, res) => {
+    try {
+      const document = await db.getAssistantDocumentById(req.params.id, ownership(req));
+      if (!document) return res.status(404).json({ error: "Assistant document not found" });
+      const buffer = await Packer.toBuffer(
+        markdownToDocxDocument(document.title, cleanWorkProductContent(document.content))
+      );
+      const safeTitle = document.title.replace(/[^a-z0-9]/gi, "_").toLowerCase() || "assistant_document";
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+      res.setHeader("Content-Disposition", `attachment; filename="${safeTitle}.docx"`);
+      return res.send(buffer);
+    } catch (err: any) {
+      return res.status(ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
   app.get("/api/cases/:caseId/work-product", async (req, res) => {
     const matter = await db.getCaseById(req.params.caseId, ownership(req));
     if (!matter) return res.status(404).json({ error: "Matter not found" });

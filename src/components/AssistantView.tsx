@@ -7,9 +7,9 @@ import {
   Folder, Globe, ThumbsUp, ThumbsDown,
   Bold, Italic, Underline, Strikethrough, List, ListOrdered,
   AlignLeft, AlignCenter, AlignRight, Scissors,
-  Clipboard, Undo2, Redo2, Save, Link as LinkIcon
+  Clipboard, Undo2, Redo2, Save, Link as LinkIcon, Download
 } from "lucide-react";
-import { Case, Thread, Message, Citation, ResearchStep } from "../types";
+import { AssistantDocumentReference, Case, Thread, Message, Citation, ResearchStep } from "../types";
 import FormattedMarkdown from "./FormattedMarkdown";
 import { browserFileIdentity, MAX_SELECTED_FILES } from "../hooks/useCumulativeFileSelection";
 import { assistantCitationsToDisplayText } from "../lib/assistantCitations";
@@ -32,7 +32,7 @@ interface AssistantViewProps {
   activeThreadId: string | null;
   setActiveThreadId: (id: string | null) => void;
   onMessagesChange: (count: number) => void;
-  onNavigateToDrafts: (draftId: string) => void;
+  onOpenDocument: (document: AssistantDocumentReference) => void;
   compact?: boolean;
 }
 
@@ -57,7 +57,8 @@ function buildWorkingActivities({
   deepResearchEnabled: boolean;
   requestMode: ReturnType<typeof routeAssistantRequest>;
 }): string[] {
-  const usesWorkspaceEvidence = ["workspace_research", "deep_research", "draft"].includes(requestMode);
+  const usesWorkspaceEvidence = ["workspace_research", "deep_research"].includes(requestMode)
+    || (requestMode === "draft" && (hasMatter || hasAttachments));
   const activities = [
     "Understanding your request…",
     "Identifying the relevant context…",
@@ -94,10 +95,13 @@ function buildWorkingActivities({
     activities.push(
       "Organizing the supporting sources…",
       "Synthesizing the findings…",
-      "Preparing citations…",
     );
+    if (requestMode !== "draft") activities.push("Preparing citations…");
   }
-  activities.push("Drafting the response…", "Refining the response…");
+  activities.push(
+    requestMode === "draft" ? "Creating the document…" : "Drafting the response…",
+    requestMode === "draft" ? "Refining the document…" : "Refining the response…"
+  );
 
   return activities.filter((activity, index) => activity !== activities[index - 1]);
 }
@@ -195,7 +199,7 @@ export default function AssistantView({
   activeThreadId,
   setActiveThreadId,
   onMessagesChange,
-  onNavigateToDrafts,
+  onOpenDocument,
   compact = false,
 }: AssistantViewProps) {
   const { pageContext } = useWorkspacePageContext();
@@ -203,16 +207,13 @@ export default function AssistantView({
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState("");
   const [deepResearchEnabled, setDeepResearchEnabled] = useState(false);
+  const [draftMode, setDraftMode] = useState(false);
   const [loading, setLoading] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [workingStages, setWorkingStages] = useState<string[]>([]);
   const [workingStageIndex, setWorkingStageIndex] = useState(0);
   const [citationPanelSource, setCitationPanelSource] = useState<Citation | null>(null);
   const [activeMessageCitations, setActiveMessageCitations] = useState<Citation[]>([]);
-  const [draftingMessageId, setDraftingMessageId] = useState<string | null>(null);
-  const [draftFormat, setDraftFormat] = useState<"memo" | "email" | "summary">("memo");
-  const [draftInstructions, setDraftInstructions] = useState("");
-  const [draftingInProgress, setDraftingInProgress] = useState(false);
   
   // Custom states for toggleable retrieval sources
   const [enableWebSearch, setEnableWebSearch] = useState(false);
@@ -447,6 +448,7 @@ export default function AssistantView({
       content: queryText,
       pageContext,
       forceDeepResearch: deepResearchEnabled,
+      responseMode: draftMode ? "draft" : "chat",
       hasTemporaryFiles: temporaryFiles.some((file) => file.status === "ready"),
     });
     setWorkingStages(buildWorkingActivities({
@@ -495,7 +497,7 @@ export default function AssistantView({
           content: queryText,
           forceDeepResearch: deepResearchEnabled,
           enableWebSearch,
-          responseMode: "chat",
+          responseMode: draftMode ? "draft" : "chat",
           pageContext,
           temporaryFiles: submittedTemporaryFiles
             .map(({ filename, text }) => ({ filename, text }))
@@ -604,7 +606,7 @@ export default function AssistantView({
       const res = await fetch("/api/improve-prompt", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: rawPrompt, pageContext, responseMode: "chat" })
+        body: JSON.stringify({ prompt: rawPrompt, pageContext, responseMode: draftMode ? "draft" : "chat" })
       });
       const data = await res.json();
       if (data.improved) {
@@ -770,37 +772,13 @@ export default function AssistantView({
       .filter(Boolean);
   };
 
-  const handleGenerateDraft = async (messageId: string) => {
-    setDraftingMessageId(messageId);
-    setDraftInstructions("");
-  };
-
-  const submitDraftRequest = async () => {
-    if (!activeThreadId || !draftingMessageId) return;
-    
-    setDraftingInProgress(true);
-    try {
-      const res = await fetch("/api/drafts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          threadId: activeThreadId,
-          format: draftFormat,
-          instructions: draftInstructions
-        })
-      });
-      const data = await res.json();
-      if (data.id) {
-        setDraftingMessageId(null);
-        onNavigateToDrafts(data.id);
-      } else {
-        alert("Failed to generate draft: " + (data.error || "Unknown error"));
-      }
-    } catch (err: any) {
-      alert("Error generating draft: " + err.message);
-    } finally {
-      setDraftingInProgress(false);
-    }
+  const documentReferenceForMessage = (message: Message): AssistantDocumentReference | null => {
+    const value = message.metadata?.document;
+    if (!value || typeof value !== "object") return null;
+    if (typeof value.id !== "string" || typeof value.title !== "string") return null;
+    if (value.kind !== "matterWorkProduct" && value.kind !== "assistantDocument") return null;
+    if (value.kind === "matterWorkProduct" && typeof value.matterId !== "string") return null;
+    return value;
   };
 
   const renderMessageTextWithCitations = (text: string, citationsList: Citation[]) => {
@@ -850,7 +828,7 @@ export default function AssistantView({
             ref={textareaRef}
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
-            placeholder={activeCaseId ? "Ask about this Matter or anything else..." : "Ask about this page, your workspace, or anything else..."}
+            placeholder={draftMode ? "Describe the document you want to create..." : activeCaseId ? "Ask about this Matter or anything else..." : "Ask about this page, your workspace, or anything else..."}
             className="w-full min-h-[64px] max-h-[180px] p-1.5 border-none outline-none focus:ring-0 text-sm text-zinc-900 placeholder-zinc-400 font-sans transition-all resize-none bg-white"
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
@@ -953,6 +931,17 @@ export default function AssistantView({
 
             {/* Right Side Controls */}
             <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                id="draft-mode-toggle"
+                aria-pressed={draftMode}
+                onClick={() => setDraftMode((current) => !current)}
+                className={`inline-flex items-center gap-1.5 rounded border px-2.5 py-1.5 text-[11px] font-mono font-bold uppercase transition-colors ${draftMode ? "border-zinc-950 bg-zinc-950 text-white" : "border-zinc-200 bg-white text-zinc-600 hover:border-zinc-400 hover:text-zinc-950"}`}
+                title="Create and save one standalone document from this instruction"
+              >
+                <FileText className="h-3.5 w-3.5" />
+                Draft
+              </button>
               <label className="inline-flex items-center gap-1.5 cursor-pointer select-none">
                 <input
                   type="checkbox"
@@ -972,7 +961,7 @@ export default function AssistantView({
                 id="btn-submit-ask"
                 className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-mono uppercase font-bold text-white bg-zinc-950 hover:bg-zinc-900 border border-zinc-950 rounded shadow-xs disabled:opacity-40 transition-all cursor-pointer"
               >
-                {streaming ? "Responding..." : loading ? "Sending..." : "Ask"}
+                {streaming ? (draftMode ? "Creating..." : "Responding...") : loading ? (draftMode ? "Creating..." : "Sending...") : draftMode ? "Create Draft" : "Ask"}
                 {loading ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
               </button>
             </div>
@@ -1172,6 +1161,28 @@ export default function AssistantView({
                             {renderMessageTextWithCitations(m.content, m.citations)}
                           </div>
 
+                          {documentReferenceForMessage(m) && (() => {
+                            const document = documentReferenceForMessage(m)!;
+                            const exportUrl = document.kind === "matterWorkProduct"
+                              ? `/api/drafts/${encodeURIComponent(document.id)}/export?caseId=${encodeURIComponent(document.matterId || "")}`
+                              : `/api/assistant-documents/${encodeURIComponent(document.id)}/export`;
+                            return (
+                              <div className="mt-4 rounded-lg border border-zinc-200 bg-zinc-50 p-3" id={`assistant-document-card-${m.id}`}>
+                                <div className="flex min-w-0 items-start gap-2.5">
+                                  <FileText className="mt-0.5 h-4 w-4 shrink-0 text-zinc-500" />
+                                  <div className="min-w-0 flex-1">
+                                    <p className="truncate text-xs font-semibold text-zinc-900">{document.title}</p>
+                                    <p className="mt-0.5 text-[9px] font-mono uppercase text-zinc-400">{document.kind === "matterWorkProduct" ? "Matter Work Product" : "Private assistant document"}</p>
+                                  </div>
+                                </div>
+                                <div className="mt-3 flex flex-wrap gap-2">
+                                  <button type="button" onClick={() => onOpenDocument(document)} className="rounded bg-zinc-950 px-3 py-1.5 text-[10px] font-mono font-bold uppercase text-white">Open</button>
+                                  <button type="button" onClick={() => window.open(exportUrl, "_blank")} className="inline-flex items-center gap-1 rounded border border-zinc-300 bg-white px-3 py-1.5 text-[10px] font-mono font-bold uppercase text-zinc-800"><Download className="h-3.5 w-3.5" />Download .docx</button>
+                                </div>
+                              </div>
+                            );
+                          })()}
+
                           {/* Message Action Items */}
                           {!m.content.startsWith("❌") && (
                             <div className="mt-5 pt-3.5 border-t border-zinc-100 flex items-center justify-between flex-wrap gap-2.5 select-none">
@@ -1258,17 +1269,6 @@ export default function AssistantView({
                                   </button>
                                 )}
 
-                                <button
-                                  onClick={() => {
-                                    handleGenerateDraft(m.id);
-                                  }}
-                                  id={`action-draft-${m.id}`}
-                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono uppercase font-semibold border border-zinc-200 hover:border-zinc-900 hover:bg-zinc-50 rounded transition-colors text-zinc-700 hover:text-zinc-950"
-                                  title="Generate document draft from this response"
-                                >
-                                  <FileText className="h-3.5 w-3.5" />
-                                  <span>Generate Draft</span>
-                                </button>
                               </div>
                             </div>
                           )}
@@ -1452,70 +1452,6 @@ export default function AssistantView({
                 className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-mono uppercase font-bold text-white bg-zinc-950 hover:bg-zinc-900 border border-zinc-950 rounded shadow-sm disabled:opacity-55 transition-all cursor-pointer"
               >
                 {sideEditorSaveStatus === "saving" ? "Saving..." : "Save Changes"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Drafting Configurations Modal */}
-      {draftingMessageId && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" id="drafting-modal">
-          <div className="bg-white border border-zinc-200 rounded-lg shadow-lg w-full max-w-lg overflow-hidden animate-fade-in text-zinc-900">
-            <div className="px-6 py-4 bg-zinc-50 border-b border-zinc-150 text-zinc-900 flex items-center justify-between select-none">
-              <h3 className="text-xs font-mono font-bold uppercase tracking-wider text-zinc-600 font-sans">Initialize Draft Generator</h3>
-              <button 
-                onClick={() => setDraftingMessageId(null)}
-                className="text-zinc-400 hover:text-zinc-700 font-mono text-xs cursor-pointer focus:outline-none"
-              >
-                [Cancel]
-              </button>
-            </div>
-
-            <div className="p-6 space-y-4">
-              <div>
-                <label className="block text-xs font-mono uppercase font-semibold text-zinc-500 mb-2 select-none">Drafting Format Style:</label>
-                <div className="grid grid-cols-3 gap-2">
-                  {(["memo", "email", "summary"] as const).map((fmt) => (
-                    <button
-                      key={fmt}
-                      onClick={() => setDraftFormat(fmt)}
-                      className={`px-3 py-2 border text-xs font-semibold rounded uppercase tracking-wide transition-all cursor-pointer ${
-                        draftFormat === fmt
-                          ? "bg-zinc-900 border-zinc-900 text-white"
-                          : "border-zinc-200 hover:bg-zinc-50 text-zinc-700 hover:border-zinc-300"
-                      }`}
-                    >
-                      {fmt}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-mono uppercase font-semibold text-zinc-500 mb-2 select-none">Custom Attorney Directives:</label>
-                <textarea
-                  value={draftInstructions}
-                  onChange={(e) => setDraftInstructions(e.target.value)}
-                  placeholder="e.g., Focus primarily on CA SB 699, frame argument as defense counsel, keep the conclusion concise..."
-                  className="w-full h-24 p-3 border border-zinc-200 rounded text-sm focus:outline-none focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 text-zinc-900 resize-none font-sans"
-                />
-              </div>
-            </div>
-
-            <div className="px-6 py-4 bg-zinc-50 border-t border-zinc-150 flex justify-end gap-2.5 select-none">
-              <button
-                onClick={() => setDraftingMessageId(null)}
-                className="px-4 py-2 text-xs font-mono uppercase font-semibold border border-zinc-200 hover:bg-zinc-100 rounded cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={submitDraftRequest}
-                disabled={draftingInProgress}
-                className="px-4 py-2 text-xs font-mono uppercase font-semibold text-white bg-zinc-900 hover:bg-zinc-800 rounded disabled:opacity-50 cursor-pointer"
-              >
-                {draftingInProgress ? "Drafting Document..." : "Generate & Save Draft"}
               </button>
             </div>
           </div>

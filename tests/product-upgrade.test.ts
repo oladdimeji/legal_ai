@@ -318,11 +318,15 @@ test("Phase 12 Firm Library and Matter Source uploads use real file pickers", as
 });
 
 test("Phase 12 Work Product uses formatted preview/editor and sharing progress", async () => {
-  const editor = await readFile("src/components/DraftEditorView.tsx", "utf8");
-  assert.match(editor, /RichDocumentEditor/);
-  assert.doesNotMatch(editor, /@uiw\/react-md-editor|MDEditor/);
-  assert.match(editor, /WorkProductDocument/);
-  assert.match(editor, /<WorkProductDocument content=\{content\}/);
+  const [editor, surface] = await Promise.all([
+    readFile("src/components/DraftEditorView.tsx", "utf8"),
+    readFile("src/components/DocumentEditorSurface.tsx", "utf8"),
+  ]);
+  assert.match(editor, /DocumentEditorSurface/);
+  assert.match(surface, /RichDocumentEditor/);
+  assert.doesNotMatch(`${editor}\n${surface}`, /@uiw\/react-md-editor|MDEditor/);
+  assert.match(surface, /WorkProductDocument/);
+  assert.match(surface, /<WorkProductDocument content=\{content\}/);
   assert.match(editor, /Sharing\.\.\./);
   assert.match(editor, /Stopping\.\.\./);
   assert.match(editor, /disabled:cursor-not-allowed/);
@@ -475,11 +479,12 @@ test("Focused UX fix removes Matter Intelligence source labels without deleting 
 });
 
 test("Focused UX fix rich editor hides raw Markdown editing surfaces while preserving Markdown persistence", async () => {
-  const [rich, converter, intelligence, editor, portal, server] = await Promise.all([
+  const [rich, converter, intelligence, editor, editorSurface, portal, server] = await Promise.all([
     readFile("src/components/RichDocumentEditor.tsx", "utf8"),
     readFile("src/lib/richMarkdown.ts", "utf8"),
     readFile("src/components/MatterIntelligence.tsx", "utf8"),
     readFile("src/components/DraftEditorView.tsx", "utf8"),
+    readFile("src/components/DocumentEditorSurface.tsx", "utf8"),
     readFile("src/components/ClientPortalView.tsx", "utf8"),
     readFile("server.ts", "utf8"),
   ]);
@@ -488,7 +493,7 @@ test("Focused UX fix rich editor hides raw Markdown editing surfaces while prese
   assert.match(converter, /markdownToEditorHtml/);
   assert.match(converter, /editorHtmlToMarkdown/);
   assert.match(converter, /h1|strong|em|ul|ol|blockquote|href/);
-  for (const view of [intelligence, editor, portal]) {
+  for (const view of [intelligence, `${editor}\n${editorSurface}`, portal]) {
     assert.match(view, /RichDocumentEditor/);
     assert.doesNotMatch(view, /MDEditor|@uiw\/react-md-editor|preview="edit"/);
   }

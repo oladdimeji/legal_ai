@@ -105,6 +105,7 @@ export function isProtectedApplicationPath(pathname: string): boolean {
     path === "/library" ||
     path === "/history" ||
     path === "/settings" ||
+    path.startsWith("/documents/") ||
     path === "/client" ||
     path.startsWith("/client/")
   );

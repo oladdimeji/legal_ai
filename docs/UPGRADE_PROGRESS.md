@@ -1054,3 +1054,40 @@ Verification:
 
 - `npm ci`: passed.
 - `npm run verify`: passed after the Phase 2 changes.
+
+## Lawyer Workspace Redesign — Phase 3
+
+Status: Complete.
+
+Implemented:
+
+- Added an explicit Draft mode to the persistent assistant composer. Draft requests now infer contracts, agreements, letters, briefs, reports, policies, summaries, emails, memoranda, and other reasonable document types from the user's instruction instead of using the retired three-format modal.
+- Removed the post-response Generate Draft action and made the message request's typed `responseMode` select chat or document creation before submission.
+- Added one server drafting flow that reuses authenticated page/thread validation, Matter or Firm retrieval where appropriate, temporary attachments, opt-in Google grounding, Deep Research decomposition, generated-content cleanup, and the existing model provider.
+- Matter Draft mode saves through the existing Matter Work Product table and ownership path. General Draft mode saves through a separate private standalone assistant-document path.
+- Added persisted assistant message document metadata and compact Open/Download cards. Matter cards open the correct Matter Work Product tab; standalone cards open `/documents/:documentId` without hiding the assistant.
+- Added a shared rich document editor surface used by Matter Work Product and standalone assistant documents, with live rich editing, read-only preview, save state, update information, and real Word export.
+- Added server-side validation of selected standalone assistant-document IDs and exact authenticated user-and-Firm checks on standalone fetch, update, and export.
+- Kept the legacy three-format `/api/drafts` API for backward compatibility only; the new composer flow does not call it.
+- Kept the client workspace and existing Matter client-sharing behavior unchanged. Standalone assistant documents are private, are not added to Firm Library, and cannot be shared with clients in this phase.
+
+Schema changes:
+
+- Migration 023 additively creates `assistant_documents` with nullable `thread_id ... ON DELETE SET NULL`, required `user_id` and `firm_id`, title/content/timestamps, an owner/update index, and a partial thread lookup index.
+- Conversation deletion therefore preserves standalone assistant documents while clearing only their conversation reference.
+
+Tests:
+
+- Added behavioral tests for arbitrary document-type routing, Draft evidence routing, title extraction, standalone route parsing, and genuine DOCX package generation.
+- Added focused regressions for pre-submit Draft mode, removal of the old Generate Draft/modal UI, Matter versus standalone persistence selection, persisted document cards, additive migration safety, thread-deletion survival, exact user/Firm ownership predicates, selected-document revalidation, shared editor reuse, export endpoints, and absence of Firm Library/client-sharing side effects.
+- Updated brittle Work Product presentation and Assistant activity tests to follow the shared editor and pre-submit Draft mode.
+
+Verification:
+
+- `npm ci`: passed.
+- `npm run verify`: passed, including TypeScript lint, 191/191 tests, and the production build with the existing Vite `NODE_ENV` and large-chunk warnings.
+
+Deliberate limitations:
+
+- Standalone assistant documents remain private to their creating lawyer and do not have Firm or client sharing controls.
+- The legacy memo/email/summary endpoint remains temporarily available for backward compatibility, but no current lawyer UI depends on it.

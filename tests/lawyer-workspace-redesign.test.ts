@@ -182,12 +182,11 @@ test("UI help and general modes return before vector retrieval while workspace r
   );
   const directBranch = endpoint.indexOf('assistantMode === "ui_help" || assistantMode === "general"');
   const directReturn = endpoint.indexOf('return res.status(201)', directBranch);
-  const firstVectorSearch = endpoint.indexOf("db.vectorSearch");
-  assert.ok(directBranch > 0 && directReturn > directBranch && firstVectorSearch > directReturn);
+  assert.ok(directBranch > 0 && directReturn > directBranch);
   const directSection = endpoint.slice(directBranch, directReturn);
   assert.doesNotMatch(directSection, /could not find any relevant documents|db\.vectorSearch/);
   assert.match(directSection, /Do not claim to have searched internal workspace documents/);
-  assert.match(endpoint.slice(firstVectorSearch), /I could not find any relevant documents in the permitted context regarding this topic/);
+  assert.match(endpoint.slice(directReturn), /I could not find any relevant documents in the permitted context regarding this topic/);
 });
 
 test("Improve is task-aware and receives page and Draft context", async () => {
@@ -198,5 +197,5 @@ test("Improve is task-aware and receives page and Draft context", async () => {
   const improve = server.slice(server.indexOf('app.post("/api/improve-prompt"'), server.indexOf('app.post("/api/extract-files"'));
   assert.match(improve, /Do not turn ordinary chat or product-help questions into formal legal research queries/);
   assert.match(improve, /pageContextForPrompt/);
-  assert.match(assistant, /JSON\.stringify\(\{ prompt: rawPrompt, pageContext, responseMode: "chat" \}\)/);
+  assert.match(assistant, /JSON\.stringify\(\{ prompt: rawPrompt, pageContext, responseMode: draftMode \? "draft" : "chat" \}\)/);
 });

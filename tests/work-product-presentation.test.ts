@@ -22,38 +22,46 @@ This is **important** and *time-sensitive*.
 See [the referenced policy](https://example.com).`;
 
 test("Work Product preview and editor use a fully white document surface", async () => {
-  const [editor, portal, documentSurface] = await Promise.all([
+  const [editor, sharedEditor, portal, documentSurface] = await Promise.all([
     readFile("src/components/DraftEditorView.tsx", "utf8"),
+    readFile("src/components/DocumentEditorSurface.tsx", "utf8"),
     readFile("src/components/ClientPortalView.tsx", "utf8"),
     readFile("src/components/WorkProductDocument.tsx", "utf8"),
   ]);
-  assert.match(editor, /<div className="[^"]*overflow-y-auto bg-white[^"]*" id="work-product-document-scroll">/);
-  assert.match(editor, /<div id="paper-layout" className="[^"]*min-h-full[^"]*bg-white[^"]*">/);
-  assert.doesNotMatch(editor, /bg-zinc-100 p-12/);
+  assert.match(editor, /DocumentEditorSurface/);
+  assert.match(sharedEditor, /id=\{idPrefix === "editor" \? "work-product-document-scroll"/);
+  assert.match(sharedEditor, /id=\{idPrefix === "editor" \? "paper-layout"/);
+  assert.doesNotMatch(`${editor}\n${sharedEditor}`, /bg-zinc-100 p-12/);
   assert.match(portal, /min-h-0 flex-1 overflow-y-auto bg-white/);
   assert.match(portal, /<WorkProductDocument content=\{open\.content\}/);
   assert.match(documentSurface, /<article className="min-h-full bg-white/);
 });
 
 test("Work Product title wraps and actions render in a separate toolbar row", async () => {
-  const editor = await readFile("src/components/DraftEditorView.tsx", "utf8");
-  assert.match(editor, /whitespace-normal break-words/);
-  assert.doesNotMatch(editor, /<h2 className="truncate/);
-  assert.match(editor, /<div className="mt-3 flex flex-wrap items-center gap-3">/);
-  for (const label of ["Duplicate", "Share with client", "Editor", "Preview", "Save", "Export .docx"]) {
-    assert.match(editor, new RegExp(label.replace(".", "\\.")));
+  const [editor, sharedEditor] = await Promise.all([
+    readFile("src/components/DraftEditorView.tsx", "utf8"),
+    readFile("src/components/DocumentEditorSurface.tsx", "utf8"),
+  ]);
+  assert.match(sharedEditor, /whitespace-normal break-words/);
+  assert.doesNotMatch(sharedEditor, /<h2 className="truncate/);
+  assert.match(sharedEditor, /<div className="mt-3 flex flex-wrap items-center gap-3">/);
+  const combined = `${editor}\n${sharedEditor}`;
+  for (const label of ["Duplicate", "Share with client", "Editor", "Preview", "Save", "Download .docx"]) {
+    assert.match(combined, new RegExp(label.replace(".", "\\.")));
   }
 });
 
 test("Work Product edit paths use the repaired rich editor and no Markdown source editor", async () => {
-  const [editor, portal, rich] = await Promise.all([
+  const [editor, sharedEditor, portal, rich] = await Promise.all([
     readFile("src/components/DraftEditorView.tsx", "utf8"),
+    readFile("src/components/DocumentEditorSurface.tsx", "utf8"),
     readFile("src/components/ClientPortalView.tsx", "utf8"),
     readFile("src/components/RichDocumentEditor.tsx", "utf8"),
   ]);
-  assert.match(editor, /<RichDocumentEditor value=\{content\}/);
+  assert.match(editor, /DocumentEditorSurface/);
+  assert.match(sharedEditor, /<RichDocumentEditor value=\{content\}/);
   assert.match(portal, /<RichDocumentEditor value=\{editContent\}/);
-  for (const source of [editor, portal]) {
+  for (const source of [`${editor}\n${sharedEditor}`, portal]) {
     assert.doesNotMatch(source, /MDEditor|@uiw\/react-md-editor|preview="edit"|querySelector\("textarea"\)|insertTextMarkup/);
   }
   assert.match(rich, /useLayoutEffect/);

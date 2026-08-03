@@ -619,6 +619,33 @@ const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 23,
+    name: "standalone_assistant_documents",
+    async run(client) {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS assistant_documents (
+          id TEXT PRIMARY KEY,
+          thread_id TEXT REFERENCES threads(id) ON DELETE SET NULL,
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          firm_id TEXT NOT NULL REFERENCES firm(id) ON DELETE CASCADE,
+          title TEXT NOT NULL,
+          content TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS assistant_documents_owner_updated_idx
+        ON assistant_documents(user_id, firm_id, updated_at DESC)
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS assistant_documents_thread_idx
+        ON assistant_documents(thread_id)
+        WHERE thread_id IS NOT NULL
+      `);
+    },
+  },
 ];
 
 export async function runMigrations(pool: Pool): Promise<void> {

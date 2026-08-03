@@ -6,12 +6,13 @@ import MattersView from "./components/MattersView";
 import SettingsView from "./components/SettingsView";
 import MatterWorkspaceView from "./components/MatterWorkspaceView";
 import HistoryView from "./components/HistoryView";
+import AssistantDocumentView from "./components/AssistantDocumentView";
 import AuthView from "./components/AuthView";
 import ClientWorkspace from "./components/ClientWorkspace";
 import LandingPage from "./components/LandingPage";
 import OnboardingView from "./components/OnboardingView";
 import SiteLockScreen from "./components/SiteLockScreen";
-import { Account, Case } from "./types";
+import { Account, AssistantDocumentReference, Case } from "./types";
 import { parseRoute, routePath, safeReturnTo } from "./lib/routes";
 import {
   WorkspacePageContextProvider,
@@ -30,6 +31,7 @@ const protectedRouteKinds = new Set([
   "library",
   "history",
   "settings",
+  "assistantDocument",
   "clientAssistant",
   "clientSharedMatters",
   "clientSharedMatter",
@@ -217,9 +219,15 @@ function AppContent() {
     setCases((current) => current.map((item) => (item.id === matter.id ? matter : item)));
   };
 
-  const handleNavigateToDrafts = (draftId: string) => {
-    setInitialDraftId(draftId);
-    if (activeCaseId) navigate(`/matters/${encodeURIComponent(activeCaseId)}`);
+  const handleOpenAssistantDocument = (document: AssistantDocumentReference) => {
+    if (document.kind === "matterWorkProduct" && document.matterId) {
+      setInitialDraftId(document.id);
+      navigate(`/matters/${encodeURIComponent(document.matterId)}`);
+      return;
+    }
+    if (document.kind === "assistantDocument") {
+      navigate(`/documents/${encodeURIComponent(document.id)}`);
+    }
   };
 
   const handleStartNewThread = () => {
@@ -333,7 +341,7 @@ function AppContent() {
           activeThreadId={activeThreadId}
           setActiveThreadId={setActiveThreadId}
           onMessagesChange={() => undefined}
-          onNavigateToDrafts={handleNavigateToDrafts}
+          onOpenDocument={handleOpenAssistantDocument}
           compact
         />
       }
@@ -368,6 +376,9 @@ function AppContent() {
           onAccountUpdated={setAccount}
           onLogout={handleLogout}
         />
+      )}
+      {route.kind === "assistantDocument" && (
+        <AssistantDocumentView documentId={route.documentId} />
       )}
     </LawyerWorkspaceShell>
   );

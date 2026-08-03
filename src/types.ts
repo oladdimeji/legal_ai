@@ -175,9 +175,17 @@ export interface Message {
   metadata?: {
     suggestions?: string[];
     attachments?: Array<{ name: string }> | string[];
+    document?: AssistantDocumentReference;
     [key: string]: unknown;
   };
 }
+
+export type AssistantDocumentReference = {
+  id: string;
+  kind: "matterWorkProduct" | "assistantDocument";
+  title: string;
+  matterId?: string;
+};
 
 export interface Draft {
   id: string;
@@ -192,6 +200,17 @@ export interface Draft {
   origin?: string;
   parent_draft_id?: string | null;
   revision_type?: "Lawyer Original" | "Duplicate" | "Client Revision" | "Client Response";
+}
+
+export interface AssistantDocument {
+  id: string;
+  thread_id: string | null;
+  user_id: string;
+  firm_id: string;
+  title: string;
+  content: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface MatterIntelligenceRecord {

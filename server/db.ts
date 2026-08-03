@@ -9,6 +9,7 @@ import {
   Thread,
   Message,
   Draft,
+  AssistantDocument,
   Citation,
   FirmAdminSettings,
   FirmRole,
@@ -2421,6 +2422,61 @@ class DatabaseService {
     if (rows.length === 0) {
       throw new Error("Work Product not found");
     }
+    return rows[0];
+  }
+
+  public async createAssistantDocument(
+    threadId: string,
+    title: string,
+    content: string,
+    context: OwnershipContext
+  ): Promise<AssistantDocument> {
+    const id = `assistant_document_${randomUUID()}`;
+    const now = new Date().toISOString();
+    const rows = await this.query(
+      `INSERT INTO assistant_documents
+        (id, thread_id, user_id, firm_id, title, content, created_at, updated_at)
+       SELECT $1, t.id, t.user_id, u.firm_id, $5, $6, $7, $7
+       FROM threads t
+       JOIN users u ON u.id = t.user_id
+       WHERE t.id = $2
+         AND t.user_id = $3
+         AND u.firm_id = $4
+         AND t.case_id IS NULL
+         AND t.scope <> 'client'
+       RETURNING *`,
+      [id, threadId, context.userId, context.firmId, title, content, now]
+    );
+    if (!rows[0]) throw new Error("General conversation not found");
+    return rows[0];
+  }
+
+  public async getAssistantDocumentById(
+    id: string,
+    context: OwnershipContext
+  ): Promise<AssistantDocument | undefined> {
+    const rows = await this.query(
+      `SELECT * FROM assistant_documents
+       WHERE id = $1 AND user_id = $2 AND firm_id = $3`,
+      [id, context.userId, context.firmId]
+    );
+    return rows[0];
+  }
+
+  public async updateAssistantDocument(
+    id: string,
+    title: string,
+    content: string,
+    context: OwnershipContext
+  ): Promise<AssistantDocument> {
+    const rows = await this.query(
+      `UPDATE assistant_documents
+       SET title = $1, content = $2, updated_at = $3
+       WHERE id = $4 AND user_id = $5 AND firm_id = $6
+       RETURNING *`,
+      [title, content, new Date().toISOString(), id, context.userId, context.firmId]
+    );
+    if (!rows[0]) throw new Error("Assistant document not found");
     return rows[0];
   }
 }
