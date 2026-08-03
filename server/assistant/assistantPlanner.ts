@@ -13,6 +13,25 @@ import {
 const DEPTHS = new Set(["brief", "standard", "thorough"]);
 const INTENTS = new Set<string>(ASSISTANT_INTENTS);
 const TOOLS = new Set<string>(ASSISTANT_TOOL_NAMES);
+const TOOL_ARGUMENTS: Record<AssistantToolName, Readonly<Record<string, "string" | "boolean">>> = {
+  get_account_profile: {},
+  get_firm_summary: { includeMembers: "boolean" },
+  list_matters: {},
+  find_matter: { query: "string", name: "string" },
+  get_matter_overview: { matterId: "string" },
+  list_matter_sources: { matterId: "string" },
+  get_matter_intelligence: { matterId: "string" },
+  list_matter_work_products: { matterId: "string" },
+  get_work_product: { matterId: "string", workProductId: "string", id: "string" },
+  get_matter_collaboration_summary: { matterId: "string" },
+  list_firm_library_documents: {},
+  get_firm_library_document: { documentId: "string", id: "string" },
+  search_workspace_documents: { matterId: "string", documentId: "string", query: "string" },
+  list_assistant_documents: {},
+  get_assistant_document: { documentId: "string", id: "string" },
+  search_conversation_history: { query: "string" },
+  get_conversation: { threadId: "string", id: "string" },
+};
 const PLAN_KEYS = new Set([
   "intent", "depth", "needsWorkspace", "needsCurrentPage", "needsWeb",
   "needsClarification", "clarificationQuestion", "toolCalls",
@@ -36,7 +55,19 @@ const plannerResponseSchema = {
         type: "OBJECT",
         properties: {
           name: { type: "STRING", enum: [...ASSISTANT_TOOL_NAMES] },
-          arguments: { type: "OBJECT" },
+          arguments: {
+            type: "OBJECT",
+            properties: {
+              matterId: { type: "STRING" },
+              query: { type: "STRING" },
+              name: { type: "STRING" },
+              documentId: { type: "STRING" },
+              workProductId: { type: "STRING" },
+              id: { type: "STRING" },
+              threadId: { type: "STRING" },
+              includeMembers: { type: "BOOLEAN" },
+            },
+          },
         },
         required: ["name", "arguments"],
       },
@@ -55,7 +86,11 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 function validateToolCall(value: unknown): value is AssistantToolCall {
   if (!isPlainObject(value)) return false;
   if (Object.keys(value).some((key) => key !== "name" && key !== "arguments")) return false;
-  return typeof value.name === "string" && TOOLS.has(value.name) && isPlainObject(value.arguments);
+  if (typeof value.name !== "string" || !TOOLS.has(value.name) || !isPlainObject(value.arguments)) return false;
+  const schema = TOOL_ARGUMENTS[value.name as AssistantToolName];
+  return Object.entries(value.arguments).every(([key, argument]) =>
+    key in schema && typeof argument === schema[key]
+  );
 }
 
 export function validateAssistantPlan(value: unknown, enableWebSearch: boolean): AssistantPlan | null {

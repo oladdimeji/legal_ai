@@ -95,6 +95,8 @@ test("planner output is strict, bounded, and cannot enable disabled web search",
   assert.equal(validateAssistantPlan({ ...valid, rationale: "hidden" }, false), null);
   assert.equal(validateAssistantPlan({ ...valid, needsWeb: true }, false), null);
   assert.equal(validateAssistantPlan({ ...valid, toolCalls: [{ name: "delete_matter", arguments: {} }] }, false), null);
+  assert.equal(validateAssistantPlan({ ...valid, toolCalls: [{ name: "get_matter_overview", arguments: { forgedKey: "case_other" } }] }, false), null);
+  assert.equal(validateAssistantPlan({ ...valid, toolCalls: [{ name: "get_firm_summary", arguments: { includeMembers: "yes" } }] }, false), null);
 });
 
 test("invalid model JSON uses fallback and planner receives the permanent charter", async () => {
