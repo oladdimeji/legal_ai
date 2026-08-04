@@ -1,11 +1,20 @@
 import type { AssistantPlan, AssistantSessionContext } from "./assistantTypes.js";
 import { sessionContextForPrompt } from "./assistantContext.js";
+import type { ModelThinkingLevel } from "../model.js";
 
-export function adaptiveAssistantTemperature(plan: AssistantPlan): number {
-  if (plan.intent === "product_help" || plan.intent === "workspace_lookup" || plan.intent === "document_analysis") return 0.2;
-  if (plan.intent === "legal_analysis") return plan.depth === "thorough" ? 0.25 : 0.22;
-  if (plan.intent === "draft") return 0.25;
-  return plan.depth === "brief" ? 0.35 : 0.42;
+export function adaptiveAssistantThinkingLevel(
+  plan: AssistantPlan
+): ModelThinkingLevel {
+  if (plan.depth === "thorough") return "high";
+
+  if (
+    plan.intent === "product_help" ||
+    plan.intent === "general_conversation"
+  ) {
+    return "low";
+  }
+
+  return "medium";
 }
 
 export function buildAssistantTaskPrompt(input: {

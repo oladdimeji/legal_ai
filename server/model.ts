@@ -6,17 +6,67 @@ dotenv.config();
 // Unified configuration for models per task type
 export const MODEL_CONFIGS = {
   chat: "gemini-3.6-flash",
-  "classify-complexity": "gemini-3.1-flash-lite",
-  "assistant-planner": "gemini-3.1-flash-lite",
-  "assistant-memory": "gemini-3.1-flash-lite",
+  "classify-complexity": "gemini-3.5-flash-lite",
+  "assistant-planner": "gemini-3.5-flash-lite",
+  "assistant-memory": "gemini-3.5-flash-lite",
   "draft-generation": "gemini-3.6-flash",
-  "matter-intelligence": "gemini-3.1-flash-lite",
-  "client-assistant": "gemini-3.1-flash-lite",
+  "matter-intelligence": "gemini-3.6-flash",
+  "client-assistant": "gemini-3.6-flash",
   embedding: "gemini-embedding-2",
-  "summarize-subquestion": "gemini-3.1-flash-lite"
-};
+  "summarize-subquestion": "gemini-3.5-flash-lite",
+} as const;
 
 export type ModelTaskType = keyof typeof MODEL_CONFIGS;
+export type ModelThinkingLevel =
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high";
+
+export const MODEL_THINKING_LEVELS = {
+  chat: "medium",
+  "classify-complexity": "minimal",
+  "assistant-planner": "low",
+  "assistant-memory": "minimal",
+  "draft-generation": "medium",
+  "matter-intelligence": "medium",
+  "client-assistant": "medium",
+  "summarize-subquestion": "low",
+} as const satisfies Partial<Record<ModelTaskType, ModelThinkingLevel>>;
+
+type CallModelOptions = {
+  provider?: Provider;
+  systemInstruction?: string;
+  thinkingLevel?: ModelThinkingLevel;
+  responseMimeType?: string;
+  responseSchema?: any;
+  googleSearch?: boolean;
+  textToEmbed?: string; // used when taskType is 'embedding'
+};
+
+export function buildGenerationConfig(
+  taskType: Exclude<ModelTaskType, "embedding">,
+  options: CallModelOptions
+): any {
+  const config: any = {};
+  if (options.systemInstruction) {
+    config.systemInstruction = options.systemInstruction;
+  }
+  const thinkingLevel = options.thinkingLevel ?? MODEL_THINKING_LEVELS[taskType];
+  if (thinkingLevel) {
+    config.thinkingConfig = { thinkingLevel };
+  }
+  if (options.responseMimeType) {
+    config.responseMimeType = options.responseMimeType;
+  }
+  if (options.responseSchema) {
+    config.responseSchema = options.responseSchema;
+  }
+  if (options.googleSearch) {
+    config.tools = [{ googleSearch: {} }];
+  }
+  return config;
+}
 
 // Lazy initialization of GoogleGenAI client to prevent startup crash if GEMINI_API_KEY is not defined.
 let aiInstance: GoogleGenAI | null = null;
@@ -126,15 +176,7 @@ const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 export async function callModel(
   taskType: ModelTaskType,
   messages: any[],
-  options: {
-    provider?: Provider;
-    systemInstruction?: string;
-    temperature?: number;
-    responseMimeType?: string;
-    responseSchema?: any;
-    googleSearch?: boolean;
-    textToEmbed?: string; // used when taskType is 'embedding'
-  } = {}
+  options: CallModelOptions = {}
 ) {
   const provider = options.provider || "gemini";
 
@@ -178,23 +220,7 @@ export async function callModel(
             };
           });
 
-          // Construct standard config options
-          const config: any = {};
-          if (options.systemInstruction) {
-            config.systemInstruction = options.systemInstruction;
-          }
-          if (typeof options.temperature === "number") {
-            config.temperature = options.temperature;
-          }
-          if (options.responseMimeType) {
-            config.responseMimeType = options.responseMimeType;
-          }
-          if (options.responseSchema) {
-            config.responseSchema = options.responseSchema;
-          }
-          if (options.googleSearch) {
-            config.tools = [{ googleSearch: {} }];
-          }
+          const config = buildGenerationConfig(taskType, options);
 
           const modelName = MODEL_CONFIGS[taskType];
 

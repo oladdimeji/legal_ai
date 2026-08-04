@@ -75,8 +75,7 @@ export async function generateConversationTitle(
 ): Promise<string | null> {
   const result = await modelCall(
     "classify-complexity",
-    [{ role: "user", content: buildConversationTitlePrompt(userRequest) }],
-    { temperature: 0.1 }
+    [{ role: "user", content: buildConversationTitlePrompt(userRequest) }]
   );
   return sanitizeConversationTitle(result.text);
 }

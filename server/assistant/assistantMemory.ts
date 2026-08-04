@@ -88,7 +88,6 @@ ${boundedMemoryMessages(input.messages)}
         properties: { summary: { type: "STRING" } },
         required: ["summary"],
       },
-      temperature: 0.1,
     });
     const parsed = JSON.parse(result.text);
     const summary = sanitizeEvidenceText(parsed?.summary, ASSISTANT_MEMORY_POLICY.maxSummaryCharacters);

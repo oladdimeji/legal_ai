@@ -1392,3 +1392,30 @@ Verification:
 Manual verification not available:
 
 - The authenticated application and browser local-storage controls were not available in this non-interactive environment. The width persistence/reload and live normal, attachment, Draft, streaming-transition, 360px overflow, and reduced-motion checks remain outstanding.
+
+## Gemini Model Standardization
+
+Status: Complete.
+
+Implemented:
+
+- Standardized substantive legal and user-visible generation on `gemini-3.6-flash`, lightweight structured and internal work on `gemini-3.5-flash-lite`, and embeddings on `gemini-embedding-2`.
+- Added centralized task thinking defaults plus the confirmed adaptive and call-specific overrides for Assistant, research, and Draft work.
+- Removed deprecated temperature sampling from the shared model layer and all production Gemini call sites without adding replacement sampling parameters.
+- Preserved the existing `generateContent` and `embedContent` architecture, Google Search opt-in conditions, grounding metadata and citation processing, retry behavior, and sanitized errors.
+- Kept embeddings at 768 dimensions with unchanged input formatting and no re-embedding.
+
+Schema changes:
+
+- None. No database or migration changes were made.
+
+Tests:
+
+- Added focused deterministic coverage for exact model assignments, thinking defaults and overrides, adaptive Assistant thinking, unchanged embeddings, and the absence of deprecated sampling configuration in production generation code.
+
+Verification:
+
+- `npm ci`: passed via `npm.cmd`.
+- `npm run verify`: passed outside the filesystem sandbox because Vite requires parent-directory access on this host.
+- TypeScript lint/type checking passed, all 250 tests passed, and the production Vite/esbuild build passed.
+- The existing Vite warning for a JavaScript chunk exceeding 500 kB remains.

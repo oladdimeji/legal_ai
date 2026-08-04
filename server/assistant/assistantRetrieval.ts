@@ -95,7 +95,6 @@ async function reformulateWeakQuery(
         properties: { query: { type: "STRING" } },
         required: ["query"],
       },
-      temperature: 0.1,
     });
     const parsed = JSON.parse(result.text);
     if (!parsed || typeof parsed.query !== "string") return null;

@@ -276,7 +276,6 @@ ${JSON.stringify({
       systemInstruction: LAWYER_ASSISTANT_CHARTER,
       responseMimeType: "application/json",
       responseSchema: plannerResponseSchema,
-      temperature: 0.1,
     });
     const parsed = validateAssistantPlan(JSON.parse(result.text), input.enableWebSearch);
     return parsed || fallbackAssistantPlan(input);

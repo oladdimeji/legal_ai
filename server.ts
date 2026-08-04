@@ -47,7 +47,7 @@ import { legacyRequestMode, planAssistantRequest } from "./server/assistant/assi
 import { executeAssistantToolPlan } from "./server/assistant/assistantToolExecutor.js";
 import { temporaryAttachmentEvidence, wrapAuthorizedEvidence } from "./server/assistant/assistantEvidence.js";
 import { resolveAssistantClarification } from "./server/assistant/assistantClarification.js";
-import { adaptiveAssistantTemperature, buildAssistantTaskPrompt } from "./server/assistant/assistantPrompts.js";
+import { adaptiveAssistantThinkingLevel, buildAssistantTaskPrompt } from "./server/assistant/assistantPrompts.js";
 import {
   conversationContextWithMemory,
   refreshAssistantMemory,
@@ -310,7 +310,6 @@ LATEST ANSWER:
 ${answer.slice(0, 5000)}`;
     const result = await callModel("classify-complexity", [{ role: "user", content: prompt }], {
       responseMimeType: "application/json",
-      temperature: 0.2,
       systemInstruction: LAWYER_ASSISTANT_CHARTER,
     });
     const parsed = JSON.parse(result.text);
@@ -347,7 +346,6 @@ STARTING CONTENT:
 ${input.startingContent.slice(0, 20000)}`;
     const result = await callModel("classify-complexity", [{ role: "user", content: prompt }], {
       responseMimeType: "application/json",
-      temperature: 0.1,
     });
     const parsed = JSON.parse(result.text);
     return Object.fromEntries(
@@ -1173,7 +1171,7 @@ ${history}`;
                   await callModel(
                     "client-assistant",
                     [{ role: "user", content: prompt }],
-                    { temperature: 0.2, systemInstruction: clientSystemInstruction }
+                    { systemInstruction: clientSystemInstruction }
                   )
                 ).text
               );
@@ -1368,7 +1366,7 @@ PRIOR CHAT:
 ${history || "No prior chat."}
 
 CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
-      const result = await callModel("client-assistant", [{ role: "user", content: prompt }], { temperature: 0.2 });
+      const result = await callModel("client-assistant", [{ role: "user", content: prompt }]);
       const cleanedText = cleanClientAssistantContent(result.text);
       const assistantMessage = await db.addPortalChatMessage(tokenHash, "assistant", cleanedText, selectedLabels);
       res.setHeader("Cache-Control", "no-store");
@@ -1703,7 +1701,7 @@ JURISDICTION: ${bundle.matter.jurisdiction || "Not confirmed"}
 
 ACTIVE MATTER SOURCES:
 ${sourceText}`;
-      const generated = await callModel("matter-intelligence", [{ role: "user", content: prompt }], { temperature: 0.2 });
+      const generated = await callModel("matter-intelligence", [{ role: "user", content: prompt }]);
       return res.status(201).json(
         await db.saveGeneratedMatterIntelligence(
           bundle.matter.id, cleanMatterIntelligenceContent(cleanGeneratedText(generated.text)), bundle.snapshot, requestOwnership
@@ -2173,7 +2171,7 @@ ${sourceText}`;
             const splitResult = await callModel(
               "classify-complexity",
               [{ role: "user", content: `Break this document request into 2 to 3 concise research questions that must be resolved before drafting. Return JSON with exactly this schema: {"subQuestions":["question"]}.\n\nRequest: ${content}` }],
-              { responseMimeType: "application/json", systemInstruction: LAWYER_ASSISTANT_CHARTER }
+              { responseMimeType: "application/json", thinkingLevel: "low", systemInstruction: LAWYER_ASSISTANT_CHARTER }
             );
             const parsed = JSON.parse(splitResult.text);
             if (Array.isArray(parsed.subQuestions)) {
@@ -2227,7 +2225,11 @@ ${sourceText}`;
         const draftResult = await callModel(
           "draft-generation",
           [{ role: "user", content: draftPrompt }],
-          { googleSearch: enableWebSearch === true, temperature: 0.25, systemInstruction: LAWYER_ASSISTANT_CHARTER }
+          {
+            googleSearch: enableWebSearch === true,
+            thinkingLevel: forceDeepResearch === true ? "high" : "medium",
+            systemInstruction: LAWYER_ASSISTANT_CHARTER,
+          }
         );
         const draftContent = cleanGeneratedWorkProductContent(draftResult.text);
         if (!draftContent) throw new Error("The model did not return document content");
@@ -2285,7 +2287,7 @@ ${sourceText}`;
         });
         const modelResult = await callModel("chat", [{ role: "user", content: prompt }], {
           googleSearch: enableWebSearch === true && assistantPlan.needsWeb,
-          temperature: adaptiveAssistantTemperature(assistantPlan),
+          thinkingLevel: adaptiveAssistantThinkingLevel(assistantPlan),
           systemInstruction: LAWYER_ASSISTANT_CHARTER,
         });
         const groundingCitationIds: Record<number, string> = {};
@@ -2355,7 +2357,7 @@ ${conversationContext || "No prior conversation."}
 User question: ${content}`;
         const modelResult = await callModel("chat", [{ role: "user", content: modelPrompt }], {
           googleSearch: assistantMode === "general" && enableWebSearch === true && assistantPlan.needsWeb,
-          temperature: assistantPlan.intent === "general_conversation" ? 0.4 : 0.2,
+          thinkingLevel: adaptiveAssistantThinkingLevel(assistantPlan),
           systemInstruction: LAWYER_ASSISTANT_CHARTER,
         });
         const citations: Citation[] = [];
@@ -2400,6 +2402,7 @@ User question: ${content}`;
         try {
           const splitResult = await callModel("classify-complexity", [{ role: "user", content: `Break this complex research request into 2 to 3 concise retrieval sub-questions. Return JSON with exactly this schema: {"subQuestions":["question"]}.\n\nRequest: ${content}` }], {
             responseMimeType: "application/json",
+            thinkingLevel: "low",
             systemInstruction: LAWYER_ASSISTANT_CHARTER,
           });
           const parsed = JSON.parse(splitResult.text);
@@ -2570,7 +2573,7 @@ ${citationInstSearch}`;
 
         const finalResult = await callModel("chat", [{ role: "user", content: synthesisPrompt }], {
           googleSearch: enableWebSearch === true,
-          temperature: 0.25,
+          thinkingLevel: "high",
           systemInstruction: LAWYER_ASSISTANT_CHARTER,
         });
 
@@ -2675,7 +2678,7 @@ ${citationInstSearch}`;
 
         const finalResult = await callModel("chat", [{ role: "user", content: chatPrompt }], {
           googleSearch: enableWebSearch === true,
-          temperature: 0.22,
+          thinkingLevel: "medium",
           systemInstruction: LAWYER_ASSISTANT_CHARTER,
         });
 
@@ -2888,9 +2891,7 @@ SHARED INSTRUCTIONS:
 4. Do not append generic legal-advice, AI, lawyer-review, consultation, informational-purpose, or limitation-of-liability disclaimer boilerplate. State genuine evidentiary uncertainty directly and specifically instead. Do not remove substantive analysis of disclaimer clauses contained in the conversation or sources.
 5. Output the draft using elegant, rich markdown with readable headers. Do not wrap in generic JSON, just output the clean draft text.`;
 
-      const draftResult = await callModel("draft-generation", [{ role: "user", content: draftPrompt }], {
-        temperature: 0.3
-      });
+      const draftResult = await callModel("draft-generation", [{ role: "user", content: draftPrompt }]);
 
       const cleanedContent = cleanGeneratedWorkProductContent(draftResult.text);
       const subjectTitle = extractGeneratedSubject(cleanedContent);
