@@ -1366,3 +1366,29 @@ Verification:
 - `npm test`: passed, 240/240 tests.
 - `npm run build`: passed outside the filesystem sandbox because Vite requires parent-directory access on this host.
 - The existing Vite warning for a JavaScript chunk exceeding 500 kB remains.
+
+## Compact Assistant UI/UX — Phase 2: Progressive Activity Display
+
+Status: Complete.
+
+Implemented:
+
+- Replaced the rotating single status with a forward-only progressive activity block that stops at its final stage.
+- Completed stages remain visible with static grayscale checkmarks while only the current stage pulses.
+- Attachment review is inserted only for requests with temporary attachments, and Draft requests use document-specific preparation and refinement wording.
+- Active pulsing respects reduced-motion preferences, and the compact rows wrap safely within the Assistant panel.
+- The activity block disappears as soon as response streaming begins.
+- Assistant reasoning, retrieval, request handling, payloads, and response streaming behavior were unchanged.
+- No backend, schema, dependency, or API changes were made.
+
+Verification:
+
+- Focused Assistant activity tests: passed, 14/14 tests.
+- `npm run lint`: passed via `npm.cmd`.
+- `npm test`: passed, 245/245 tests.
+- `npm run build`: passed outside the filesystem sandbox because Vite requires parent-directory access on this host.
+- The existing Vite warning for a JavaScript chunk exceeding 500 kB remains.
+
+Manual verification not available:
+
+- The authenticated application and browser local-storage controls were not available in this non-interactive environment. The width persistence/reload and live normal, attachment, Draft, streaming-transition, 360px overflow, and reduced-motion checks remain outstanding.

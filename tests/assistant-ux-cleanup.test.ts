@@ -35,21 +35,32 @@ test("Assistant research sources retain web search and attachments without retir
   assert.match(route, /sourceName: "Temporary File Attachment"/);
 });
 
-test("Assistant uses rotating working statuses and completes designed response streaming", async () => {
-  const assistant = await readFile("src/components/AssistantView.tsx", "utf8");
+test("Assistant uses progressive working activities and completes designed response streaming", async () => {
+  const [assistant, activityHelper] = await Promise.all([
+    readFile("src/components/AssistantView.tsx", "utf8"),
+    readFile("src/lib/assistantWorkingActivities.ts", "utf8"),
+  ]);
+  const activityImplementation = `${assistant}\n${activityHelper}`;
 
-  assert.doesNotMatch(assistant, /ANALYZING MATERIALS|Analyzing materials|connector API endpoints/i);
-  assert.match(assistant, /Understanding your request…/);
-  assert.match(assistant, /Checking the relevant context…/);
-  assert.doesNotMatch(assistant, /Reviewing Matter sources…|Reviewing Firm Library materials…/);
-  assert.match(assistant, /hasAttachments[\s\S]*Reviewing attached documents…/);
-  assert.doesNotMatch(assistant, /Searching the web…|Breaking the question into research steps…|Checking research depth…/);
-  assert.match(assistant, /Refining the response…/);
-  assert.match(assistant, /Preparing the response…/);
+  assert.doesNotMatch(activityImplementation, /ANALYZING MATERIALS|Analyzing materials|connector API endpoints/i);
+  assert.match(activityHelper, /Understanding your request…[\s\S]*Request understood/);
+  assert.match(activityHelper, /Checking the relevant context…[\s\S]*Relevant context checked/);
+  assert.doesNotMatch(activityImplementation, /Reviewing Matter sources…|Reviewing Firm Library materials…/);
+  assert.match(activityHelper, /hasAttachments[\s\S]*Reviewing attached documents…[\s\S]*Attached documents reviewed/);
+  assert.doesNotMatch(activityImplementation, /Searching the web…|Breaking the question into research steps…|Checking research depth…/);
+  assert.match(activityHelper, /Preparing the response…[\s\S]*Response prepared/);
+  assert.match(activityHelper, /Refining the response…/);
   assert.match(assistant, /const WORKING_ACTIVITY_DELAY_MS = 2000/);
-  assert.match(assistant, /\(current \+ 1\) % workingStages\.length/);
-  assert.doesNotMatch(assistant, /Math\.min\(current \+ 1, workingStages\.length - 1\)/);
-  assert.doesNotMatch(assistant, /classificationReason|Classifier result|confidence score/i);
+  assert.doesNotMatch(activityImplementation, /\(current(?:Index)? \+ 1\) %/);
+  assert.match(activityHelper, /Math\.min\(currentIndex \+ 1, activityCount - 1\)/);
+  assert.match(assistant, /workingStageIndex >= workingActivities\.length - 1/);
+  assert.match(assistant, /visibleAssistantWorkingActivities\([\s\S]*workingActivities,[\s\S]*workingStageIndex/);
+  assert.match(assistant, /activity\.isCompleted[\s\S]*<Check /);
+  assert.match(assistant, /activity\.isCompleted[\s\S]*\? "text-zinc-500"[\s\S]*: "animate-pulse text-zinc-700 motion-reduce:animate-none"/);
+  assert.match(assistant, /\{loading && !streaming && \(/);
+  assert.match(assistant, /role="status"[\s\S]*aria-live="polite"/);
+  assert.match(assistant, /min-w-0 break-words/);
+  assert.doesNotMatch(activityImplementation, /classificationReason|Classifier result|confidence score/i);
   assert.match(assistant, /const \[streaming, setStreaming\]/);
   assert.match(assistant, /\{ \.\.\.savedAssistantMessage, content: "" \}/);
   assert.match(assistant, /content: revealedContent/);

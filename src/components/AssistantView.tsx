@@ -15,6 +15,12 @@ import FileSourcePicker from "./FileSourcePicker";
 import { browserFileIdentity, MAX_SELECTED_FILES } from "../hooks/useCumulativeFileSelection";
 import { assistantCitationsToDisplayText } from "../lib/assistantCitations";
 import { routeAssistantRequest } from "../lib/assistantRequestRouting";
+import {
+  advanceWorkingActivityIndex,
+  buildAssistantWorkingActivities,
+  visibleAssistantWorkingActivities,
+  type WorkingActivity,
+} from "../lib/assistantWorkingActivities";
 
 type TemporaryFile = {
   id: string;
@@ -41,35 +47,6 @@ const STOP_WORDS = new Set([
 ]);
 
 const WORKING_ACTIVITY_DELAY_MS = 2000;
-
-function buildWorkingActivities({
-  queryText,
-  hasMatter,
-  hasAttachments,
-  webSearchEnabled,
-  requestMode,
-}: {
-  queryText: string;
-  hasMatter: boolean;
-  hasAttachments: boolean;
-  webSearchEnabled: boolean;
-  requestMode: ReturnType<typeof routeAssistantRequest>;
-}): string[] {
-  const activities = [
-    "Understanding your request…",
-    "Checking the relevant context…",
-  ];
-
-  if (hasAttachments) {
-    activities.push("Reviewing attached documents…");
-  }
-  activities.push(
-    requestMode === "draft" ? "Preparing the document…" : "Preparing the response…",
-    requestMode === "draft" ? "Refining the document…" : "Refining the response…"
-  );
-
-  return activities.filter((activity, index) => activity !== activities[index - 1]);
-}
 
 function getProcessedSnippet(snippet: string, queryText: string, maxLen: number = 300): { element: React.ReactNode; isTruncated: boolean } {
   if (!snippet) {
@@ -172,7 +149,7 @@ export default function AssistantView({
   const [draftMode, setDraftMode] = useState(false);
   const [loading, setLoading] = useState(false);
   const [streaming, setStreaming] = useState(false);
-  const [workingStages, setWorkingStages] = useState<string[]>([]);
+  const [workingActivities, setWorkingActivities] = useState<WorkingActivity[]>([]);
   const [workingStageIndex, setWorkingStageIndex] = useState(0);
   const [citationPanelSource, setCitationPanelSource] = useState<Citation | null>(null);
   const [activeMessageCitations, setActiveMessageCitations] = useState<Citation[]>([]);
@@ -374,21 +351,25 @@ export default function AssistantView({
   }, [messages, loading, workingStageIndex]);
 
   useEffect(() => {
-    if (!loading || streaming || workingStages.length < 2) return;
-    const advanceActivity = () => {
-      workingActivityTimerRef.current = window.setTimeout(() => {
-        setWorkingStageIndex((current) => (current + 1) % workingStages.length);
-        advanceActivity();
-      }, WORKING_ACTIVITY_DELAY_MS);
-    };
-    advanceActivity();
+    if (
+      !loading ||
+      streaming ||
+      workingActivities.length < 2 ||
+      workingStageIndex >= workingActivities.length - 1
+    ) return;
+    workingActivityTimerRef.current = window.setTimeout(() => {
+      workingActivityTimerRef.current = null;
+      setWorkingStageIndex((current) =>
+        advanceWorkingActivityIndex(current, workingActivities.length)
+      );
+    }, WORKING_ACTIVITY_DELAY_MS);
     return () => {
       if (workingActivityTimerRef.current !== null) {
         window.clearTimeout(workingActivityTimerRef.current);
         workingActivityTimerRef.current = null;
       }
     };
-  }, [loading, streaming, workingStages]);
+  }, [loading, streaming, workingActivities, workingStageIndex]);
 
   useEffect(() => {
     componentMountedRef.current = true;
@@ -460,11 +441,8 @@ export default function AssistantView({
       responseMode: draftMode ? "draft" : "chat",
       hasTemporaryFiles: temporaryFiles.some((file) => file.status === "ready"),
     });
-    setWorkingStages(buildWorkingActivities({
-      queryText,
-      hasMatter: submittedPageContext.routeKind === "matter",
+    setWorkingActivities(buildAssistantWorkingActivities({
       hasAttachments: temporaryFiles.some((file) => file.status === "ready"),
-      webSearchEnabled: enableWebSearch,
       requestMode,
     }));
     setInputValue("");
@@ -1286,20 +1264,41 @@ export default function AssistantView({
                 );
               })}
 
-              {loading && (
-                !streaming && (
-                  <div className="flex items-start" id="chat-loading-indicator" aria-live="polite">
-                    <div className="bg-zinc-50 border border-zinc-200 rounded-lg px-4 py-3 max-w-xl flex items-center gap-3 select-none">
-                      <span className="relative flex h-2.5 w-2.5">
-                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-zinc-400 opacity-50" />
-                        <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-zinc-800" />
-                      </span>
-                      <p className="text-xs font-mono font-medium text-zinc-700">
-                        {workingStages[workingStageIndex] || "Understanding your request…"}
-                      </p>
-                    </div>
+              {loading && !streaming && (
+                <div
+                  className="flex min-w-0 items-start"
+                  id="chat-loading-indicator"
+                  role="status"
+                  aria-live="polite"
+                >
+                  <div className="flex w-full max-w-xl min-w-0 flex-col gap-2 overflow-hidden rounded-lg border border-zinc-200 bg-zinc-50 px-4 py-3 select-none">
+                    {visibleAssistantWorkingActivities(
+                      workingActivities,
+                      workingStageIndex
+                    ).map((activity) => (
+                      <div
+                        key={activity.activeLabel}
+                        className={`flex min-w-0 items-start gap-2 ${
+                          activity.isCompleted
+                            ? "text-zinc-500"
+                            : "animate-pulse text-zinc-700 motion-reduce:animate-none"
+                        }`}
+                      >
+                        {activity.isCompleted ? (
+                          <Check className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                        ) : (
+                          <span
+                            className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-zinc-700"
+                            aria-hidden="true"
+                          />
+                        )}
+                        <p className="min-w-0 break-words text-xs font-mono font-medium leading-relaxed">
+                          {activity.label}
+                        </p>
+                      </div>
+                    ))}
                   </div>
-                )
+                </div>
               )}
 
               <div ref={messagesEndRef} />
