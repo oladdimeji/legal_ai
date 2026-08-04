@@ -1,9 +1,7 @@
 import type { Document as DocxDocument } from "docx";
-import { normalizeMarkdown } from "./docx/normalizeMarkdown.js";
-import { parseMarkdownBlocks } from "./docx/parseMarkdownBlocks.js";
+import { compileDocument } from "../shared/document/compileDocument.js";
 import { renderDocx } from "./docx/renderDocx.js";
 
 export function markdownToDocxDocument(title: string, markdown: string): DocxDocument {
-  const normalized = normalizeMarkdown(title, markdown);
-  return renderDocx(title, parseMarkdownBlocks(normalized));
+  return renderDocx(compileDocument(title, markdown));
 }

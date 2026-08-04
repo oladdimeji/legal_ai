@@ -1419,3 +1419,44 @@ Verification:
 - `npm run verify`: passed outside the filesystem sandbox because Vite requires parent-directory access on this host.
 - TypeScript lint/type checking passed, all 250 tests passed, and the production Vite/esbuild build passed.
 - The existing Vite warning for a JavaScript chunk exceeding 500 kB remains.
+
+## Professional Word/DOCX Generation — Table and Layout Standardization
+
+Status: Complete.
+
+Implemented:
+
+- Added a framework-neutral canonical compiler under `shared/document/`. It normalizes an export copy of the persisted Markdown, parses a standards-based GFM AST into typed semantic blocks, applies conservative legal-heading and pagination rules, plans tables, and returns non-sensitive diagnostics. The stable `markdownToDocxDocument(title, markdown)` façade now compiles once and passes that result to the Word renderer; compatibility modules only re-export the canonical implementation.
+- Replaced handwritten block interpretation with direct `unified` 11.0.5 and `remark-parse` 11.0.0 dependencies plus the existing `remark-gfm` pipeline. Supported structures include H1-H6, soft and hard breaks, safe inline formatting and links, bounded lists with authored starts, blockquotes, code, GFM tables, alignment markers, safe `<br>` and `<u>`, and readable unsupported-HTML fallback.
+- Centralized the semantic document theme and Letter page constants. DOCX remains Arial, grayscale, US Letter, with 0.9-inch margins, first-page header suppression, subsequent title headers, and continuous `Page X of Y` fields.
+- Added deterministic column classification and sizing from header/body lengths, median and average content, longest tokens, hard breaks, empty-cell share, numeric/date/status patterns, prose density, and column count. Positive normalized weights are bounded, then converted by largest-remainder rounding so grid widths exactly equal the portrait or landscape content width.
+- Added readability-based wide-table classification. Portrait remains the default; only tables whose calculated minimum readable widths exceed portrait capacity and also have sufficient column/prose density move to a new landscape section. Normal content returns to portrait, and an immediately preceding heading can move with its wide table.
+- Ordinary tables now emit explicit DXA table, grid, and cell widths with autofit layout, repeated nonsplitting header rows, authored or conservatively inferred paragraph alignment, grayscale borders/shading, cell margins, and 8.5–10 pt table-specific typography. Recognized two-party signature tables remain portrait, borderless, unshaded, and fixed at 50/50.
+- Row pagination is deterministic: headers never split; short compact rows and short signature rows remain together; long prose-heavy rows may split; and table-cell paragraphs do not use `keepLines`. This prevents substantial rows from forcing avoidable blank page areas.
+- Added conservative malformed-table normalization for missing/inconsistent outer pipes, two-dash separators, empty headers, missing trailing cells, extra empty trailing cells, escaped literal pipes, alignment colons, and `<br>`. Ambiguous structures become labelled readable paragraphs without raw separator or pipe rows. Diagnostics never include source text, IDs, authentication data, or Matter data and are not stored, logged, or returned to clients.
+- Added shared export-safe GFM drafting rules to Assistant document drafting, Work Product generation, and Matter Intelligence generation without changing model IDs, thinking, grounding, retrieval, evidence, metadata, citation, uncertainty, disclaimer, or exact Matter Intelligence heading requirements.
+- Added representative Markdown fixtures, compiler/layout/prompt/XML/route regression coverage, and `npm run docx:fixtures`, which generates review documents through the real façade into gitignored `tmp/docx-review/` without Gemini, database access, or user data.
+
+Dependencies:
+
+- Added `unified` 11.0.5 and `remark-parse` 11.0.0 as the minimum direct parsing dependencies. Both integrate with the existing direct `remark-gfm` dependency; no conversion framework or remote service was added.
+
+Schema and phase boundary:
+
+- No schema or migration changes. Markdown remains the persisted format and no stored document was rewritten.
+- No changes to frontend Preview, Editor, document styling, `FormattedMarkdown`, `WorkProductDocument`, `RichDocumentEditor`, or `richMarkdown.ts`.
+- All five existing export paths retain the shared façade and their existing authentication, ownership, cleanup, filename, header, and route behavior.
+
+Verification:
+
+- `npm ci`: could not complete because Windows returned `EPERM` while unlinking the in-use `lightningcss.win32-x64-msvc.node` binary. The partially removed tree was repaired with the permitted lockfile-consistent `npm install`; `npm ls --depth=0` then passed. No dependency version was changed to bypass the host error.
+- `npm run lint`: passed (`tsc --noEmit`).
+- `npm test`: passed, 259/259 tests.
+- `npm run build`: passed with the established parent-directory filesystem permission required by Vite on this host. The existing JavaScript chunk-size warning remains.
+- `npm run docx:fixtures`: passed and generated 16 gitignored review files under `tmp/docx-review/`.
+- `npm run verify`: passed; lint, all 259 tests, and the production Vite/esbuild build completed successfully.
+
+Outstanding manual review:
+
+- Microsoft Word checks for the memorandum, signature agreement, long prose table, landscape transition, repair warnings, row pagination, repeating headers, clipping/overlap, avoidable blank space, and editability remain outstanding until performed in an interactive Word environment.
+- A secondary Word Online or LibreOffice compatibility check remains outstanding.

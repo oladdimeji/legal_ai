@@ -179,8 +179,9 @@ test("tables parse safely and signature tables are detected conservatively", () 
     assert.equal(plainInline(generic.rows[1].cells[0]), "A | B");
   }
   const malformed = parseMarkdownBlocks("| A | B |\n|--|---|\n| one | two |");
-  assert.equal(malformed.some((block) => block.type === "table"), false);
-  assert.match(malformed.map(blockText).join(" "), /A.*B.*one.*two/);
+  assert.equal(malformed.some((block) => block.type === "table"), true);
+  assert.match(malformed.map(blockText).join(" "), /A[\s\S]*B[\s\S]*one[\s\S]*two/);
+  assert.doesNotMatch(malformed.map(blockText).join(" "), /\|--/);
 
   const namedParties = parseMarkdownBlocks("| ACME LLC | BETA INC |\n|---|---|\n| Signature: ___ | Signature: ___ |\n| Name: ___ | Name: ___ |")[0];
   assert.ok(namedParties.type === "table" && namedParties.signatureLayout);

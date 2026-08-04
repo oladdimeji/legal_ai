@@ -1,5 +1,6 @@
 import { WorkspacePageContext } from "../src/types.js";
 import { extractGeneratedSubject, extractSummaryHeading } from "./extractGeneratedSubject.js";
+import { EXPORT_SAFE_DOCUMENT_MARKDOWN_RULES } from "./documentDraftingRules.js";
 
 const WORKSPACE_DRAFT_PATTERN = /\b(?:matter|client file|firm library|workspace|source|work product|uploaded|attached|document on (?:this|the) page)\b/i;
 
@@ -73,7 +74,9 @@ Drafting rules:
 6. Do not emit internal [cit_*] tokens, numbered source markers, internal source IDs, a references list, or a source appendix unless the user explicitly requested formal citations or a source appendix. Name relevant authorities naturally when needed.
 7. Do not emit bracketed placeholders when supplied metadata resolves the value. Where a genuinely required deal term is missing, use a clearly identified drafting blank only if omitting it would make the document unusable.
 8. Do not add generic AI, legal-advice, lawyer-review, consultation, or informational-purpose disclaimer boilerplate.
-9. Output rich, clean Markdown only. Do not wrap the document in JSON or preface it with an explanation.`;
+9. Output rich, clean Markdown only. Do not wrap the document in JSON or preface it with an explanation.
+
+${EXPORT_SAFE_DOCUMENT_MARKDOWN_RULES}`;
 }
 
 export function titleForAssistantDraft(

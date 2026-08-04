@@ -30,6 +30,7 @@ import {
 } from "./server/clientDocumentRetrieval.js";
 import { extractGeneratedSubject, extractSummaryHeading } from "./server/extractGeneratedSubject.js";
 import { getWorkProductFormatInstructions, isWorkProductFormat } from "./server/workProductFormat.js";
+import { EXPORT_SAFE_DOCUMENT_MARKDOWN_RULES } from "./server/documentDraftingRules.js";
 import { canonicalizeAssistantCitations, rewriteGoogleGroundingCitations, stripInternalCitationsForWorkProduct } from "./src/lib/assistantCitations.js";
 import { sanitizeWorkspacePageContext } from "./src/lib/workspacePageContext.js";
 import {
@@ -1695,6 +1696,8 @@ Use exactly these Markdown section headings:
 ## Open Questions and Recommended Next Actions
 State uncertainty clearly. Do not add assignees, due dates, or task workflow.
 
+${EXPORT_SAFE_DOCUMENT_MARKDOWN_RULES}
+
 MATTER: ${bundle.matter.name}
 ASSIGNMENT: ${bundle.matter.description}
 JURISDICTION: ${bundle.matter.jurisdiction || "Not confirmed"}
@@ -2889,7 +2892,9 @@ SHARED INSTRUCTIONS:
 2. Use the server-provided current date exactly when a date is needed. Do not invent another date.
 3. Do not emit bracketed placeholders such as [Client Name], [Your Name], or [Firm Name] when the metadata supplies those values. If optional metadata is missing, omit that field or use a neutral professional phrasing.
 4. Do not append generic legal-advice, AI, lawyer-review, consultation, informational-purpose, or limitation-of-liability disclaimer boilerplate. State genuine evidentiary uncertainty directly and specifically instead. Do not remove substantive analysis of disclaimer clauses contained in the conversation or sources.
-5. Output the draft using elegant, rich markdown with readable headers. Do not wrap in generic JSON, just output the clean draft text.`;
+5. Output the draft using elegant, rich markdown with readable headers. Do not wrap in generic JSON, just output the clean draft text.
+
+${EXPORT_SAFE_DOCUMENT_MARKDOWN_RULES}`;
 
       const draftResult = await callModel("draft-generation", [{ role: "user", content: draftPrompt }]);
 
