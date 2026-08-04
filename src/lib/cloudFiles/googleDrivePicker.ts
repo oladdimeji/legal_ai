@@ -128,7 +128,7 @@ export function pickGoogleDriveItems(
     try {
       const picker = google.picker;
       const view = new picker.DocsView(picker.ViewId.DOCS)
-        .setIncludeFolders(false)
+        .setIncludeFolders(true)
         .setSelectFolderEnabled(false)
         .setMimeTypes(GOOGLE_PICKER_MIME_TYPES.join(","));
       let builder = new picker.PickerBuilder()

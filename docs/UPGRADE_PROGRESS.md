@@ -1,5 +1,11 @@
 # Compact Upgrade Progress
 
+## Google Drive folder navigation
+
+- Enabled folder visibility for Google Drive Picker navigation while keeping folders unselectable.
+- Preserved the existing `drive.file` scope and supported-file filtering; no schema, backend, dependency, or supported-file changes were made.
+- Verification: focused cloud-file selection tests passed (14/14), lint passed, the full test suite passed (236/236), and the production build passed.
+
 ## Preparation baseline
 
 - Date: 2026-07-21

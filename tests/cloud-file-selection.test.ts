@@ -18,6 +18,7 @@ import {
   downloadGoogleDriveItem,
   downloadGoogleDriveItems,
   clearGoogleDriveAccessToken,
+  pickGoogleDriveItems,
   requestGoogleDriveAccessToken,
 } from "../src/lib/cloudFiles/googleDrivePicker.js";
 import {
@@ -146,6 +147,63 @@ test("Google authorization requests only drive.file and never touches browser st
     assert.equal(storageTouched, false);
   } finally {
     clearGoogleDriveAccessToken();
+    restoreWindow();
+  }
+});
+
+test("Google Picker shows folders for navigation without allowing folder selection", async () => {
+  let includeFolders: boolean | undefined;
+  let selectFolderEnabled: boolean | undefined;
+  let mimeTypes: string | undefined;
+  let pickerCallback: ((response: GooglePickerResponse) => void) | undefined;
+
+  class FakeDocsView implements GooglePickerDocsView {
+    constructor(_viewId: string) {}
+    setIncludeFolders(include: boolean) { includeFolders = include; return this; }
+    setSelectFolderEnabled(enabled: boolean) { selectFolderEnabled = enabled; return this; }
+    setMimeTypes(value: string) { mimeTypes = value; return this; }
+  }
+
+  class FakePickerBuilder implements GooglePickerBuilder {
+    addView(_view: GooglePickerDocsView) { return this; }
+    setAppId(_appId: string) { return this; }
+    setCallback(callback: (response: GooglePickerResponse) => void) { pickerCallback = callback; return this; }
+    setDeveloperKey(_apiKey: string) { return this; }
+    setOAuthToken(_token: string) { return this; }
+    setOrigin(_origin: string) { return this; }
+    enableFeature(_feature: string) { return this; }
+    build() {
+      return {
+        setVisible: () => pickerCallback?.({ action: "cancel" }),
+      };
+    }
+  }
+
+  const restoreWindow = replaceWindow({
+    location: { origin: "https://app.example" } as Location,
+    google: {
+      accounts: { oauth2: {} as NonNullable<Window["google"]>["accounts"]["oauth2"] },
+      picker: {
+        Action: { PICKED: "picked", CANCEL: "cancel" },
+        Document: { ID: "id", NAME: "name", MIME_TYPE: "mimeType", SIZE_BYTES: "size", LAST_EDITED_UTC: "lastEdited" },
+        Feature: { MULTISELECT_ENABLED: "multiselect" },
+        Response: { ACTION: "action", DOCUMENTS: "documents" },
+        ViewId: { DOCS: "docs" },
+        DocsView: FakeDocsView,
+        PickerBuilder: FakePickerBuilder,
+      },
+    },
+  } as Partial<Window>);
+
+  try {
+    await assert.rejects(
+      pickGoogleDriveItems({ clientId: "client", apiKey: "key", appId: "app" }, "token"),
+      { name: "CloudPickerCancelled" }
+    );
+    assert.equal(includeFolders, true);
+    assert.equal(selectFolderEnabled, false);
+    assert.equal(mimeTypes, GOOGLE_PICKER_MIME_TYPES.join(","));
+  } finally {
     restoreWindow();
   }
 });
