@@ -13,6 +13,7 @@ COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci
 
 COPY index.html metadata.json tsconfig.json vite.config.ts server.ts ./
+COPY shared ./shared
 COPY server ./server
 COPY src ./src
 COPY scripts ./scripts

@@ -50,6 +50,7 @@ test("Docker deployment is production-only and checks the existing health route"
 
   assert.match(dockerfile, /FROM node:22-bookworm-slim AS build/);
   assert.match(dockerfile, /npm ci/);
+  assert.match(dockerfile, /COPY shared \.\/shared/);
   assert.match(dockerfile, /npm prune --omit=dev/);
   assert.match(dockerfile, /COPY --from=build --chown=node:node \/app\/node_modules \.\/node_modules/);
   assert.match(dockerfile, /USER node/);
