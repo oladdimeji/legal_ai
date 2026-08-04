@@ -53,3 +53,15 @@ export function wrapAuthorizedEvidence(evidence: AssistantEvidence[]): string {
     .join("\n");
   return `<authorized_workspace_evidence>\n${body || "No authorized workspace evidence was retrieved."}\n</authorized_workspace_evidence>`;
 }
+
+export function temporaryAttachmentEvidence(
+  files: ReadonlyArray<{ filename: string; text: string }>
+): AssistantEvidence[] {
+  return files.map((file, index) => ({
+    id: `temporary_${index + 1}`,
+    sourceType: "temporaryAttachment",
+    title: file.filename,
+    sourceName: "Temporary File Attachment",
+    text: file.text,
+  }));
+}

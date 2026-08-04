@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { LAWYER_ASSISTANT_CHARTER } from "../server/assistant/assistantCharter.js";
-import { sanitizeEvidenceText, wrapAuthorizedEvidence } from "../server/assistant/assistantEvidence.js";
+import {
+  sanitizeEvidenceText,
+  temporaryAttachmentEvidence,
+  wrapAuthorizedEvidence,
+} from "../server/assistant/assistantEvidence.js";
+import {
+  isFalseTemporaryAttachmentClarification,
+  resolveAssistantClarification,
+} from "../server/assistant/assistantClarification.js";
 import {
   fallbackAssistantPlan,
   planAssistantRequest,
@@ -36,6 +44,7 @@ function input(content: string, overrides: Partial<AssistantPlannerInput> = {}):
     enableWebSearch: false,
     forceThorough: false,
     hasTemporaryFiles: false,
+    temporaryFileNames: [],
     pageContext: page,
     currentMatterId: "case_acme",
     ...overrides,
@@ -107,6 +116,92 @@ test("invalid model JSON uses fallback and planner receives the permanent charte
   }) as any);
   assert.equal(plan.intent, "general_conversation");
   assert.equal(charter, LAWYER_ASSISTANT_CHARTER);
+});
+
+test("planner receives bounded attachment metadata and explicit availability rules without extracted text", async () => {
+  const filename = "Muhammed_AbdulrasheedCV_MLEngineer.pdf";
+  const extractedText = "TEMP_ATTACHMENT_SENTINEL_7421";
+  let plannerPrompt = "";
+  await planAssistantRequest(input("What is the content of the attached file?", {
+    hasTemporaryFiles: true,
+    temporaryFileNames: [filename],
+  }), (async (_task: unknown, messages: Array<{ content: string }>) => {
+    plannerPrompt = messages[0]?.content || "";
+    return {
+      text: JSON.stringify({
+        intent: "document_analysis",
+        depth: "brief",
+        needsWorkspace: true,
+        needsCurrentPage: false,
+        needsWeb: false,
+        needsClarification: false,
+        toolCalls: [],
+      }),
+      groundingMetadata: null,
+    };
+  }) as any);
+
+  assert.match(plannerPrompt, new RegExp(filename.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.match(plannerPrompt, /already uploaded, successfully extracted, authorized, and available as evidence/i);
+  assert.match(plannerPrompt, /Do not ask for a Matter, Firm Library, document library, workspace location, document name, or re-upload/i);
+  assert.doesNotMatch(plannerPrompt, new RegExp(extractedText));
+});
+
+test("temporary attachment clarification guard is narrow, case-insensitive, and bounded", () => {
+  for (const falseClarification of [
+    "WHICH MATTER DOES THIS FILE BELONG TO?",
+    "Please provide the document library containing the attachment.",
+    "I do not have access to the attached file.",
+    "Provide the workspace document name so I can locate it.",
+    "Upload or place the file in the Firm Library.",
+  ]) {
+    assert.equal(isFalseTemporaryAttachmentClarification(falseClarification, true), true);
+  }
+  assert.equal(resolveAssistantClarification({
+    plannerNeedsClarification: true,
+    plannerClarificationQuestion: "I do not have access to the attached file.",
+    hasTemporaryFiles: true,
+  }), undefined);
+  assert.equal(resolveAssistantClarification({
+    plannerNeedsClarification: true,
+    plannerClarificationQuestion: "Which jurisdiction should govern the requested analysis?",
+    hasTemporaryFiles: true,
+  }), "Which jurisdiction should govern the requested analysis?");
+  assert.equal(resolveAssistantClarification({
+    plannerNeedsClarification: true,
+    plannerClarificationQuestion: "Which agreement should the attachment be compared against?",
+    hasTemporaryFiles: true,
+  }), "Which agreement should the attachment be compared against?");
+  assert.equal(resolveAssistantClarification({
+    plannerNeedsClarification: true,
+    plannerClarificationQuestion: "Please provide the document library containing the attachment.",
+    hasTemporaryFiles: false,
+  }), "Please provide the document library containing the attachment.");
+  assert.equal(resolveAssistantClarification({
+    plannerNeedsClarification: true,
+    plannerClarificationQuestion: "Upload or place the file in the Firm Library.",
+    toolClarificationQuestion: "Which external Matter do you want searched?",
+    hasTemporaryFiles: true,
+  }), "Which external Matter do you want searched?");
+  assert.equal(isFalseTemporaryAttachmentClarification(
+    `${"x".repeat(500)} I cannot access the attached file.`,
+    true
+  ), false);
+});
+
+test("temporary attachment evidence preserves filename, source identity, and extracted text", () => {
+  const evidence = temporaryAttachmentEvidence([{
+    filename: "Muhammed_AbdulrasheedCV_MLEngineer.pdf",
+    text: "TEMP_ATTACHMENT_SENTINEL_7421",
+  }]);
+  assert.deepEqual(evidence, [{
+    id: "temporary_1",
+    sourceType: "temporaryAttachment",
+    title: "Muhammed_AbdulrasheedCV_MLEngineer.pdf",
+    sourceName: "Temporary File Attachment",
+    text: "TEMP_ATTACHMENT_SENTINEL_7421",
+  }]);
+  assert.match(wrapAuthorizedEvidence(evidence), /TEMP_ATTACHMENT_SENTINEL_7421/);
 });
 
 test("evidence wrapper neutralizes control characters and nested boundary tags", () => {

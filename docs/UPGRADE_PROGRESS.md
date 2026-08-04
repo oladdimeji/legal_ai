@@ -6,6 +6,13 @@
 - Preserved the existing `drive.file` scope and supported-file filtering; no schema, backend, dependency, or supported-file changes were made.
 - Verification: focused cloud-file selection tests passed (14/14), lint passed, the full test suite passed (236/236), and the production build passed.
 
+## Temporary attachment Assistant reliability
+
+- Temporary attachment filenames are now bounded and explicitly identified to the planner as already extracted, authorized, and available; extracted contents remain request-scoped authorized evidence and are not persisted.
+- A narrow deterministic guard prevents false attachment-access or attachment-location clarifications while preserving genuine planner and tool clarifications.
+- Existing Matter Source, Firm Library, and Work Product authorization paths were preserved; no schema, dependency, OAuth, upload-limit, model, or UI changes were made.
+- Verification: focused tests passed (30/30), lint passed, the full test suite passed (240/240), and the production build passed.
+
 ## Preparation baseline
 
 - Date: 2026-07-21

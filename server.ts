@@ -45,7 +45,8 @@ import { LAWYER_ASSISTANT_CHARTER } from "./server/assistant/assistantCharter.js
 import { buildAssistantSessionContext, sessionContextForPrompt } from "./server/assistant/assistantContext.js";
 import { legacyRequestMode, planAssistantRequest } from "./server/assistant/assistantPlanner.js";
 import { executeAssistantToolPlan } from "./server/assistant/assistantToolExecutor.js";
-import { wrapAuthorizedEvidence } from "./server/assistant/assistantEvidence.js";
+import { temporaryAttachmentEvidence, wrapAuthorizedEvidence } from "./server/assistant/assistantEvidence.js";
+import { resolveAssistantClarification } from "./server/assistant/assistantClarification.js";
 import { adaptiveAssistantTemperature, buildAssistantTaskPrompt } from "./server/assistant/assistantPrompts.js";
 import {
   conversationContextWithMemory,
@@ -1925,8 +1926,12 @@ ${sourceText}`;
     const temporaryFiles: Array<{ filename: string; text: string }> = Array.isArray(req.body.temporaryFiles)
       ? req.body.temporaryFiles
           .filter((file: any) => typeof file?.filename === "string" && typeof file?.text === "string")
-          .map((file: any) => ({ filename: file.filename.slice(0, 180), text: file.text.slice(0, 30000) }))
+          .map((file: any) => ({ filename: file.filename.trim().slice(0, 180), text: file.text.slice(0, 30000) }))
+          .filter((file: { filename: string; text: string }) => file.filename.length > 0)
+          .slice(0, MAX_FILE_COUNT)
       : [];
+    const temporaryFileNames = Array.from(new Set(temporaryFiles.map((file) => file.filename)))
+      .slice(0, MAX_FILE_COUNT);
 
     if (!content) {
       return res.status(400).json({ error: "Message content is required" });
@@ -2037,6 +2042,7 @@ ${sourceText}`;
         enableWebSearch: enableWebSearch === true,
         forceThorough: forceDeepResearch === true,
         hasTemporaryFiles: temporaryFiles.length > 0,
+        temporaryFileNames,
         currentMatterId,
       });
       const assistantMode = legacyRequestMode(assistantPlan);
@@ -2130,19 +2136,14 @@ ${sourceText}`;
           ...(currentMatterId ? { matterId: currentMatterId } : {}),
         });
       }
-      for (const [index, file] of temporaryFiles.entries()) {
-        toolRun.evidence.push({
-          id: `temporary_${index + 1}`,
-          sourceType: "temporaryAttachment",
-          title: file.filename,
-          sourceName: "Temporary File Attachment",
-          text: file.text,
-        });
-      }
+      toolRun.evidence.push(...temporaryAttachmentEvidence(temporaryFiles));
 
-      const clarificationQuestion = assistantPlan.needsClarification
-        ? assistantPlan.clarificationQuestion
-        : toolRun.clarificationQuestion;
+      const clarificationQuestion = resolveAssistantClarification({
+        plannerNeedsClarification: assistantPlan.needsClarification,
+        plannerClarificationQuestion: assistantPlan.clarificationQuestion,
+        toolClarificationQuestion: toolRun.clarificationQuestion,
+        hasTemporaryFiles: temporaryFiles.length > 0,
+      });
       if (clarificationQuestion) {
         const assistantMessage = await db.addMessage(
           threadId,

@@ -92,6 +92,33 @@ test("Assistant user messages persist sanitized page context with attachment nam
   assert.doesNotMatch(assistant, /href=.*attachments|onClick=.*attachmentNamesForMessage/);
 });
 
+test("Assistant routes temporary and selected document evidence through existing authorized paths", async () => {
+  const server = await readFile("server.ts", "utf8");
+  const route = server.slice(
+    server.indexOf('app.post("/api/threads/:id/messages"'),
+    server.indexOf('app.put("/api/messages/:id"', server.indexOf('app.post("/api/threads/:id/messages"'))
+  );
+
+  assert.match(route, /filename: file\.filename\.trim\(\)\.slice\(0, 180\)/);
+  assert.match(route, /filter\(\(file: \{ filename: string; text: string \}\) => file\.filename\.length > 0\)/);
+  assert.match(route, /new Set\(temporaryFiles\.map\(\(file\) => file\.filename\)\)/);
+  assert.match(route, /\.slice\(0, MAX_FILE_COUNT\)/);
+  assert.match(route, /temporaryFileNames,/);
+  assert.match(route, /temporaryAttachmentEvidence\(temporaryFiles\)/);
+  assert.match(route, /assistantPlan\.needsWorkspace \|\| toolRun\.evidence\.length > 0/);
+  assert.match(route, /wrapAuthorizedEvidence\(evidenceWithCitationIds\)/);
+
+  assert.match(route, /getDocumentById\(selectedItem\.id, requestOwnership, currentMatterId\)/);
+  assert.match(route, /sourceName: "Matter Sources"/);
+  assert.match(route, /getDocumentById\(selectedItem\.id, requestOwnership, null\)/);
+  assert.match(route, /sourceName: "Firm Library"/);
+  assert.match(route, /getDraftById\(selectedItem\.id, currentMatterId, requestOwnership\)/);
+  assert.match(route, /sourceName: "Matter Work Product"/);
+  assert.match(route, /sourceType: selectedItem\?\.kind === "workProduct"[\s\S]*?\? "workProduct"[\s\S]*?\? "firmLibrary"[\s\S]*?: "matterSource"/);
+
+  assert.doesNotMatch(route, /MATTER_SOURCE_SENTINEL_7422|FIRM_LIBRARY_SENTINEL_7423|WORK_PRODUCT_SENTINEL_7424/);
+});
+
 test("Assistant citation normalization supports variants, groups, and invalid-token removal", () => {
   assert.equal(canonicalizeAssistantCitations("Rule [CIT_2], [cit-1], \\[cit 2\\].", citations), "Rule [cit_2], [cit_1], [cit_2].");
   assert.equal(linkAssistantCitations("One [cit_1, cit_2].", citations), "One [cit_1](#cit_1)[cit_2](#cit_2).");

@@ -256,6 +256,8 @@ Rules:
 - Prefer the current Matter for "this Matter", "the client", "this draft", and similar references.
 - Do not invent IDs. Only use the supplied current Matter or selected item ID. A named other Matter must first use find_matter.
 - Ask one clarification only when the target is genuinely ambiguous.
+- Each named temporary attachment is already uploaded, successfully extracted, authorized, and available as evidence for this request. A clear request about "the attached file", "this attachment", or a named attachment must proceed as document analysis without a workspace lookup.
+- Do not ask for a Matter, Firm Library, document library, workspace location, document name, or re-upload merely to access a named temporary attachment.
 - Web research may be requested only when webSearchEnabled is true.
 - Available tools: ${ASSISTANT_TOOL_NAMES.join(", ")}.
 
@@ -265,6 +267,7 @@ ${JSON.stringify({
     webSearchEnabled: input.enableWebSearch,
     forceThorough: input.forceThorough,
     hasTemporaryFiles: input.hasTemporaryFiles,
+    temporaryFileNames: input.temporaryFileNames,
     currentMatterId: input.currentMatterId,
     page: input.pageContext,
   }).slice(0, 10_000)}`;

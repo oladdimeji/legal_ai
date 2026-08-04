@@ -108,7 +108,7 @@ export type AssistantPlannerInput = {
   enableWebSearch: boolean;
   forceThorough: boolean;
   hasTemporaryFiles: boolean;
+  temporaryFileNames: string[];
   pageContext: WorkspacePageContext;
   currentMatterId: string | null;
 };
-
