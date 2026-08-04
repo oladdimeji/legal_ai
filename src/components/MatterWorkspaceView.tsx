@@ -153,7 +153,7 @@ export default function MatterWorkspaceView({
       <main className={`flex-1 overflow-hidden ${tab === "Work Product" ? "p-0" : "overflow-y-auto p-8"}`}>
         {tab === "Overview" && <MatterOverview matter={matter} onChange={update} />}
         {tab === "Sources" && <MatterSources matterId={matter.id} onSelectedItemChange={setSelectedItem} />}
-        {tab === "Matter Intelligence" && <MatterIntelligence matterId={matter.id} />}
+        {tab === "Matter Intelligence" && <MatterIntelligence matterId={matter.id} matterName={matter.name} />}
         {tab === "Work Product" && (
           <DraftEditorView
             caseId={matter.id}

@@ -145,7 +145,7 @@ test("historical and custom Work Product titles remain untouched", async () => {
 test("Matter Source preview reuses the read-only Work Product presentation", async () => {
   const sources = await readFile("src/components/MatterSources.tsx", "utf8");
   assert.match(sources, /import WorkProductDocument from "\.\/WorkProductDocument"/);
-  assert.match(sources, /<WorkProductDocument content=\{preview\.extracted_text\} \/>/);
+  assert.match(sources, /<WorkProductDocument title=\{preview\.title\} content=\{preview\.extracted_text\} \/>/);
   assert.match(sources, /overflow-y-auto/);
   assert.match(sources, /No extracted content is available for this Source/);
 
@@ -159,7 +159,7 @@ test("Matter Source preview reuses the read-only Work Product presentation", asy
 test("Firm Library preview matches the read-only document presentation", async () => {
   const library = await readFile("src/components/FirmLibraryView.tsx", "utf8");
   assert.match(library, /import WorkProductDocument from "\.\/WorkProductDocument"/);
-  assert.match(library, /<WorkProductDocument content=\{preview\.extracted_text\} \/>/);
+  assert.match(library, /<WorkProductDocument title=\{preview\.title\} content=\{preview\.extracted_text\} \/>/);
   assert.match(library, /Firm Library · \{preview\.section\}/);
   assert.match(library, /aria-label="Close Firm Library preview"/);
   assert.match(library, /min-h-0 flex-1 overflow-y-auto/);

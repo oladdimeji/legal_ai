@@ -21,7 +21,7 @@ This is **important** and *time-sensitive*.
 
 See [the referenced policy](https://example.com).`;
 
-test("Work Product preview and editor use a fully white document surface", async () => {
+test("Work Product preview uses canonical Letter paper while editor remains on its document surface", async () => {
   const [editor, sharedEditor, portal, documentSurface] = await Promise.all([
     readFile("src/components/DraftEditorView.tsx", "utf8"),
     readFile("src/components/DocumentEditorSurface.tsx", "utf8"),
@@ -33,8 +33,10 @@ test("Work Product preview and editor use a fully white document surface", async
   assert.match(sharedEditor, /id=\{idPrefix === "editor" \? "paper-layout"/);
   assert.doesNotMatch(`${editor}\n${sharedEditor}`, /bg-zinc-100 p-12/);
   assert.match(portal, /min-h-0 flex-1 overflow-y-auto bg-white/);
-  assert.match(portal, /<WorkProductDocument content=\{open\.content\}/);
-  assert.match(documentSurface, /<article className="min-h-full bg-white/);
+  assert.match(portal, /<WorkProductDocument title=\{open\.title\} content=\{open\.content\}/);
+  assert.match(documentSurface, /DocumentPreview title=\{title\} content=\{content\}/);
+  const preview = await readFile("src/components/document/DocumentPreview.tsx", "utf8");
+  assert.match(preview, /compileDocument/);
 });
 
 test("Work Product title wraps and actions render in a separate toolbar row", async () => {

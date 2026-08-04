@@ -36,12 +36,12 @@ import { contentWidthForOrientation, tableGridWidths } from "../../shared/docume
 import type {
   DocumentAlignment,
   DocumentBlock,
-  DocumentOrientation,
   InlineContent,
   TableBlock,
   TableBlockRow,
 } from "../../shared/document/documentTypes.js";
 import { inlinePlainText } from "../../shared/document/parseDocument.js";
+import { groupDocumentSections } from "../../shared/document/documentSections.js";
 
 export const DOCX_STYLE_IDS = {
   title: "ExeptsTitle",
@@ -255,31 +255,10 @@ function pageHeaders(title: string, includeFirst: boolean) {
   };
 }
 
-type SectionGroup = { orientation: DocumentOrientation; entries: Array<{ block: DocumentBlock; index: number }> };
-
-function sectionGroups(blocks: DocumentBlock[]): SectionGroup[] {
-  const groups: SectionGroup[] = [{ orientation: "portrait", entries: [] }];
-  for (const [index, block] of blocks.entries()) {
-    const orientation = block.type === "table" ? block.orientation : "portrait";
-    let current = groups[groups.length - 1];
-    if (orientation === "landscape" && current.orientation === "portrait") {
-      const previous = current.entries[current.entries.length - 1];
-      const moveHeading = previous?.block.type === "heading" && !previous.block.pageBreakBefore ? current.entries.pop() : undefined;
-      current = { orientation: "landscape", entries: moveHeading ? [moveHeading] : [] };
-      groups.push(current);
-    } else if (orientation === "portrait" && current.orientation === "landscape") {
-      current = { orientation: "portrait", entries: [] };
-      groups.push(current);
-    }
-    current.entries.push({ block, index });
-  }
-  return groups.filter((group, index) => index === 0 || group.entries.length > 0);
-}
-
 export function renderDocx(compiled: CompiledDocument): DocxDocument {
   const numbering = createNumberingDefinitions(compiled.blocks);
   const footer = pageFooter();
-  const groups = sectionGroups(compiled.blocks);
+  const groups = groupDocumentSections(compiled.blocks);
   return new DocxDocument({
     title: compiled.title,
     features: { updateFields: true },

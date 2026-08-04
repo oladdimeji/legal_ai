@@ -770,7 +770,7 @@ function SharedMatterDetail({ accessId, onBack }: { accessId: string; onBack: ()
               </button>
             </header>
             <div className="min-h-0 flex-1 overflow-y-auto bg-white px-6 py-5">
-              <WorkProductDocument content={openDraft.content} />
+              <WorkProductDocument title={openDraft.title} content={openDraft.content} />
             </div>
           </div>
         </div>

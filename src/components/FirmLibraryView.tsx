@@ -210,7 +210,7 @@ export default function FirmLibraryView() {
             <div className="min-h-0 flex-1 overflow-y-auto bg-zinc-50 px-6 py-8">
               <div className="mx-auto min-h-full max-w-3xl rounded border border-zinc-100 bg-white px-8 py-10 shadow-sm">
                 {preview.extracted_text?.trim()
-                  ? <WorkProductDocument content={preview.extracted_text} />
+                  ? <WorkProductDocument title={preview.title} content={preview.extracted_text} />
                   : <p className="text-sm text-zinc-500">No extracted content is available for this Firm Library document.</p>}
               </div>
             </div>

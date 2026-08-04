@@ -1,10 +1,6 @@
 import React from "react";
-import FormattedMarkdown from "./FormattedMarkdown";
+import DocumentPreview from "./document/DocumentPreview";
 
-export default function WorkProductDocument({ content }: { content: string }) {
-  return (
-    <article className="min-h-full bg-white text-sm leading-relaxed text-zinc-900">
-      <FormattedMarkdown content={content} />
-    </article>
-  );
+export default function WorkProductDocument({ title, content, className }: { title: string; content: string; className?: string }) {
+  return <DocumentPreview title={title} content={content} className={className} />;
 }

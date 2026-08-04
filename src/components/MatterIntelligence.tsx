@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from "react";
 import { AlertTriangle, Download, Edit, RefreshCw, Save, Sparkles } from "lucide-react";
 import { MatterIntelligenceRecord } from "../types";
-import FormattedMarkdown from "./FormattedMarkdown";
 import RichDocumentEditor from "./RichDocumentEditor";
+import WorkProductDocument from "./WorkProductDocument";
 
-export default function MatterIntelligence({ matterId }: { matterId: string }) {
+export default function MatterIntelligence({ matterId, matterName }: { matterId: string; matterName: string }) {
   const [record, setRecord] = useState<MatterIntelligenceRecord | null>(null);
   const [content, setContent] = useState("");
   const [editing, setEditing] = useState(false);
@@ -113,7 +113,7 @@ export default function MatterIntelligence({ matterId }: { matterId: string }) {
         <RichDocumentEditor value={content} onChange={setContent} minHeight={650} />
       ) : (
         <article className="min-h-[500px] rounded border border-zinc-200 bg-white p-8">
-          <FormattedMarkdown content={content} />
+          <WorkProductDocument title={`${matterName} Matter Intelligence`} content={content} />
         </article>
       )}
     </div>

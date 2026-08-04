@@ -268,17 +268,20 @@ test("Phase 11 temporary Assistant file sources are extracted and cited without 
   assert.doesNotMatch(server, /INSERT INTO documents[\s\S]{0,120}temporaryFiles/);
 });
 
-test("Phase 11 shared Markdown renderer is used for formatted read-only surfaces", async () => {
-  const [renderer, assistant, intelligence] = await Promise.all([
+test("chat retains the shared Markdown renderer while formal Matter Intelligence uses the canonical preview", async () => {
+  const [renderer, assistant, intelligence, workProduct] = await Promise.all([
     readFile("src/components/FormattedMarkdown.tsx", "utf8"),
     readFile("src/components/AssistantView.tsx", "utf8"),
     readFile("src/components/MatterIntelligence.tsx", "utf8"),
+    readFile("src/components/WorkProductDocument.tsx", "utf8"),
   ]);
   assert.match(renderer, /remarkGfm/);
   assert.match(renderer, /blockquote/);
   assert.match(renderer, /table/);
   assert.match(assistant, /<FormattedMarkdown/);
-  assert.match(intelligence, /<FormattedMarkdown content=\{content\}/);
+  assert.match(intelligence, /<WorkProductDocument title=\{`\$\{matterName\} Matter Intelligence`\} content=\{content\}/);
+  assert.doesNotMatch(intelligence, /FormattedMarkdown/);
+  assert.match(workProduct, /DocumentPreview/);
   assert.doesNotMatch(intelligence, /whitespace-pre-wrap/);
 });
 
@@ -325,7 +328,7 @@ test("Phase 12 Work Product uses formatted preview/editor and sharing progress",
   assert.match(surface, /RichDocumentEditor/);
   assert.doesNotMatch(`${editor}\n${surface}`, /@uiw\/react-md-editor|MDEditor/);
   assert.match(surface, /WorkProductDocument/);
-  assert.match(surface, /<WorkProductDocument content=\{content\}/);
+  assert.match(surface, /<WorkProductDocument title=\{title\} content=\{content\}/);
   assert.match(editor, /Sharing\.\.\./);
   assert.match(editor, /Stopping\.\.\./);
   assert.match(editor, /disabled:cursor-not-allowed/);

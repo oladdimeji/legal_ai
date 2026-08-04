@@ -170,7 +170,7 @@ test("Shared Matters has add, card/list, safe metadata, two detail tabs, preview
   assert.match(view, /Card view/);
   assert.match(view, /List view/);
   assert.match(view, /"Shared Documents" \| "Requests"/);
-  assert.match(view, /<WorkProductDocument content=\{openDraft\.content\}/);
+  assert.match(view, /<WorkProductDocument title=\{openDraft\.title\} content=\{openDraft\.content\}/);
   assert.match(view, /\/download/);
   assert.match(view, /Submit Response/);
   assert.doesNotMatch(view, /preliminary_objectives|Matter Intelligence|Firm Library/);

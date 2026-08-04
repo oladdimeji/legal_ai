@@ -1460,3 +1460,36 @@ Outstanding manual review:
 
 - Microsoft Word checks for the memorandum, signature agreement, long prose table, landscape transition, repair warnings, row pagination, repeating headers, clipping/overlap, avoidable blank space, and editability remain outstanding until performed in an interactive Word environment.
 - A secondary Word Online or LibreOffice compatibility check remains outstanding.
+
+## Professional Document Preview and Editing — Phase 2
+
+Status: Checkpoint A complete; Checkpoint B pending.
+
+Checkpoint A — canonical preview:
+
+- Formal read-only documents now compile through `compileDocument(title, content)` and render typed `CompiledDocument` blocks directly. The preview does not use `react-markdown`, browser regex parsing, raw HTML, or `dangerouslySetInnerHTML`.
+- Extracted DOCX orientation grouping into the framework-neutral `groupDocumentSections` helper. The existing landscape-table grouping and immediately-preceding-heading move are unchanged, and the Word renderer now consumes that helper without changing page dimensions, margins, headers, footers, numbering, transitions, or table behavior.
+- Extended the shared document theme with semantic browser typography, spacing, page, border, link, and background values while retaining all existing Word-facing values.
+- Added physical US Letter portrait and landscape paper canvases with 0.9-inch content margins, horizontal overflow, grayscale borders/shadows, explicit page/orientation separation, and no simulated page numbers or automatic pagination.
+- Added direct renderers for H1–H6, paragraphs, ordered and unordered nested lists with authored starts, blockquotes, code blocks, page breaks, safe links, combined inline marks, hard breaks, ordinary tables, signature tables, and wide tables.
+- HTML tables consume canonical widths, alignments, column kinds, layout, orientation, signature classification, header rows, and content. Column percentages use deterministic largest-remainder rounding to total exactly 100%.
+- `WorkProductDocument` remains the compatibility façade and now requires the real title. Work Product, Assistant Document, Matter Intelligence, client shared Work Product, client portal Work Product, Matter Source, and Firm Library previews pass their actual titles.
+- Lawyer Assistant, Client Assistant, general response, citation-aware message, and Assistant response-editor previews intentionally remain on `FormattedMarkdown`.
+
+Schema and persistence:
+
+- No database or migration changes were made. No stored document was rewritten. Markdown remains the persisted format.
+- All five DOCX routes remain on `markdownToDocxDocument`; no export API, cleanup, ownership, filename, model, prompt, retrieval, or Gemini behavior changed.
+
+Checkpoint A verification:
+
+- `npm ci`: passed through the Windows `npm.cmd` shim.
+- `npm run lint`: passed (`tsc --noEmit`).
+- `npm test`: passed, 268/268 tests.
+- `npm run build`: passed outside the managed filesystem sandbox; the identical sandboxed attempt was blocked from reading the Vite config's parent path. The pre-existing large-chunk warning remains.
+- `npm run verify`: passed outside the managed filesystem sandbox; lint, 268/268 tests, and production Vite/esbuild build completed.
+- Automated server-rendered preview coverage verifies titles, headings, inline marks, hard breaks, link safety, list starts/nesting, table semantics/widths/alignment, signature layout, landscape layout, malformed fallback, and code newlines. Existing DOCX compiler/XML tests passed unchanged in behavior.
+
+Manual browser checks:
+
+- Not completed at Checkpoint A. This environment has no authenticated interactive browser session, so visual clipping, overlap, and responsive scrolling checks remain pending.
