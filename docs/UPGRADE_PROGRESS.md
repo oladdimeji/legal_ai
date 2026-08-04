@@ -1347,3 +1347,22 @@ Deliberate phase boundary:
 
 - Draft prompts, model selection, evidence gathering, stored wording, cleanup behavior, database content, frontend Preview, frontend Editor, authentication, uploads, and collaboration were not changed.
 - This focused parser covers the Markdown structures Exepts generates and intentionally does not attempt full CommonMark compatibility. Browser Preview and Editor presentation remain separate follow-up work.
+
+## Compact Assistant UI/UX — Phase 1: Minimum Default Width
+
+Status: Complete.
+
+Implemented:
+
+- The Assistant now defaults to its existing 360px minimum width when no valid saved width is available.
+- Saved user-selected widths are still restored and clamped normally.
+- Pointer and keyboard resizing, local-storage persistence, maximum-width behavior, and narrow-screen clamping were preserved.
+- No backend, schema, dependency, or Assistant-processing changes were made.
+
+Verification:
+
+- Focused Assistant panel test: passed, 17/17 tests.
+- `npm run lint`: passed via `npm.cmd`.
+- `npm test`: passed, 240/240 tests.
+- `npm run build`: passed outside the filesystem sandbox because Vite requires parent-directory access on this host.
+- The existing Vite warning for a JavaScript chunk exceeding 500 kB remains.

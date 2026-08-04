@@ -71,7 +71,10 @@ test("assistant panel is persistent, pointer and keyboard resizable, and stores 
 });
 
 test("assistant panel width clamps to desktop and narrow viewport bounds", () => {
+  assert.equal(DEFAULT_ASSISTANT_PANEL_WIDTH, MIN_ASSISTANT_PANEL_WIDTH);
+  assert.equal(DEFAULT_ASSISTANT_PANEL_WIDTH, 360);
   assert.equal(clampAssistantPanelWidth(Number.NaN, 1440), DEFAULT_ASSISTANT_PANEL_WIDTH);
+  assert.equal(clampAssistantPanelWidth(512, 1440), 512);
   assert.equal(clampAssistantPanelWidth(100, 1440), MIN_ASSISTANT_PANEL_WIDTH);
   assert.equal(clampAssistantPanelWidth(900, 1440), MAX_ASSISTANT_PANEL_WIDTH);
   assert.equal(clampAssistantPanelWidth(512, 600), 280);

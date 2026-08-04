@@ -1,6 +1,6 @@
 export const ASSISTANT_PANEL_STORAGE_KEY = "exepts.assistantPanelWidth";
-export const DEFAULT_ASSISTANT_PANEL_WIDTH = 512;
 export const MIN_ASSISTANT_PANEL_WIDTH = 360;
+export const DEFAULT_ASSISTANT_PANEL_WIDTH = MIN_ASSISTANT_PANEL_WIDTH;
 export const MAX_ASSISTANT_PANEL_WIDTH = 720;
 export const MIN_WORKSPACE_WIDTH = 320;
 
@@ -33,4 +33,3 @@ export function readAssistantPanelWidth(viewportWidth: number): number {
   }
   return clampAssistantPanelWidth(storedWidth, viewportWidth);
 }
-
