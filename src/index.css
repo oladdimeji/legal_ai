@@ -80,50 +80,41 @@
   .document-paper { margin-left: 0; margin-right: 0; }
 }
 
-.rich-document-editor h1 {
-  font-size: 1.5rem;
-  font-weight: 700;
-  margin: 0.8rem 0 0.5rem;
-}
-
-.rich-document-editor h2 {
-  font-size: 1.2rem;
-  font-weight: 700;
-  margin: 0.75rem 0 0.45rem;
-}
-
-.rich-document-editor h3 {
-  font-size: 1rem;
-  font-weight: 700;
-  margin: 0.7rem 0 0.4rem;
-}
-
-.rich-document-editor p {
-  margin: 0.55rem 0;
-}
-
-.rich-document-editor ul,
-.rich-document-editor ol {
-  margin: 0.55rem 0 0.55rem 1.25rem;
-  padding-left: 1rem;
-}
-
-.rich-document-editor ul {
-  list-style: disc;
-}
-
-.rich-document-editor ol {
-  list-style: decimal;
-}
-
-.rich-document-editor blockquote {
-  border-left: 2px solid #d4d4d8;
-  color: #52525b;
-  margin: 0.7rem 0;
-  padding-left: 0.9rem;
-}
-
-.rich-document-editor a {
-  color: #18181b;
-  text-decoration: underline;
-}
+.document-editor-shell { min-height: 100%; border: 1px solid #d4d4d8; border-radius: 0.25rem; background: #fff; }
+.document-editor-toolbar, .document-editor-table-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem; border-bottom: 1px solid #d4d4d8; background: #fafafa; padding: 0.5rem; }
+.document-editor-table-toolbar { background: #f4f4f5; }
+.document-editor-select { height: 2rem; border: 1px solid #d4d4d8; border-radius: 0.25rem; background: #fff; padding: 0 0.5rem; font-size: 0.75rem; }
+.document-editor-button { display: inline-flex; min-width: 2rem; height: 2rem; align-items: center; justify-content: center; gap: 0.1rem; border: 1px solid #d4d4d8; border-radius: 0.25rem; background: #fff; padding: 0.35rem; color: #3f3f46; }
+.document-editor-button:hover:not(:disabled), .document-editor-button.is-active { border-color: #18181b; background: #18181b; color: #fff; }
+.document-editor-button:disabled { cursor: not-allowed; opacity: 0.35; }
+.document-editor-button svg { width: 1rem; height: 1rem; }
+.document-editor-button svg + svg { width: 0.65rem; height: 0.65rem; }
+.document-editor-content { overflow-x: auto; }
+.document-editor-root { box-sizing: border-box; min-height: inherit; padding: 0.55in; outline: none; color: #000; font: 11pt/1.15 Arial, sans-serif; }
+.document-editor-root p { margin: 0 0 6pt; }
+.document-editor-root h1, .document-editor-root h2, .document-editor-root h3, .document-editor-root h4, .document-editor-root h5, .document-editor-root h6 { font-weight: 700; line-height: 1.15; }
+.document-editor-root h1 { margin: 15pt 0 7pt; font-size: 14pt; }
+.document-editor-root h2 { margin: 12pt 0 6pt; font-size: 12.5pt; }
+.document-editor-root h3 { margin: 10pt 0 5pt; font-size: 11.5pt; }
+.document-editor-root h4 { margin: 9pt 0 4pt; font-size: 11pt; }
+.document-editor-root h5 { margin: 8pt 0 3.5pt; font-size: 10.5pt; }
+.document-editor-root h6 { margin: 7pt 0 3pt; font-size: 10pt; }
+.document-editor-root ul, .document-editor-root ol { margin: 0 0 6pt; padding-left: 0.38in; }
+.document-editor-root ul { list-style: disc; }
+.document-editor-root ol { list-style: decimal; }
+.document-editor-root li { margin-bottom: 4pt; }
+.document-editor-root blockquote { margin: 5pt 0 7pt; border-left: 2px solid #a6a6a6; padding-left: 14pt; color: #333; }
+.document-editor-root pre { margin: 5pt 0 7pt; overflow-x: auto; border: 1px solid #d9d9d9; background: #f2f2f2; padding: 9pt; white-space: pre-wrap; font: 9.5pt/1.25 "Courier New", monospace; }
+.document-editor-root :not(pre) > code { background: #f2f2f2; padding: 0 2px; font-family: "Courier New", monospace; font-size: 10pt; }
+.document-editor-root a { color: #0563c1; text-decoration: underline; }
+.document-editor-root .tableWrapper { max-width: 100%; overflow-x: auto; margin: 6pt 0 8pt; }
+.document-editor-root table { width: 100%; min-width: 28rem; border-collapse: collapse; table-layout: auto; font-size: 10pt; line-height: 1.2; }
+.document-editor-root th, .document-editor-root td { position: relative; min-width: 4rem; border: 1px solid #b7b7b7; padding: 5pt 6pt; vertical-align: top; overflow-wrap: anywhere; }
+.document-editor-root th { background: #ededed; font-weight: 700; }
+.document-editor-root [data-alignment="center"] { text-align: center; }
+.document-editor-root [data-alignment="right"] { text-align: right; }
+.document-editor-root table[data-layout="wide"] { font-size: 8.5pt; }
+.document-editor-root table[data-layout="compact"] { font-size: 9pt; }
+.document-editor-root table[data-signature-layout="true"] th, .document-editor-root table[data-signature-layout="true"] td { border: 0; background: transparent; padding-top: 9pt; padding-bottom: 13pt; text-align: left; }
+.document-editor-root .selectedCell::after { position: absolute; inset: 0; z-index: 2; pointer-events: none; content: ""; background: rgb(24 24 27 / 10%); }
+.document-editor-root .ProseMirror-gapcursor::after { border-top-color: #18181b; }

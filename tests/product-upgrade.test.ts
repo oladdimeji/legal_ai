@@ -487,20 +487,22 @@ test("Focused UX fix removes Matter Intelligence source labels without deleting 
 });
 
 test("Focused UX fix rich editor hides raw Markdown editing surfaces while preserving Markdown persistence", async () => {
-  const [rich, converter, intelligence, editor, editorSurface, portal, server] = await Promise.all([
+  const [rich, codec, extensions, intelligence, editor, editorSurface, portal, server] = await Promise.all([
     readFile("src/components/RichDocumentEditor.tsx", "utf8"),
-    readFile("src/lib/richMarkdown.ts", "utf8"),
+    readFile("src/lib/documentEditorCodec.ts", "utf8"),
+    readFile("src/lib/documentEditorExtensions.ts", "utf8"),
     readFile("src/components/MatterIntelligence.tsx", "utf8"),
     readFile("src/components/DraftEditorView.tsx", "utf8"),
     readFile("src/components/DocumentEditorSurface.tsx", "utf8"),
     readFile("src/components/ClientPortalView.tsx", "utf8"),
     readFile("server.ts", "utf8"),
   ]);
-  assert.match(rich, /contentEditable/);
-  assert.match(rich, /document\.execCommand\("bold"|command\("bold"\)/);
-  assert.match(converter, /markdownToEditorHtml/);
-  assert.match(converter, /editorHtmlToMarkdown/);
-  assert.match(converter, /h1|strong|em|ul|ol|blockquote|href/);
+  assert.match(rich, /useEditor/);
+  assert.match(rich, /EditorContent/);
+  assert.match(codec, /compiledDocumentToEditorJson/);
+  assert.match(codec, /editorJsonToMarkdown/);
+  assert.match(extensions, /TableCell|TableHeader|TableRow/);
+  assert.doesNotMatch(`${rich}\n${codec}`, /contentEditable|document\.execCommand|innerHTML|markdownToEditorHtml|editorHtmlToMarkdown/);
   for (const view of [intelligence, `${editor}\n${editorSurface}`, portal]) {
     assert.match(view, /RichDocumentEditor/);
     assert.doesNotMatch(view, /MDEditor|@uiw\/react-md-editor|preview="edit"/);

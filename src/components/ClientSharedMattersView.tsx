@@ -785,6 +785,7 @@ function SharedMatterDetail({ accessId, onBack }: { accessId: string; onBack: ()
             </p>
             <div className="mt-4">
               <RichDocumentEditor
+                title={editingDraft.title}
                 value={editContent}
                 onChange={setEditContent}
                 minHeight={430}

@@ -74,7 +74,7 @@ test("lawyer collaboration renders response attachments as openable Work Product
 test("Client Portal revision editing already uses RichDocumentEditor and no Markdown source editor", async () => {
   const portal = await readFile("src/components/ClientPortalView.tsx", "utf8");
   assert.match(portal, /Edit a Copy/);
-  assert.match(portal, /<RichDocumentEditor value=\{editContent\}/);
+  assert.match(portal, /<RichDocumentEditor title=\{editing\.title\} value=\{editContent\}/);
   assert.doesNotMatch(portal, /MDEditor|@uiw\/react-md-editor|preview="edit"/);
 });
 

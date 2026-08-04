@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { cleanGeneratedBoilerplate } from "../server/generatedContentCleanup.js";
-import { markdownToEditorHtml } from "../src/lib/richMarkdown.js";
+import { editorJsonToMarkdown, markdownToEditorDocument } from "../src/lib/documentEditorCodec.js";
 import { stripInternalCitationsForWorkProduct } from "../src/lib/assistantCitations.js";
 
 const sampleMarkdown = `# Employment Advice
@@ -61,26 +61,27 @@ test("Work Product edit paths use the repaired rich editor and no Markdown sourc
     readFile("src/components/RichDocumentEditor.tsx", "utf8"),
   ]);
   assert.match(editor, /DocumentEditorSurface/);
-  assert.match(sharedEditor, /<RichDocumentEditor value=\{content\}/);
-  assert.match(portal, /<RichDocumentEditor value=\{editContent\}/);
+  assert.match(sharedEditor, /<RichDocumentEditor title=\{title\} value=\{content\}/);
+  assert.match(portal, /<RichDocumentEditor title=\{editing\.title\} value=\{editContent\}/);
   for (const source of [`${editor}\n${sharedEditor}`, portal]) {
     assert.doesNotMatch(source, /MDEditor|@uiw\/react-md-editor|preview="edit"|querySelector\("textarea"\)|insertTextMarkup/);
   }
-  assert.match(rich, /useLayoutEffect/);
-  assert.match(rich, /markdownToEditorHtml\(value\)/);
-  assert.match(rich, /contentEditable/);
+  assert.match(rich, /useEditor/);
+  assert.match(rich, /EditorContent/);
+  assert.match(rich, /normalizeEditorMarkdown/);
+  assert.doesNotMatch(rich, /useLayoutEffect|innerHTML|contentEditable|document\.execCommand/);
 });
 
-test("Markdown opens as formatted rich-editor HTML", () => {
-  const html = markdownToEditorHtml(sampleMarkdown);
-  assert.match(html, /<h1>Employment Advice<\/h1>/);
-  assert.match(html, /<strong>important<\/strong>/);
-  assert.match(html, /<em>time-sensitive<\/em>/);
-  assert.match(html, /<ol><li>Review the agreement\.<\/li><li>Preserve all correspondence\.<\/li><\/ol>/);
-  assert.match(html, /<ul><li>First supporting point<\/li><li>Second supporting point<\/li><\/ul>/);
-  assert.match(html, /<blockquote>This is a quoted provision\.<\/blockquote>/);
-  assert.match(html, /<a href="https:\/\/example\.com">the referenced policy<\/a>/);
-  assert.doesNotMatch(html, /# Employment Advice|\*\*important\*\*|\[the referenced policy\]\(/);
+test("Markdown opens as a structured editor document and serializes back to Markdown", () => {
+  const document = markdownToEditorDocument("Employment Advice", sampleMarkdown);
+  assert.equal(document.type, "doc");
+  assert.ok(document.content?.some((node) => node.type === "heading"));
+  assert.ok(document.content?.some((node) => node.type === "orderedList"));
+  assert.ok(document.content?.some((node) => node.type === "bulletList"));
+  assert.ok(document.content?.some((node) => node.type === "blockquote"));
+  const markdown = editorJsonToMarkdown(document);
+  assert.match(markdown, /\*\*important\*\*/);
+  assert.match(markdown, /\[the referenced policy\]\(https:\/\/example\.com\)/);
 });
 
 test("Work Product internal citation stripper is narrow and idempotent", () => {

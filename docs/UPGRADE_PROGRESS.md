@@ -1463,7 +1463,7 @@ Outstanding manual review:
 
 ## Professional Document Preview and Editing — Phase 2
 
-Status: Checkpoint A complete; Checkpoint B pending.
+Status: Complete.
 
 Checkpoint A — canonical preview:
 
@@ -1493,3 +1493,50 @@ Checkpoint A verification:
 Manual browser checks:
 
 - Not completed at Checkpoint A. This environment has no authenticated interactive browser session, so visual clipping, overlap, and responsive scrolling checks remain pending.
+
+Checkpoint B — structured editor:
+
+- Replaced the handwritten `contentEditable`/`execCommand` editor with Tiptap 3.29.2 using `useEditor`, `EditorContent`, StarterKit, safe links, underline, and table extensions. Formal editor call sites now pass the same real title used by their preview.
+- Added the Exepts-owned, DOM-free `documentEditorCodec`. The opening path is Markdown → `compileDocument` → `CompiledDocument` → deterministic Tiptap JSON. On updates the path is Tiptap JSON → deterministic GFM serializer → `compileDocument(title, markdown)` → normalized Markdown → existing `onChange` and save APIs.
+- The editor supports H1–H6, paragraphs, bold, italic, underline, inline code, safe HTTP/HTTPS/mailto links, hard breaks, ordered lists with authored starts, unordered lists, bounded mixed nesting, blockquotes, fenced code with language metadata, and GFM tables.
+- The serializer owns stable blank lines, inline escaping, mark order, safe link degradation, variable-length inline-code and block-code delimiters, list indentation, table separator/alignment rows, literal-pipe escaping, `<br>` cell breaks, missing-cell padding, and deterministic empty-document output. It emits no raw HTML except `<u>` and `<br>`.
+- Table cells and headers are restricted to one paragraph with supported inline content. Multiline or multi-block cell paste is conservatively flattened with hard breaks; file drops are rejected; embedded media, scripts, styles, iframes, objects, and arbitrary raw HTML are not part of the schema.
+- Merged cells, row spans, column spans, nested tables, lists/quotes/code blocks inside cells, and multiple independent cell paragraphs are deliberately excluded because GFM cannot persist them losslessly. Manual column resizing is also excluded because widths cannot be preserved through canonical Markdown.
+- Added compact controls for paragraph/H1–H6, quote, code block, bold, italic, underline, inline code, lists, link/unlink, table insertion, undo, and redo. Contextual table controls add/delete rows and columns, toggle the header row, align the complete selected column left/centre/right, and delete the table. No merge/split controls exist.
+- Initial canonical table layout, orientation, signature classification, column kind, alignment, and width weights are carried as editor-only attributes for presentation. They are recalculated by the canonical compiler after changes and are never persisted as JSON or HTML.
+- Controlled synchronization tracks the last Markdown emitted by the editor. Parent echoes do not call `setContent`, reset selection, or wipe undo history. Only genuine external values are converted and applied with update emission disabled; selection is restored when its positions remain valid.
+- Removed `src/lib/richMarkdown.ts`, all `document.execCommand`, direct `innerHTML`, layout-effect HTML replacement, and formal-document `FormattedMarkdown` use. Removed the unused `@uiw/react-md-editor` dependency.
+- Chat messages, citation-aware responses, general conversational output, and the Assistant response editor intentionally remain outside the formal-document pipeline and continue using `FormattedMarkdown` where they did before.
+
+Dependencies:
+
+- Added `@tiptap/react`, `@tiptap/pm`, `@tiptap/starter-kit`, `@tiptap/extension-table`, `@tiptap/extension-link`, and `@tiptap/extension-underline`, all at the mutually compatible 3.29.2 release.
+- Removed `@uiw/react-md-editor`. No Tiptap Markdown, Pro, Cloud, collaboration, or AI editor package was added.
+
+Round-trip and regression coverage:
+
+- All 16 Phase 1 Markdown fixtures pass Markdown → compiler → editor JSON → Exepts serializer → compiler semantic comparison, covering block types, marks, links, breaks, list types/starts/levels, code/language, table cells/alignment/classification/layout/orientation, signatures, repaired tables, and readable fallbacks.
+- Focused tests cover unsafe-link degradation, deterministic serialization, embedded backticks, escaped pipes, table hard breaks, empty cells, row/column shape changes, complete-column alignment, unsupported cell-block flattening, allowed raw HTML, empty documents, and controlled-value synchronization decisions.
+- Source regressions require titles at formal preview/editor call sites, canonical compiler/codec use, table extensions and controls, continued chat `FormattedMarkdown`, five shared DOCX façade calls, unchanged migrations, and the absence of legacy browser/converter mechanisms.
+
+Schema and persistence:
+
+- No database schema or migration changes were made, and no historical document was rewritten. Normalized Markdown remains canonical persistence through the existing API payloads and columns; Tiptap JSON and browser attributes are never saved.
+- Existing Work Product, Assistant Document, client revision, sharing, ownership, cleanup, Matter Intelligence snapshot, export route, and filename behavior remains unchanged. All five DOCX routes remain on `markdownToDocxDocument`.
+
+Checkpoint B verification:
+
+- `npm ci`: passed through `npm.cmd`.
+- `npm run lint`: passed (`tsc --noEmit`).
+- `npm test`: passed, 280/280 tests.
+- `npm run build`: passed outside the managed filesystem sandbox; the existing large-chunk warning remains and the editor increases the main bundle size.
+- `npm run docx:fixtures`: passed and regenerated all 16 review fixtures through the shared façade under `tmp/docx-review/`.
+- `npm run verify`: passed outside the managed filesystem sandbox; lint, 280/280 tests, and production Vite/esbuild build completed.
+- `npm ls --depth=0`: passed and shows all six Tiptap packages at 3.29.2.
+
+Manual browser acceptance and remaining limitations:
+
+- No authenticated interactive browser was available, so the requested live preview inspection and edit/save/reload/export workflows were not performed and are not claimed as passed. Cursor behavior, undo continuity, paste/drop behavior, contextual table controls, responsive scrolling, visual clipping/overlap, and persistence across every formal surface still require interactive acceptance.
+- Browser preview uses explicit orientation/page-break paper sections and minimum physical page dimensions; it intentionally does not fake automatic pagination or browser page numbers.
+- GFM restrictions intentionally exclude merged cells, arbitrary multi-block cell content, media, manual column-width persistence, tracked changes, comments, collaborative editing, import, and a pagination engine.
+- npm reported one moderate vulnerability during the dependency update; no broad `npm audit fix` was run because it could change unrelated dependency versions.

@@ -71,7 +71,7 @@ export default function DocumentEditorSurface({
 
       <div className="h-full min-h-0 flex-1 overflow-y-auto bg-white" id={idPrefix === "editor" ? "work-product-document-scroll" : `${idPrefix}-document-scroll`}>
         <div id={idPrefix === "editor" ? "paper-layout" : `${idPrefix}-paper-layout`} className="min-h-full w-full bg-white">
-          {editMode ? <div className="mx-auto max-w-4xl px-8 py-10"><RichDocumentEditor value={content} onChange={onContentChange} minHeight={900} /></div> : <WorkProductDocument title={title} content={content} />}
+          {editMode ? <div className="mx-auto max-w-4xl px-8 py-10"><RichDocumentEditor title={title} value={content} onChange={onContentChange} minHeight={900} /></div> : <WorkProductDocument title={title} content={content} />}
         </div>
       </div>
     </div>

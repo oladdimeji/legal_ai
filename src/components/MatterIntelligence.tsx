@@ -110,7 +110,7 @@ export default function MatterIntelligence({ matterId, matterName }: { matterId:
         </div>
       </header>
       {editing ? (
-        <RichDocumentEditor value={content} onChange={setContent} minHeight={650} />
+        <RichDocumentEditor title={`${matterName} Matter Intelligence`} value={content} onChange={setContent} minHeight={650} />
       ) : (
         <article className="min-h-[500px] rounded border border-zinc-200 bg-white p-8">
           <WorkProductDocument title={`${matterName} Matter Intelligence`} content={content} />
