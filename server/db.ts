@@ -175,6 +175,39 @@ class DatabaseService {
     return res.rows;
   }
 
+  private async hasMatterAccess(caseId: string, context: OwnershipContext): Promise<boolean> {
+    const rows = await this.query(
+      `SELECT 1
+       FROM cases c
+       JOIN matter_user_access access
+         ON access.case_id = c.id AND access.user_id = $2
+       WHERE c.id = $1 AND c.firm_id = $3
+       LIMIT 1`,
+      [caseId, context.userId, context.firmId]
+    );
+    return rows.length === 1;
+  }
+
+  private async assertMatterAccess(caseId: string, context: OwnershipContext): Promise<void> {
+    if (!(await this.hasMatterAccess(caseId, context))) {
+      throw new Error("Matter not found");
+    }
+  }
+
+  private async assertThreadMatterAccess(
+    threadId: string,
+    context: OwnershipContext
+  ): Promise<void> {
+    const rows = await this.query(
+      `SELECT case_id FROM threads
+       WHERE id = $1 AND user_id = $2 AND scope <> 'client'`,
+      [threadId, context.userId]
+    );
+    if (rows[0]?.case_id) {
+      await this.assertMatterAccess(String(rows[0].case_id), context);
+    }
+  }
+
   public async seedDemoDataIfEnabled(): Promise<void> {
     if (process.env.SEED_DEMO_DATA !== "true") {
       console.log("Demo data seeding is disabled.");
@@ -206,6 +239,15 @@ class DatabaseService {
         createdAt,
         "Dispute surrounding documentary footage and copyright fair use limits under Section 107.",
       ]
+    );
+
+    await this.query(
+      `INSERT INTO matter_user_access (case_id, user_id, granted_at)
+       SELECT c.id, u.id, $3
+       FROM cases c JOIN users u ON u.id = $2 AND u.firm_id = c.firm_id
+       WHERE c.id = ANY($1::text[]) AND u.account_type = 'lawyer'
+       ON CONFLICT DO NOTHING`,
+      [["case_tech_employment", "case_ip_fair_use"], "user_456", createdAt]
     );
 
     console.log("Explicit demo seeding enabled; adding only missing demo documents.");
@@ -815,16 +857,23 @@ class DatabaseService {
 
   public async getCases(context: OwnershipContext): Promise<Case[]> {
     return await this.query(
-      "SELECT * FROM cases WHERE firm_id = $1 ORDER BY COALESCE(last_activity_at, created_at) DESC",
-      [context.firmId]
+      `SELECT c.* FROM cases c
+       JOIN matter_user_access access
+         ON access.case_id = c.id AND access.user_id = $1
+       WHERE c.firm_id = $2
+       ORDER BY COALESCE(c.last_activity_at, c.created_at) DESC`,
+      [context.userId, context.firmId]
     );
   }
 
   public async getCaseById(id: string, context: OwnershipContext): Promise<Case | undefined> {
-    const rows = await this.query("SELECT * FROM cases WHERE id = $1 AND firm_id = $2", [
-      id,
-      context.firmId,
-    ]);
+    const rows = await this.query(
+      `SELECT c.* FROM cases c
+       JOIN matter_user_access access
+         ON access.case_id = c.id AND access.user_id = $2
+       WHERE c.id = $1 AND c.firm_id = $3`,
+      [id, context.userId, context.firmId]
+    );
     return rows[0];
   }
 
@@ -837,13 +886,26 @@ class DatabaseService {
     const caseId = `case_${randomUUID()}`;
     const createdAt = new Date().toISOString();
 
-    await this.query(
-      `INSERT INTO cases
+    const rows = await this.query(
+      `WITH created_case AS (
+         INSERT INTO cases
         (id, firm_id, name, description, created_at, status, client_name, client_email,
          updated_at, last_activity_at)
-       VALUES ($1, $2, $3, $4, $5, 'Open', $6, $7, $5, $5)`,
-      [caseId, context.firmId, name, description, createdAt, details.clientName || null, details.clientEmail || null]
+         SELECT $1, u.firm_id, $4, $5, $6, 'Open', $7, $8, $6, $6
+         FROM users u
+         WHERE u.id = $2 AND u.firm_id = $3 AND u.account_type = 'lawyer'
+         RETURNING *
+       ), granted_access AS (
+         INSERT INTO matter_user_access (case_id, user_id, granted_at)
+         SELECT id, $2, $6 FROM created_case
+         RETURNING case_id
+       )
+       SELECT created_case.* FROM created_case
+       JOIN granted_access ON granted_access.case_id = created_case.id`,
+      [caseId, context.userId, context.firmId, name, description, createdAt,
+       details.clientName || null, details.clientEmail || null]
     );
+    if (!rows[0]) throw new Error("Matter not found");
 
     const newCase: Case = {
       id: caseId,
@@ -892,6 +954,7 @@ class DatabaseService {
     changes: Partial<Case>,
     context: OwnershipContext
   ): Promise<Case | undefined> {
+    await this.assertMatterAccess(id, context);
     const allowedStatuses = new Set(["Open", "Waiting for Client", "On Hold", "Closed"]);
     if (changes.status && !allowedStatuses.has(changes.status)) throw new Error("Invalid Matter status");
     const now = new Date().toISOString();
@@ -927,6 +990,7 @@ class DatabaseService {
   public async linkLibraryDocument(
     caseId: string, documentId: string, linkOrigin: "Manual" | "Starting Input", context: OwnershipContext
   ): Promise<boolean> {
+    await this.assertMatterAccess(caseId, context);
     const rows = await this.query(
       `INSERT INTO case_documents (case_id, document_id, link_origin, added_at)
        SELECT c.id, d.id, $4, $5 FROM cases c JOIN documents d ON d.id = $2
@@ -940,6 +1004,7 @@ class DatabaseService {
   }
 
   public async getCaseSources(caseId: string, context: OwnershipContext): Promise<Document[]> {
+    await this.assertMatterAccess(caseId, context);
     return await this.query(
       `SELECT d.*, CASE WHEN d.case_id = $2 THEN NULL ELSE cd.link_origin END AS link_origin,
         COALESCE(cd.added_at, d.uploaded_at) AS date_added
@@ -954,6 +1019,7 @@ class DatabaseService {
   }
 
   public async touchCase(caseId: string, context: OwnershipContext): Promise<void> {
+    await this.assertMatterAccess(caseId, context);
     await this.query(
       "UPDATE cases SET last_activity_at = $1, updated_at = $1 WHERE id = $2 AND firm_id = $3",
       [new Date().toISOString(), caseId, context.firmId]
@@ -963,6 +1029,7 @@ class DatabaseService {
   public async getMatterSourceSnapshot(caseId: string, context: OwnershipContext): Promise<
     Array<{ id: string; uploaded_at: string; processing_state: string; link_origin: string | null }>
   > {
+    await this.assertMatterAccess(caseId, context);
     return await this.query(
       `SELECT d.id, d.uploaded_at, d.processing_state,
          CASE WHEN d.case_id = $2 THEN NULL ELSE cd.link_origin END AS link_origin
@@ -976,6 +1043,7 @@ class DatabaseService {
   }
 
   public async getMatterIntelligence(caseId: string, context: OwnershipContext): Promise<any | null> {
+    await this.assertMatterAccess(caseId, context);
     const rows = await this.query(
       `SELECT mi.* FROM matter_intelligence mi JOIN cases c ON c.id = mi.case_id
        WHERE mi.case_id = $1 AND c.firm_id = $2`,
@@ -991,6 +1059,7 @@ class DatabaseService {
   public async getMatterIntelligenceSourceBundle(caseId: string, context: OwnershipContext): Promise<{
     matter: Case; sources: Document[]; snapshot: any[];
   }> {
+    await this.assertMatterAccess(caseId, context);
     const matter = await this.getCaseById(caseId, context);
     if (!matter) throw new Error("Matter not found");
     const sources = await this.getCaseSources(caseId, context);
@@ -1001,6 +1070,7 @@ class DatabaseService {
   public async saveGeneratedMatterIntelligence(
     caseId: string, content: string, snapshot: any[], context: OwnershipContext
   ): Promise<any> {
+    await this.assertMatterAccess(caseId, context);
     const now = new Date().toISOString();
     const rows = await this.query(
       `INSERT INTO matter_intelligence
@@ -1022,6 +1092,7 @@ class DatabaseService {
   public async updateMatterIntelligence(
     caseId: string, content: string, context: OwnershipContext
   ): Promise<any> {
+    await this.assertMatterAccess(caseId, context);
     const rows = await this.query(
       `UPDATE matter_intelligence mi SET content = $1, last_edited_at = $2
        WHERE mi.case_id = $3 AND EXISTS (
@@ -1034,6 +1105,7 @@ class DatabaseService {
   }
 
   public async getCollaboration(caseId: string, context: OwnershipContext): Promise<any> {
+    await this.assertMatterAccess(caseId, context);
     const matter = await this.getCaseById(caseId, context);
     if (!matter) throw new Error("Matter not found");
     const access = (await this.query(
@@ -1080,6 +1152,7 @@ class DatabaseService {
   public async saveClientCollaborator(
     caseId: string, name: string, email: string, context: OwnershipContext
   ): Promise<any> {
+    await this.assertMatterAccess(caseId, context);
     const id = `client_${randomUUID()}`;
     const now = new Date().toISOString();
     const rows = await this.query(
@@ -1100,6 +1173,7 @@ class DatabaseService {
   public async activateClientInvite(
     caseId: string, tokenHash: string, context: OwnershipContext
   ): Promise<any> {
+    await this.assertMatterAccess(caseId, context);
     const now = new Date().toISOString();
     const rows = await this.query(
       `UPDATE matter_client_access ca SET token_hash = $1, invitation_status = 'Active',
@@ -1115,6 +1189,7 @@ class DatabaseService {
   }
 
   public async revokeClientInvite(caseId: string, context: OwnershipContext): Promise<any> {
+    await this.assertMatterAccess(caseId, context);
     const rows = await this.query(
       `UPDATE matter_client_access ca SET token_hash = NULL, invitation_status = 'Revoked',
          revoked_at = $1, claimed_by_user_id = NULL
@@ -1131,6 +1206,7 @@ class DatabaseService {
   public async createCollaborationRequest(
     caseId: string, requestType: string, instruction: string, draftIds: string[], context: OwnershipContext
   ): Promise<any> {
+    await this.assertMatterAccess(caseId, context);
     const allowed = new Set(["Review", "Comment", "Confirm information", "Upload a document", "Edit and return a copy", "Provide a written response"]);
     if (!allowed.has(requestType)) throw new Error("Invalid collaboration request type");
     const unique = Array.from(new Set(draftIds));
@@ -1186,6 +1262,7 @@ class DatabaseService {
   public async markCollaborationResponseRead(
     caseId: string, responseId: string, context: OwnershipContext
   ): Promise<boolean> {
+    await this.assertMatterAccess(caseId, context);
     const rows = await this.query(
       `UPDATE client_responses r SET is_read = TRUE
        WHERE r.id = $1 AND EXISTS (
@@ -1731,6 +1808,7 @@ class DatabaseService {
         [context.firmId]
       );
     }
+    await this.assertMatterAccess(caseId, context);
     return await this.query(
       `SELECT d.*
        FROM documents d
@@ -1755,6 +1833,7 @@ class DatabaseService {
     context: OwnershipContext,
     caseId: string | null
   ): Promise<Document | undefined> {
+    if (caseId) await this.assertMatterAccess(caseId, context);
     const rows = caseId
       ? await this.query(
           `SELECT d.* FROM documents d
@@ -1789,9 +1868,7 @@ class DatabaseService {
     sourceType?: string,
     origin = "Lawyer"
   ): Promise<Document> {
-    if (caseId && !(await this.getCaseById(caseId, context))) {
-      throw new Error("Matter not found");
-    }
+    if (caseId) await this.assertMatterAccess(caseId, context);
     let suggestedSection = "General Legal Advice";
     try {
       const docEmbedding = await callModel("embedding", [], { textToEmbed: text.substring(0, 500) }) as number[];
@@ -1835,6 +1912,7 @@ class DatabaseService {
     caseId: string | null
   ): Promise<boolean> {
     if (caseId) {
+      await this.assertMatterAccess(caseId, context);
       const directDocument = await this.query(
         `DELETE FROM documents d
          WHERE d.id = $1 AND d.firm_id = $2 AND d.case_id = $3
@@ -1873,6 +1951,7 @@ class DatabaseService {
     context: OwnershipContext,
     limit = 5
   ): Promise<(DocumentChunk & { similarity: number })[]> {
+    if (scope !== "wide") await this.assertMatterAccess(scope, context);
     let queryEmbedding: number[];
     try {
       queryEmbedding = await callModel("embedding", [], { textToEmbed: query }) as number[];
@@ -1918,6 +1997,7 @@ class DatabaseService {
 
   public async getThreads(context: OwnershipContext, caseId: string | null): Promise<Thread[]> {
     if (caseId) {
+      await this.assertMatterAccess(caseId, context);
       return await this.query(
         `SELECT t.* FROM threads t
          JOIN cases c ON c.id = t.case_id
@@ -1940,6 +2020,7 @@ class DatabaseService {
     context: OwnershipContext,
     limit = 12
   ): Promise<Array<DocumentChunk & { title: string; keyword_score: number }>> {
+    if (scope !== "wide") await this.assertMatterAccess(scope, context);
     const terms = Array.from(new Set(
       query.toLocaleLowerCase().match(/[\p{L}\p{N}]{3,}/gu) || []
     )).filter((term) => ![
@@ -2021,7 +2102,10 @@ class DatabaseService {
          AND t.scope <> 'client'
          AND (
            t.case_id IS NULL OR EXISTS (
-             SELECT 1 FROM cases c WHERE c.id = t.case_id AND c.firm_id = $2
+             SELECT 1 FROM cases c
+             JOIN matter_user_access access
+               ON access.case_id = c.id AND access.user_id = $1
+             WHERE c.id = t.case_id AND c.firm_id = $2
            )
          )
        GROUP BY t.id
@@ -2031,6 +2115,7 @@ class DatabaseService {
   }
 
   public async getThreadById(id: string, context: OwnershipContext): Promise<Thread | undefined> {
+    await this.assertThreadMatterAccess(id, context);
     const rows = await this.query(
       `SELECT t.* FROM threads t
        WHERE t.id = $1 AND t.user_id = $2 AND t.scope <> 'client'
@@ -2049,9 +2134,7 @@ class DatabaseService {
     caseId: string | null,
     context: OwnershipContext
   ): Promise<Thread> {
-    if (caseId && !(await this.getCaseById(caseId, context))) {
-      throw new Error("Matter not found");
-    }
+    if (caseId) await this.assertMatterAccess(caseId, context);
     const threadId = `thread_${Date.now()}`;
     const createdAt = new Date().toISOString();
     const scope = caseId ? "case" : "wide";
@@ -2232,6 +2315,7 @@ class DatabaseService {
     generatedTitle: string,
     context: OwnershipContext
   ): Promise<boolean> {
+    await this.assertThreadMatterAccess(threadId, context);
     const rows = await this.query(
       `UPDATE threads t
        SET title = $1
@@ -2267,6 +2351,7 @@ class DatabaseService {
   }
 
   public async deleteThread(id: string, context: OwnershipContext): Promise<boolean> {
+    await this.assertThreadMatterAccess(id, context);
     const rows = await this.query(
       `DELETE FROM threads t
        WHERE t.id = $1 AND t.user_id = $2 AND t.scope <> 'client'
@@ -2282,6 +2367,7 @@ class DatabaseService {
   }
 
   public async getMessages(threadId: string, context: OwnershipContext): Promise<Message[]> {
+    await this.assertThreadMatterAccess(threadId, context);
     const rows = await this.query(
       `SELECT m.* FROM messages m
        JOIN threads t ON t.id = m.thread_id
@@ -2307,6 +2393,7 @@ class DatabaseService {
     context: OwnershipContext,
     limit = 12
   ): Promise<Message[]> {
+    await this.assertThreadMatterAccess(threadId, context);
     const rows = await this.query(
       `SELECT * FROM (
          SELECT m.* FROM messages m
@@ -2339,6 +2426,7 @@ class DatabaseService {
     steps: any[] | null = null,
     metadata: Record<string, unknown> = {}
   ): Promise<Message> {
+    await this.assertThreadMatterAccess(threadId, context);
     const msgId = `msg_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const createdAt = new Date().toISOString();
 
@@ -2386,6 +2474,7 @@ class DatabaseService {
     content: string,
     context: OwnershipContext
   ): Promise<Message> {
+    await this.assertThreadMatterAccess(threadId, context);
     const rows = await this.query(
       `UPDATE messages m SET content = $1
        WHERE m.id = $2 AND m.thread_id = $3
@@ -2415,6 +2504,7 @@ class DatabaseService {
 
   public async getDrafts(context: OwnershipContext, caseId: string | null): Promise<Draft[]> {
     if (!caseId) return [];
+    await this.assertMatterAccess(caseId, context);
     return await this.query(
       `SELECT d.* FROM drafts d
        JOIN cases c ON c.id = d.case_id
@@ -2429,6 +2519,7 @@ class DatabaseService {
     caseId: string,
     context: OwnershipContext
   ): Promise<Draft | undefined> {
+    await this.assertMatterAccess(caseId, context);
     const rows = await this.query(
       `SELECT d.* FROM drafts d
        JOIN cases c ON c.id = d.case_id
@@ -2446,6 +2537,8 @@ class DatabaseService {
     context: OwnershipContext
   ): Promise<Draft> {
     if (!caseId) throw new Error("A Matter is required before saving Work Product");
+    await this.assertMatterAccess(caseId, context);
+    await this.assertThreadMatterAccess(threadId, context);
     const draftId = `draft_${Date.now()}`;
     const createdAt = new Date().toISOString();
 
@@ -2487,6 +2580,8 @@ class DatabaseService {
     content: string;
     ownership: OwnershipContext;
   }): Promise<Draft> {
+    await this.assertMatterAccess(input.caseId, input.ownership);
+    await this.assertThreadMatterAccess(input.threadId, input.ownership);
     const revisionId = `draft_${randomUUID()}`;
     const now = new Date().toISOString();
     const rows = await this.query(
@@ -2529,6 +2624,7 @@ class DatabaseService {
   public async createManualDraft(
     caseId: string, title: string, content: string, context: OwnershipContext
   ): Promise<Draft> {
+    await this.assertMatterAccess(caseId, context);
     const id = `draft_${randomUUID()}`;
     const now = new Date().toISOString();
     const rows = await this.query(
@@ -2545,6 +2641,7 @@ class DatabaseService {
   public async duplicateDraft(
     id: string, caseId: string, context: OwnershipContext
   ): Promise<Draft> {
+    await this.assertMatterAccess(caseId, context);
     const duplicateId = `draft_${randomUUID()}`;
     const now = new Date().toISOString();
     const rows = await this.query(
@@ -2562,6 +2659,7 @@ class DatabaseService {
   public async setDraftSharing(
     id: string, caseId: string, shared: boolean, context: OwnershipContext
   ): Promise<Draft> {
+    await this.assertMatterAccess(caseId, context);
     const now = new Date().toISOString();
     const rows = await this.query(
       `UPDATE drafts d SET shared_with_client = $1, shared_at = $2, updated_at = $3
@@ -2577,6 +2675,7 @@ class DatabaseService {
   public async createClientRevision(
     id: string, caseId: string, content: string, context: OwnershipContext
   ): Promise<Draft> {
+    await this.assertMatterAccess(caseId, context);
     const revisionId = `draft_${randomUUID()}`;
     const now = new Date().toISOString();
     const rows = await this.query(
@@ -2599,6 +2698,7 @@ class DatabaseService {
     content: string,
     context: OwnershipContext
   ): Promise<Draft> {
+    await this.assertMatterAccess(caseId, context);
     const rows = await this.query(
       `UPDATE drafts d SET content = $1, updated_at = $5
        WHERE d.id = $2 AND d.case_id = $3
@@ -2616,6 +2716,7 @@ class DatabaseService {
     threadId: string,
     context: OwnershipContext
   ): Promise<number> {
+    await this.assertThreadMatterAccess(threadId, context);
     const rows = await this.query(
       `SELECT COUNT(m.id)::int AS message_count
        FROM threads t LEFT JOIN messages m ON m.thread_id = t.id
@@ -2635,6 +2736,7 @@ class DatabaseService {
     messageCount: number,
     context: OwnershipContext
   ): Promise<boolean> {
+    await this.assertThreadMatterAccess(threadId, context);
     const rows = await this.query(
       `UPDATE threads t SET memory_summary = $1, memory_message_count = $2,
          memory_updated_at = $3
@@ -2675,7 +2777,10 @@ class DatabaseService {
        LEFT JOIN messages m ON m.thread_id = t.id
        WHERE t.user_id = $1 AND t.scope <> 'client'
          AND (t.case_id IS NULL OR EXISTS (
-           SELECT 1 FROM cases c WHERE c.id = t.case_id AND c.firm_id = $2
+           SELECT 1 FROM cases c
+           JOIN matter_user_access access
+             ON access.case_id = c.id AND access.user_id = $1
+           WHERE c.id = t.case_id AND c.firm_id = $2
          ))
          AND (t.title ILIKE $3 OR m.content ILIKE $3)
        GROUP BY t.id
@@ -2691,6 +2796,7 @@ class DatabaseService {
     content: string,
     context: OwnershipContext
   ): Promise<AssistantDocument> {
+    await this.assertThreadMatterAccess(threadId, context);
     const id = `assistant_document_${randomUUID()}`;
     const now = new Date().toISOString();
     const rows = await this.query(

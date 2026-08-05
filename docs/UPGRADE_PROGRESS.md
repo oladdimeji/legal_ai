@@ -1682,3 +1682,11 @@ Status: Implementation complete; focused verification recorded below.
 - Kept the main Lawyer Assistant submit button visually fixed as Send with the normal Send icon while preserving its existing loading-based disabled guard and request processing.
 - Focused DOCX/UI tests passed (45/45), `npm run lint` passed, and `npm run build` passed outside the managed filesystem sandbox with the existing non-fatal large-chunk warning. A production-format CommonJS check generated a valid 12,832-byte DOCX ZIP containing `word/document.xml`.
 - No dependency, schema, migration, route, authentication, ownership, document content, formatting, API, or architecture change was made.
+
+### Matter user access control security fix
+
+- Fixed confirmed intra-Firm Matter visibility: Firm membership alone no longer authorizes lawyer access to every Matter.
+- Added additive migration 25, `matter_user_access_control`, with per-user Matter grants and a `(user_id, case_id)` listing index. The migration backfills all existing lawyer/Matter relationships by matching `firm_id`, preserving access for users present when it runs.
+- Invitation-code onboarding does not create Matter grants, so lawyers joining after migration receive no pre-existing Matter access. New Matter creation atomically grants access only to its creator.
+- Centralized lawyer-side Matter authorization returns `Matter not found` for missing, cross-Firm, and unassigned Matter IDs. Matter lists and direct reads filter by both authenticated user and Firm; Matter Sources, Intelligence, Collaboration, conversations, Work Product, and assistant paths inherit the same database boundary.
+- No Matter assignment UI or other feature was added. Firm Library sharing and Client Portal authorization remain unchanged.

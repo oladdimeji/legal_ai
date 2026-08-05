@@ -657,6 +657,32 @@ const migrations: Migration[] = [
       await client.query("ALTER TABLE threads ADD COLUMN IF NOT EXISTS memory_updated_at TEXT");
     },
   },
+  {
+    version: 25,
+    name: "matter_user_access_control",
+    async run(client) {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS matter_user_access (
+          case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          granted_at TEXT NOT NULL,
+          PRIMARY KEY (case_id, user_id)
+        )
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS matter_user_access_user_case_idx
+        ON matter_user_access(user_id, case_id)
+      `);
+      await client.query(`
+        INSERT INTO matter_user_access (case_id, user_id, granted_at)
+        SELECT c.id, u.id, NOW()::text
+        FROM cases c
+        JOIN users u ON u.firm_id = c.firm_id
+        WHERE u.account_type = 'lawyer'
+        ON CONFLICT DO NOTHING
+      `);
+    },
+  },
 ];
 
 export async function runMigrations(pool: Pool): Promise<void> {
