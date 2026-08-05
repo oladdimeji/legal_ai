@@ -57,6 +57,7 @@ import {
 } from "./server/assistant/assistantConversationState.js";
 import { resolveAssistantClarification } from "./server/assistant/assistantClarification.js";
 import { adaptiveAssistantThinkingLevel, buildAssistantTaskPrompt } from "./server/assistant/assistantPrompts.js";
+import { normalizeFollowUpSuggestions } from "./server/assistant/followUpSuggestions.js";
 import {
   conversationContextWithMemory,
   refreshAssistantMemory,
@@ -300,8 +301,22 @@ async function generateFollowUpSuggestions(
     const context = boundedConversation(history, 6000)
       .map((message) => `${message.role.toUpperCase()}: ${message.content}`)
       .join("\n\n");
-    const prompt = `Generate 3 or 4 concise follow-up questions for a lawyer based on this actual conversation and latest answer.
-Return strict JSON: {"suggestions":["..."]}. Do not use generic canned questions.
+    const prompt = `Generate 3 or 4 concise, context-specific follow-up messages based on this actual conversation and latest answer.
+Write every message from the lawyer/user's perspective, ready to send verbatim when clicked. Use direct instructions or direct questions that are specific to the actual conversation and latest response. Do not use generic canned suggestions.
+Never use Assistant-offer wording such as "Would you like me to...", "Would you like us to...", "Do you want me to...", "Should I...", "Should we...", "Shall I...", "Can I...", "I can...", "Let me...", or "Would it help if I...?".
+
+Good:
+- Draft an accompanying email for Dimeji.
+- Insert a two-year duration into Section 5.
+- Compare this document with the relevant Firm Library precedent.
+- What assumptions did you use in the document?
+
+Bad:
+- Would you like me to draft an accompanying email?
+- Should we insert a two-year duration?
+- Can I compare this with a Firm Library precedent?
+
+Return strict JSON: {"suggestions":["..."]}.
 
 CONVERSATION:
 ${context}
@@ -316,11 +331,7 @@ ${documentContext ? `SAFE DOCUMENT CONTEXT (metadata only; do not infer document
     });
     const parsed = JSON.parse(result.text);
     const suggestions = Array.isArray(parsed.suggestions) ? parsed.suggestions : [];
-    return suggestions
-      .filter((item: unknown): item is string => typeof item === "string")
-      .map((item) => item.trim())
-      .filter(Boolean)
-      .slice(0, 4);
+    return normalizeFollowUpSuggestions(suggestions);
   } catch (error) {
     console.error("Follow-up suggestion generation failed:", error);
     return [];
