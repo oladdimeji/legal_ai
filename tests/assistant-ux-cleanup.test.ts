@@ -131,7 +131,12 @@ test("Assistant routes temporary and selected document evidence through existing
   assert.match(route, /sourceName: "Firm Library"/);
   assert.match(route, /getDraftById\(selectedItem\.id, currentMatterId, requestOwnership\)/);
   assert.match(route, /sourceName: "Matter Work Product"/);
-  assert.match(route, /sourceType: selectedItem\?\.kind === "workProduct"[\s\S]*?\? "workProduct"[\s\S]*?\? "firmLibrary"[\s\S]*?: "matterSource"/);
+  assert.match(route, /orchestrateAssistantRetrieval\(/);
+  const orchestrator = await readFile("server/assistant/assistantOrchestrator.ts", "utf8");
+  assert.match(orchestrator, /selectedEntity\.kind === "source"[\s\S]*get_matter_source/);
+  assert.match(orchestrator, /selectedEntity\.kind === "workProduct"[\s\S]*get_work_product/);
+  assert.match(orchestrator, /selectedEntity\.kind === "libraryDocument"[\s\S]*get_firm_library_document/);
+  assert.match(orchestrator, /selectedEntity\.kind === "assistantDocument"[\s\S]*get_assistant_document/);
 
   assert.doesNotMatch(route, /MATTER_SOURCE_SENTINEL_7422|FIRM_LIBRARY_SENTINEL_7423|WORK_PRODUCT_SENTINEL_7424/);
 });

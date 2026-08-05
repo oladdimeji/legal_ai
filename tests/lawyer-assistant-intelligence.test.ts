@@ -40,9 +40,6 @@ const page = {
 function input(content: string, overrides: Partial<AssistantPlannerInput> = {}): AssistantPlannerInput {
   return {
     content,
-    responseMode: "chat",
-    enableWebSearch: false,
-    forceThorough: false,
     hasTemporaryFiles: false,
     temporaryFileNames: [],
     pageContext: page,
@@ -64,14 +61,10 @@ test("permanent charter defines one coherent assistant and evidence boundary", (
   assert.match(LAWYER_ASSISTANT_CHARTER, /general knowledge may be used normally/i);
 });
 
-test("draft mode deterministically forces draft without calling the planner model", async () => {
-  let called = false;
-  const plan = await planAssistantRequest(input("Draft a letter", { responseMode: "draft" }), (async () => {
-    called = true;
-    throw new Error("should not run");
-  }) as any);
-  assert.equal(called, false);
-  assert.equal(plan.intent, "draft");
+test("fallback autonomously identifies an explicit standalone document request", () => {
+  const plan = fallbackAssistantPlan(input("Draft a client advice letter"));
+  assert.equal(plan.intent, "document_creation");
+  assert.deepEqual(plan.deliverable, { kind: "document", documentAction: "create" });
 });
 
 test("safe fallback keeps ordinary conversation and legal explanations out of Matter retrieval", () => {
@@ -97,7 +90,7 @@ test("safe fallback orients page and workspace fact requests correctly", () => {
   ]);
 });
 
-test("planner output is strict, bounded, and cannot enable disabled web search", () => {
+test("planner output is strict, bounded, reference-safe, and chooses web autonomously", () => {
   const valid = {
     intent: "workspace_lookup",
     depth: "brief",
@@ -105,14 +98,17 @@ test("planner output is strict, bounded, and cannot enable disabled web search",
     needsCurrentPage: true,
     needsWeb: false,
     needsClarification: false,
+    deliverable: { kind: "message" },
+    referencedArtifactIds: [],
+    referencedResearchSourceIds: [],
     toolCalls: [{ name: "get_matter_overview", arguments: { matterId: "case_acme" } }],
   };
-  assert.deepEqual(validateAssistantPlan(valid, false), valid);
-  assert.equal(validateAssistantPlan({ ...valid, rationale: "hidden" }, false), null);
-  assert.equal(validateAssistantPlan({ ...valid, needsWeb: true }, false), null);
-  assert.equal(validateAssistantPlan({ ...valid, toolCalls: [{ name: "delete_matter", arguments: {} }] }, false), null);
-  assert.equal(validateAssistantPlan({ ...valid, toolCalls: [{ name: "get_matter_overview", arguments: { forgedKey: "case_other" } }] }, false), null);
-  assert.equal(validateAssistantPlan({ ...valid, toolCalls: [{ name: "get_firm_summary", arguments: { includeMembers: "yes" } }] }, false), null);
+  assert.deepEqual(validateAssistantPlan(valid, input("lookup")), valid);
+  assert.equal(validateAssistantPlan({ ...valid, rationale: "hidden" }, input("lookup")), null);
+  assert.deepEqual(validateAssistantPlan({ ...valid, needsWeb: true }, input("current lookup"))?.needsWeb, true);
+  assert.equal(validateAssistantPlan({ ...valid, toolCalls: [{ name: "delete_matter", arguments: {} }] }, input("lookup")), null);
+  assert.equal(validateAssistantPlan({ ...valid, toolCalls: [{ name: "get_matter_overview", arguments: { forgedKey: "case_other" } }] }, input("lookup")), null);
+  assert.equal(validateAssistantPlan({ ...valid, toolCalls: [{ name: "get_firm_summary", arguments: { includeMembers: "yes" } }] }, input("lookup")), null);
 });
 
 test("invalid model JSON uses fallback and planner receives the permanent charter", async () => {
@@ -142,6 +138,9 @@ test("planner receives bounded attachment metadata and explicit availability rul
         needsCurrentPage: false,
         needsWeb: false,
         needsClarification: false,
+        deliverable: { kind: "message" },
+        referencedArtifactIds: [],
+        referencedResearchSourceIds: [],
         toolCalls: [],
       }),
       groundingMetadata: null,
@@ -246,12 +245,15 @@ function toolPlan(toolCalls: any[]) {
     needsCurrentPage: true,
     needsWeb: false,
     needsClarification: false,
+    deliverable: { kind: "message" as const },
+    referencedArtifactIds: [],
+    referencedResearchSourceIds: [],
     toolCalls,
   };
 }
 
 test("tool registry contains only bounded read operations", () => {
-  assert.equal(ASSISTANT_READ_ONLY_TOOLS.length, 17);
+  assert.equal(ASSISTANT_READ_ONLY_TOOLS.length, 19);
   for (const tool of ASSISTANT_READ_ONLY_TOOLS) {
     assert.doesNotMatch(tool.name, /^(create|update|delete|share|send|invite|rotate|revoke|edit)_/);
   }

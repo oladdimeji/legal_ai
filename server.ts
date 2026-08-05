@@ -45,7 +45,7 @@ import {
 import { LAWYER_ASSISTANT_CHARTER } from "./server/assistant/assistantCharter.js";
 import { buildAssistantSessionContext, sessionContextForPrompt } from "./server/assistant/assistantContext.js";
 import { legacyRequestMode, planAssistantRequest } from "./server/assistant/assistantPlanner.js";
-import { executeAssistantToolPlan } from "./server/assistant/assistantToolExecutor.js";
+import { orchestrateAssistantRetrieval } from "./server/assistant/assistantOrchestrator.js";
 import { temporaryAttachmentEvidence, wrapAuthorizedEvidence } from "./server/assistant/assistantEvidence.js";
 import {
   buildAssistantConversationState,
@@ -1920,7 +1920,6 @@ ${sourceText}`;
     const threadId = req.params.id;
     const rawContent = typeof req.body.content === "string" ? req.body.content.trim() : "";
     const content = rawContent.slice(0, 12000);
-    const { forceDeepResearch, enableWebSearch } = req.body;
     const temporaryFiles: Array<{ filename: string; text: string }> = Array.isArray(req.body.temporaryFiles)
       ? req.body.temporaryFiles
           .filter((file: any) => typeof file?.filename === "string" && typeof file?.text === "string")
@@ -2105,9 +2104,6 @@ ${sourceText}`;
       const assistantPlan = await planAssistantRequest({
         content,
         pageContext,
-        responseMode: req.body.responseMode === "draft" ? "draft" : "chat",
-        enableWebSearch: enableWebSearch === true,
-        forceThorough: forceDeepResearch === true,
         hasTemporaryFiles: temporaryFiles.length > 0,
         temporaryFileNames,
         currentMatterId,
@@ -2115,31 +2111,38 @@ ${sourceText}`;
       });
       const assistantMode = legacyRequestMode(assistantPlan);
       const retrievalQuery = [...conversationHistory.filter((m) => m.role === "user").slice(-3).map((m) => m.content), content].join("\n");
-      const toolRun = await executeAssistantToolPlan({
+      const orchestration = await orchestrateAssistantRetrieval({
+        request: content,
         plan: assistantPlan,
+        session: assistantSession,
         account: (req as AuthenticatedRequest).auth!,
         ownership: requestOwnership,
         currentMatterId,
-        request: content,
+        conversationMessages: [...priorHistory, userMessage],
+        artifacts: conversationState.recentArtifacts,
       });
-      if (selectedEntityEvidence) {
-        toolRun.evidence.unshift({
-          id: "selected_entity",
-          sourceType: selectedItem?.kind === "workProduct"
-            ? "workProduct"
-            : selectedItem?.kind === "assistantDocument"
-              ? "assistantDocument"
-              : selectedItem?.kind === "libraryDocument"
-                ? "firmLibrary"
-                : "matterSource",
-          title: selectedEntityEvidence.title,
-          sourceName: selectedEntityEvidence.sourceName,
-          text: selectedEntityEvidence.text,
-          entityId: selectedItem?.id,
-          ...(currentMatterId ? { matterId: currentMatterId } : {}),
-        });
-      }
+      const { toolRun, webResearch } = orchestration;
       toolRun.evidence.push(...temporaryAttachmentEvidence(temporaryFiles));
+      const webCitationIdMap = new Map<string, string>();
+      const webCitations: Citation[] = webResearch.citations.map((citation, index) => {
+        const id = `cit_web_${index + 1}`;
+        webCitationIdMap.set(citation.id, id);
+        return { ...citation, id };
+      });
+      const groundedWebReport = [...webCitationIdMap.entries()].reduce(
+        (report, [from, to]) => report.replace(new RegExp(`\\[${from}\\]`, "g"), `[${to}]`),
+        webResearch.report
+      );
+      if (webResearch.performed && groundedWebReport) {
+        toolRun.evidence.push({
+          id: "public_web_research",
+          sourceType: "web",
+          title: "Current public web research",
+          sourceName: "Google Search Grounding",
+          text: groundedWebReport,
+        });
+        toolRun.checkedLocations.push("Current public web research");
+      }
 
       const clarificationQuestion = resolveAssistantClarification({
         plannerNeedsClarification: assistantPlan.needsClarification,
@@ -2171,7 +2174,7 @@ ${sourceText}`;
           evidenceParts.push(`${item.sourceName}: ${item.title}\n${cleanSourceText(item.text).slice(0, 15000)}`);
         }
         let draftResearchQuestions = [content];
-        if (forceDeepResearch === true) {
+        if (assistantPlan.depth === "thorough") {
           try {
             const splitResult = await callModel(
               "classify-complexity",
@@ -2190,13 +2193,11 @@ ${sourceText}`;
             console.error("Draft Deep Research question split failed:", error);
           }
         }
-        if (selectedEntityEvidence) {
-          evidenceParts.push(
-            `Selected ${selectedEntityEvidence.sourceName}: ${selectedEntityEvidence.title}\n${cleanSourceText(selectedEntityEvidence.text).slice(0, 8000)}`
-          );
-        }
         for (const file of temporaryFiles) {
           evidenceParts.push(`Temporary attachment: ${file.filename}\n${cleanSourceText(file.text).slice(0, 6000)}`);
+        }
+        if (webResearch.performed) {
+          evidenceParts.push(`Grounded public web research:\n${webResearch.report}`);
         }
         const auth = (req as AuthenticatedRequest).auth!;
         const currentDate = new Date().toLocaleDateString("en-US", {
@@ -2223,16 +2224,16 @@ ${sourceText}`;
           authorizedEvidence: evidenceParts.join("\n\n").slice(0, 26000),
           accountMetadata,
           currentDate,
-          webSearchEnabled: enableWebSearch === true,
-          deepResearchEnabled: forceDeepResearch === true,
-          researchPlan: forceDeepResearch === true ? draftResearchQuestions : undefined,
+          webSearchEnabled: webResearch.performed,
+          deepResearchEnabled: assistantPlan.depth === "thorough",
+          researchPlan: assistantPlan.depth === "thorough" ? draftResearchQuestions : undefined,
         });
         const draftResult = await callModel(
           "draft-generation",
           [{ role: "user", content: draftPrompt }],
           {
-            googleSearch: enableWebSearch === true,
-            thinkingLevel: forceDeepResearch === true ? "high" : "medium",
+            googleSearch: false,
+            thinkingLevel: assistantPlan.depth === "thorough" ? "high" : "medium",
             systemInstruction: LAWYER_ASSISTANT_CHARTER,
           }
         );
@@ -2266,7 +2267,7 @@ ${sourceText}`;
 
       if (assistantPlan.needsWorkspace || toolRun.evidence.length > 0) {
         const citations: Citation[] = toolRun.evidence
-          .filter((item) => !["account", "firm"].includes(item.sourceType))
+          .filter((item) => !["account", "firm", "web"].includes(item.sourceType))
           .slice(0, 12)
           .map((item, index) => ({
             id: `cit_${index + 1}`,
@@ -2275,6 +2276,7 @@ ${sourceText}`;
             textSnippet: cleanSourceText(item.text).slice(0, 4_000),
             sourceName: item.sourceName,
           }));
+        citations.push(...webCitations);
         const evidenceWithCitationIds = toolRun.evidence.map((item) => {
           const citation = citations.find((candidate) =>
             candidate.title === item.title && candidate.sourceName === item.sourceName
@@ -2288,31 +2290,14 @@ ${sourceText}`;
           conversationContext,
           evidenceBlock: wrapAuthorizedEvidence(evidenceWithCitationIds),
           checkedLocations: toolRun.checkedLocations,
-          webSearchEnabled: enableWebSearch === true,
+          webResearchPerformed: webResearch.performed,
         });
         const modelResult = await callModel("chat", [{ role: "user", content: prompt }], {
-          googleSearch: enableWebSearch === true && assistantPlan.needsWeb,
+          googleSearch: false,
           thinkingLevel: adaptiveAssistantThinkingLevel(assistantPlan),
           systemInstruction: LAWYER_ASSISTANT_CHARTER,
         });
-        const groundingCitationIds: Record<number, string> = {};
-        if (modelResult.groundingMetadata?.groundingChunks) {
-          modelResult.groundingMetadata.groundingChunks.forEach((chunk: any, index: number) => {
-            if (!chunk.web) return;
-            const citation: Citation = {
-              id: `cit_${citations.length + 1}`,
-              type: "web",
-              title: chunk.web.title || "Web Reference",
-              url: chunk.web.uri,
-              textSnippet: "Live Web Search Grounding source.",
-              sourceName: "Google Search Grounding",
-            };
-            citations.push(citation);
-            groundingCitationIds[index] = citation.id;
-          });
-        }
-        const rewritten = rewriteGoogleGroundingCitations(modelResult.text, groundingCitationIds);
-        const finalContent = canonicalizeAssistantCitations(cleanGeneratedText(rewritten), citations);
+        const finalContent = canonicalizeAssistantCitations(cleanGeneratedText(modelResult.text), citations);
         const suggestions = await generateFollowUpSuggestions([...conversationHistory], finalContent);
         const assistantMessage = await db.addMessage(
           threadId,
@@ -2347,6 +2332,9 @@ Server-validated selected entity: ${selectedEntityEvidence ? `${selectedEntityEv
 Prior conversation:
 ${conversationContext || "No prior conversation."}
 
+Grounded public web research (only present when actually performed):
+${groundedWebReport || "No public web research was performed."}
+
 Question: ${content}`
           : `Answer the user's ordinary question using your normal capabilities. Treat the current page context as optional ambient context: use it when the request refers to the current page and ignore it when irrelevant. Do not claim to have searched internal workspace documents because no internal retrieval was performed. Do not fabricate controls, citations, or present general knowledge as private Matter facts. Do not add generic AI or legal-advice disclaimer boilerplate. Express genuine uncertainty directly and specifically.
 
@@ -2359,31 +2347,17 @@ ${assistantSessionPrompt}
 Prior conversation:
 ${conversationContext || "No prior conversation."}
 
+Grounded public web research (only present when actually performed):
+${groundedWebReport || "No public web research was performed."}
+
 User question: ${content}`;
         const modelResult = await callModel("chat", [{ role: "user", content: modelPrompt }], {
-          googleSearch: assistantMode === "general" && enableWebSearch === true && assistantPlan.needsWeb,
+          googleSearch: false,
           thinkingLevel: adaptiveAssistantThinkingLevel(assistantPlan),
           systemInstruction: LAWYER_ASSISTANT_CHARTER,
         });
-        const citations: Citation[] = [];
-        const groundingCitationIds: Record<number, string> = {};
-        if (assistantMode === "general" && modelResult.groundingMetadata?.groundingChunks) {
-          modelResult.groundingMetadata.groundingChunks.forEach((chunk: any, index: number) => {
-            if (!chunk.web) return;
-            const citation: Citation = {
-              id: `cit_${citations.length + 1}`,
-              type: "web",
-              title: chunk.web.title || "Web Reference",
-              url: chunk.web.uri,
-              textSnippet: "Live Web Search Grounding source.",
-              sourceName: "Google Search Grounding",
-            };
-            citations.push(citation);
-            groundingCitationIds[index] = citation.id;
-          });
-        }
-        const rewritten = rewriteGoogleGroundingCitations(modelResult.text, groundingCitationIds);
-        const finalContent = canonicalizeAssistantCitations(cleanGeneratedText(rewritten), citations);
+        const citations: Citation[] = [...webCitations];
+        const finalContent = canonicalizeAssistantCitations(cleanGeneratedText(modelResult.text), citations);
         const suggestions = await generateFollowUpSuggestions([...conversationHistory], finalContent);
         const assistantMessage = await db.addMessage(
           threadId,
@@ -2540,13 +2514,13 @@ User question: ${content}`;
           .map((c) => `[${c.id}] Source: ${c.sourceName} - ${c.title}\nText Snippet: ${c.textSnippet}`)
           .join("\n\n");
 
-        const groundingToolsDesc = enableWebSearch === true
-          ? "Live Google Search grounding is available when current authority is useful."
-          : "Live web research is disabled. General legal knowledge may still be used, but current authority must not be described as live-verified.";
+        const groundingToolsDesc = webResearch.performed
+          ? "Grounded public research is included in the authorized evidence."
+          : "No live public research was performed. General legal knowledge may still be used, but current authority must not be described as live-verified.";
 
-        const citationInstSearch = enableWebSearch === true
-          ? "- For Google Search grounding references, cite them using the bracketed numbers (e.g., [1], [2]) that match the search grounding chunks."
-          : "- You DO NOT have access to Google Search grounding. You MUST NOT include any bracketed numbers like [1] or [2] in your text, and you MUST NOT simulate any search grounding citations.";
+        const citationInstSearch = webResearch.performed
+          ? "- Cite the grounded public research only with the supplied Exepts citation IDs."
+          : "- You do not have public web grounding. Do not simulate public citations.";
 
         const synthesisPrompt = `Complete a thorough legal analysis using the gathered authorized evidence, general legal knowledge, and any enabled live grounding. ${groundingToolsDesc}
 Do not invent private facts. If evidence does not establish a requested private fact, identify what is missing specifically while still providing any useful general legal framework and analysis.
@@ -2582,7 +2556,7 @@ INSTRUCTIONS FOR CITATIONS (CRITICAL - PLEASE BE EXTREMELY PRECISE):
 ${citationInstSearch}`;
 
         const finalResult = await callModel("chat", [{ role: "user", content: synthesisPrompt }], {
-          googleSearch: enableWebSearch === true,
+          googleSearch: false,
           thinkingLevel: "high",
           systemInstruction: LAWYER_ASSISTANT_CHARTER,
         });
@@ -2644,13 +2618,13 @@ ${citationInstSearch}`;
           .map((c) => `[${c.id}] Source: ${c.sourceName} - ${c.title}\nText Snippet: ${c.textSnippet}`)
           .join("\n\n");
 
-        const groundingToolsDesc = enableWebSearch === true
-          ? "Live Google Search grounding is available when current authority is useful."
-          : "Live web research is disabled. General legal knowledge may still be used, but current authority must not be described as live-verified.";
+        const groundingToolsDesc = webResearch.performed
+          ? "Grounded public research is included in the authorized evidence."
+          : "No live public research was performed. General legal knowledge may still be used, but current authority must not be described as live-verified.";
 
-        const citationInstSearch = enableWebSearch === true
-          ? "- For Google Search grounding references, cite them using the bracketed numbers (e.g., [1], [2]) that match the search grounding chunks."
-          : "- You DO NOT have access to Google Search grounding. You MUST NOT include any bracketed numbers like [1] or [2] in your text, and you MUST NOT simulate any search grounding citations.";
+        const citationInstSearch = webResearch.performed
+          ? "- Cite the grounded public research only with the supplied Exepts citation IDs."
+          : "- You do not have public web grounding. Do not simulate public citations.";
 
         const chatPrompt = `Answer the legal query using authorized evidence, general legal knowledge, and any enabled live grounding. ${groundingToolsDesc}
 Cite your statements using the inline square bracket tags matching the Source ID, e.g. [cit_1] or [cit_2].
@@ -2687,7 +2661,7 @@ INSTRUCTIONS FOR CITATIONS (CRITICAL - PLEASE BE EXTREMELY PRECISE):
 ${citationInstSearch}`;
 
         const finalResult = await callModel("chat", [{ role: "user", content: chatPrompt }], {
-          googleSearch: enableWebSearch === true,
+          googleSearch: false,
           thinkingLevel: "medium",
           systemInstruction: LAWYER_ASSISTANT_CHARTER,
         });

@@ -65,9 +65,6 @@ test("planner input contains recent conversation and artifact metadata without d
   });
   await planAssistantRequest({
     content: "What assumptions did you use in that document?",
-    responseMode: "chat",
-    enableWebSearch: false,
-    forceThorough: false,
     hasTemporaryFiles: false,
     temporaryFileNames: [],
     pageContext: { routeKind: "history", pageTitle: "Assistant" },
@@ -82,6 +79,9 @@ test("planner input contains recent conversation and artifact metadata without d
       needsCurrentPage: false,
       needsWeb: false,
       needsClarification: false,
+      deliverable: { kind: "message" },
+      referencedArtifactIds: [],
+      referencedResearchSourceIds: [],
       toolCalls: [],
     }) };
   }) as any);

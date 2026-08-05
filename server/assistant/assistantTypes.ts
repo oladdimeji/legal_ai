@@ -8,13 +8,15 @@ export const ASSISTANT_TOOL_NAMES = [
   "find_matter",
   "get_matter_overview",
   "list_matter_sources",
+  "get_matter_source",
+  "search_matter_documents",
   "get_matter_intelligence",
   "list_matter_work_products",
   "get_work_product",
   "get_matter_collaboration_summary",
   "list_firm_library_documents",
   "get_firm_library_document",
-  "search_workspace_documents",
+  "search_firm_library_documents",
   "list_assistant_documents",
   "get_assistant_document",
   "search_conversation_history",
@@ -34,11 +36,27 @@ export const ASSISTANT_INTENTS = [
   "workspace_lookup",
   "document_analysis",
   "legal_analysis",
-  "draft",
+  "document_creation",
+  "document_revision",
 ] as const;
 
 export type AssistantIntent = (typeof ASSISTANT_INTENTS)[number];
 export type AssistantDepth = "brief" | "standard" | "thorough";
+
+export const ASSISTANT_DELIVERABLE_KINDS = [
+  "message",
+  "document",
+  "message_and_document",
+] as const;
+
+export type AssistantDeliverableKind = (typeof ASSISTANT_DELIVERABLE_KINDS)[number];
+export type AssistantDocumentAction = "create" | "revise";
+
+export type AssistantDeliverablePlan = {
+  kind: AssistantDeliverableKind;
+  documentAction?: AssistantDocumentAction;
+  sourceArtifactId?: string;
+};
 
 export type AssistantPlan = {
   intent: AssistantIntent;
@@ -48,6 +66,9 @@ export type AssistantPlan = {
   needsWeb: boolean;
   needsClarification: boolean;
   clarificationQuestion?: string;
+  deliverable: AssistantDeliverablePlan;
+  referencedArtifactIds: string[];
+  referencedResearchSourceIds: string[];
   toolCalls: AssistantToolCall[];
 };
 
@@ -70,6 +91,8 @@ export type AssistantSessionContext = {
     id: string;
     name: string;
     clientName: string | null;
+    clientEmail: string | null;
+    jurisdiction: string | null;
     status: string | null;
   } | null;
   selectedEntity: {
@@ -105,9 +128,6 @@ export type AssistantEvidence = {
 
 export type AssistantPlannerInput = {
   content: string;
-  responseMode: "chat" | "draft";
-  enableWebSearch: boolean;
-  forceThorough: boolean;
   hasTemporaryFiles: boolean;
   temporaryFileNames: string[];
   pageContext: WorkspacePageContext;

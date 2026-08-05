@@ -41,6 +41,9 @@ function plan(intent: AssistantIntent, depth: AssistantPlan["depth"] = "standard
     needsCurrentPage: false,
     needsWeb: false,
     needsClarification: false,
+    deliverable: { kind: "message" },
+    referencedArtifactIds: [],
+    referencedResearchSourceIds: [],
     toolCalls: [],
   };
 }

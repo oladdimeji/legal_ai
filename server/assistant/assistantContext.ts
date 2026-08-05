@@ -34,6 +34,8 @@ export function buildAssistantSessionContext(input: {
       id: currentMatter.id,
       name: currentMatter.name,
       clientName: currentMatter.client_name || null,
+      clientEmail: currentMatter.client_email || null,
+      jurisdiction: currentMatter.jurisdiction || null,
       status: currentMatter.status || null,
     } : null,
     selectedEntity: selected?.id ? {
@@ -63,4 +65,3 @@ export function sessionContextForPrompt(context: AssistantSessionContext): strin
     selectedEntity: context.selectedEntity,
   }, null, 2).slice(0, 8_000);
 }
-

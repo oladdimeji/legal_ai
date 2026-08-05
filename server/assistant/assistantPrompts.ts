@@ -24,7 +24,7 @@ export function buildAssistantTaskPrompt(input: {
   conversationContext: string;
   evidenceBlock: string;
   checkedLocations?: string[];
-  webSearchEnabled: boolean;
+  webResearchPerformed: boolean;
 }): string {
   const checked = input.checkedLocations?.length
     ? input.checkedLocations.join(", ")
@@ -37,7 +37,7 @@ Current task requirements:
 - Answer the question first and use headings only when they improve a serious answer.
 - Private facts must be supported by the authorized evidence. General knowledge may be used normally but must not be presented as a workspace fact.
 - For legal analysis involving private facts, distinguish the workspace facts, general legal framework, analysis or inference, and specifically missing information when useful.
-- Live web research is ${input.webSearchEnabled && input.plan.needsWeb ? "enabled for this response" : "not being used for this response"}. Do not claim current-law verification unless live grounding is present.
+- Public web research was ${input.webResearchPerformed ? "actually performed and grounded sources are included below" : "not performed for this response"}. Do not claim current-law verification unless grounded public evidence is present.
 - Authorized locations actually checked: ${checked}
 - Never say a location was checked unless it appears in that list.
 - When an evidence record has an id beginning with cit_, cite supported material workspace claims inline using that exact bracketed id. Do not invent citation ids and do not force citations onto trivial account or UI answers.

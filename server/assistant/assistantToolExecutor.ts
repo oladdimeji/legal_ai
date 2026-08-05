@@ -88,6 +88,7 @@ export async function executeAssistantToolPlan(input: {
   ownership: OwnershipContext;
   currentMatterId: string | null;
   request: string;
+  authorizedMatterIds?: string[];
   database?: Database;
 }): Promise<AssistantToolRunResult> {
   const database = input.database || db;
@@ -98,6 +99,11 @@ export async function executeAssistantToolPlan(input: {
   const allowedMatterIds = new Set<string>();
   if (input.currentMatterId) allowedMatterIds.add(input.currentMatterId);
   const nonCurrentMatterIds = new Set<string>();
+  for (const matterId of input.authorizedMatterIds || []) {
+    allowedMatterIds.add(matterId);
+    if (matterId !== input.currentMatterId) nonCurrentMatterIds.add(matterId);
+    if (!result.resolvedMatterIds.includes(matterId)) result.resolvedMatterIds.push(matterId);
+  }
   let uniquelyResolvedMatterId: string | null = null;
 
   const authorizeMatter = async (matterId: string | null) => {
@@ -174,6 +180,20 @@ export async function executeAssistantToolPlan(input: {
           result.evidence.push(evidence(index, "matterSource", `${matter.name} — Sources`, "Matter Sources", documents.map(mapDocumentMetadata), { matterId: matter.id }));
           break;
         }
+        case "get_matter_source": {
+          const matterId = stringArgument(call, "matterId") || input.currentMatterId;
+          const documentId = stringArgument(call, "documentId");
+          const matter = await authorizeMatter(matterId);
+          if (!documentId) throw new Error("Matter Source ID is required");
+          const document = await database.getDocumentById(documentId, input.ownership, matter.id);
+          if (!document) throw new Error("Matter Source not found in this Matter");
+          result.checkedLocations.push(`Matter Source: ${document.title}`);
+          result.evidence.push(evidence(index, "matterSource", document.title, "Matter Sources", {
+            ...mapDocumentMetadata(document),
+            content: sanitizeEvidenceText(document.extracted_text),
+          }, { entityId: document.id, matterId: matter.id }));
+          break;
+        }
         case "get_matter_intelligence": {
           const matterId = stringArgument(call, "matterId") || input.currentMatterId;
           const matter = await authorizeMatter(matterId);
@@ -241,31 +261,45 @@ export async function executeAssistantToolPlan(input: {
           }, { entityId: document.id }));
           break;
         }
-        case "search_workspace_documents": {
+        case "search_matter_documents": {
           const matterId = stringArgument(call, "matterId") || input.currentMatterId;
-          let scope: string = "wide";
-          if (matterId) {
-            const matter = await authorizeMatter(matterId);
-            scope = matter.id;
-            result.checkedLocations.push(`Matter document passages: ${matter.name}`);
-          } else {
-            result.checkedLocations.push("Firm Library document passages");
-          }
+          const matter = await authorizeMatter(matterId);
+          result.checkedLocations.push(`Matter document passages: ${matter.name}`);
           const query = stringArgument(call, "query", 4_000) || input.request.slice(0, 4_000);
           const retrieval = await retrieveAssistantPassages({
             query,
-            scope,
+            scope: matter.id,
             ownership: input.ownership,
             depth: input.plan.depth,
-            intent: input.plan.intent === "draft" ? "draft" : input.plan.intent === "workspace_lookup" ? "lookup" : "analysis",
+            intent: input.plan.intent === "document_creation" || input.plan.intent === "document_revision" ? "draft" : input.plan.intent === "workspace_lookup" ? "lookup" : "analysis",
             selectedDocumentId: stringArgument(call, "documentId"),
             database,
           });
           for (const passage of retrieval.passages.slice(0, ASSISTANT_TOOL_LIMITS.passages)) {
-            result.evidence.push(evidence(index * 100 + result.evidence.length, matterId ? "matterSource" : "firmLibrary", passage.title, matterId ? "Matter Sources" : "Firm Library", {
+            result.evidence.push(evidence(index * 100 + result.evidence.length, "matterSource", passage.title, "Matter Sources", {
               passage: sanitizeEvidenceText(passage.text, 4_000),
               retrievalScore: Number(passage.score.toFixed(4)),
-            }, { entityId: passage.documentId, ...(matterId ? { matterId } : {}) }));
+            }, { entityId: passage.documentId, matterId: matter.id }));
+          }
+          break;
+        }
+        case "search_firm_library_documents": {
+          result.checkedLocations.push("Firm Library document passages");
+          const query = stringArgument(call, "query", 4_000) || input.request.slice(0, 4_000);
+          const retrieval = await retrieveAssistantPassages({
+            query,
+            scope: "wide",
+            ownership: input.ownership,
+            depth: input.plan.depth,
+            intent: input.plan.intent === "document_creation" || input.plan.intent === "document_revision" ? "draft" : input.plan.intent === "workspace_lookup" ? "lookup" : "analysis",
+            selectedDocumentId: stringArgument(call, "documentId"),
+            database,
+          });
+          for (const passage of retrieval.passages.slice(0, ASSISTANT_TOOL_LIMITS.passages)) {
+            result.evidence.push(evidence(index * 100 + result.evidence.length, "firmLibrary", passage.title, "Firm Library", {
+              passage: sanitizeEvidenceText(passage.text, 4_000),
+              retrievalScore: Number(passage.score.toFixed(4)),
+            }, { entityId: passage.documentId }));
           }
           break;
         }

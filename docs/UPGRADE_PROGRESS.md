@@ -1565,3 +1565,26 @@ Checkpoint 1 verification:
 - `npm test`: passed, 292/292 tests.
 - `npm run build`: passed outside the managed filesystem sandbox; the existing large-chunk warning remains.
 - `npm run verify`: passed outside the managed filesystem sandbox; lint, all 292 tests, and the production Vite/esbuild build completed successfully.
+
+### Checkpoint 2 — Autonomous scoped retrieval and private-safe web research
+
+Status: Implementation complete; checkpoint verification recorded below.
+
+- Replaced mode/toggle planner inputs with autonomous intent, depth, current-page, workspace, public-web, clarification, and deliverable decisions. The strict plan schema now contains `deliverable`, `referencedArtifactIds`, and `referencedResearchSourceIds`; unknown keys, tools, arguments, Matter IDs, artifact IDs, and research-source IDs invalidate model output.
+- Deliverables are explicitly planned as `message`, `document`, or `message_and_document`, with `create` or `revise` actions where applicable. Revisions require an exact authorized source artifact; ordinary explanations and short clause fragments remain messages.
+- Removed the ambiguous `search_workspace_documents` tool. Matter Sources now use `get_matter_source` and `search_matter_documents`; Firm Library uses `get_firm_library_document` and `search_firm_library_documents`. A current Matter never redirects an explicit Firm Library request.
+- Exact Matter Source reads authorize the Matter first and call the existing Firm-scoped `getDocumentById(documentId, ownership, matterId)` boundary. Exact Work Product, Firm Library, Assistant Document, Matter Intelligence, Overview, and Collaboration page references map to their dedicated read-only tools.
+- Added a bounded retrieval orchestrator. It injects exact current-page, artifact-ledger, and conversation-source references; deduplicates calls; executes at most eight calls; optionally plans one final retrieval round; and carries resolved Matter authorization into round two. At most two separately resolved non-current Matters remain allowed through the executor.
+- Current-thread references are supplied directly and global History search is filtered unless the request explicitly identifies another conversation, past conversations, a named thread, or cross-thread History.
+- Conversation research-source IDs resolve to sanitized extracted text from owned message metadata and enter the same bounded evidence packet without asking the model to reconstruct storage identities.
+- Added a private-safe public research boundary: a non-search lightweight-model call proposes at most three public questions from a deterministically redacted task; a second call receives only sanitized questions, public jurisdiction, and current UTC date with Google Search enabled; final synthesis and draft generation always use `googleSearch: false`.
+- Deterministic redaction covers authenticated user and client names/emails, Firm and Matter names/IDs, resolved Matter IDs, generated-document IDs/titles, attachment filenames, selected/private document titles, Exepts IDs, emails, bearer/query-string tokens, secret-looking values, and explicitly identified confidential parties. If no safe useful question remains, public search is skipped.
+- Google grounding chunks are converted into ordinary Exepts web citations and their inline references are rewritten before the grounded report reaches private synthesis. No grounding chunks means `performed: false`, no web citations, and no claim that a search occurred.
+- Existing citation canonicalization, authorization boundaries, model assignments, thinking defaults, Client Assistant, DOCX routes, preview/editor behavior, and Markdown persistence remain unchanged. No database migration was added.
+
+Checkpoint 2 verification:
+
+- `npm run lint`: passed (`tsc --noEmit`).
+- `npm test`: passed, 307/307 tests.
+- `npm run build`: passed outside the managed filesystem sandbox; the existing large-chunk warning remains.
+- `npm run verify`: passed outside the managed filesystem sandbox; lint, all 307 tests, and the production Vite/esbuild build completed successfully.
