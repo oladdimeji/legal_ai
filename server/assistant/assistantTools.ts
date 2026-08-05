@@ -1,6 +1,7 @@
 import type { Account, Case, Document, Draft, Message, Thread } from "../../src/types.js";
 import { ASSISTANT_TOOL_NAMES, type AssistantToolName } from "./assistantTypes.js";
 import { sanitizeEvidenceText } from "./assistantEvidence.js";
+import { conversationMessageForPrompt } from "../assistantRouting.js";
 
 export type AssistantToolDefinition = {
   name: AssistantToolName;
@@ -167,9 +168,8 @@ export function mapConversation(thread: Thread, messages: Message[]) {
     },
     messages: messages.slice(-30).map((message) => ({
       role: message.role,
-      content: sanitizeEvidenceText(message.content, 2_500),
+      content: sanitizeEvidenceText(conversationMessageForPrompt(message), 3_500),
       createdAt: message.created_at,
     })),
   };
 }
-

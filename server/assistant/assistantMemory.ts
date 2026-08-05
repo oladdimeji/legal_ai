@@ -2,6 +2,7 @@ import type { Message, Thread } from "../../src/types.js";
 import { callModel } from "../model.js";
 import { LAWYER_ASSISTANT_CHARTER } from "./assistantCharter.js";
 import { sanitizeEvidenceText } from "./assistantEvidence.js";
+import { conversationMessageForPrompt } from "../assistantRouting.js";
 
 export const ASSISTANT_MEMORY_POLICY = {
   initialMessageCount: 16,
@@ -32,8 +33,7 @@ function boundedMemoryMessages(messages: Message[]): string {
   const selected: string[] = [];
   let used = 0;
   for (const message of [...messages].reverse()) {
-    const content = sanitizeEvidenceText(message.content, 3_000);
-    const record = `${message.role.toUpperCase()}: ${content}`;
+    const record = sanitizeEvidenceText(conversationMessageForPrompt(message), 3_500);
     if (used + record.length > ASSISTANT_MEMORY_POLICY.maxInputCharacters && selected.length >= 6) break;
     selected.unshift(record);
     used += record.length;
@@ -62,7 +62,9 @@ export async function refreshAssistantMemory(input: {
   const prompt = `Update the bounded rolling memory for this lawyer's Exepts conversation. Return JSON only as {"summary":"..."}.
 
 Capture only durable conversation continuity:
-- established Matter and document references;
+- established Matter and document references, including created document titles and kinds;
+- whether each referenced Work Product belongs to a Matter;
+- relevant attachment names and whether the user expects to reuse them;
 - user goals and unfinished tasks;
 - confirmed facts and important conclusions;
 - drafting preferences and defined terms;

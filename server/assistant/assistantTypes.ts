@@ -1,4 +1,5 @@
 import type { WorkspacePageContext } from "../../src/types.js";
+import type { AssistantConversationState } from "./assistantConversationState.js";
 
 export const ASSISTANT_TOOL_NAMES = [
   "get_account_profile",
@@ -111,4 +112,5 @@ export type AssistantPlannerInput = {
   temporaryFileNames: string[];
   pageContext: WorkspacePageContext;
   currentMatterId: string | null;
+  conversationState: AssistantConversationState;
 };

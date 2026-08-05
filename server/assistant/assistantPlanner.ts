@@ -270,7 +270,8 @@ ${JSON.stringify({
     temporaryFileNames: input.temporaryFileNames,
     currentMatterId: input.currentMatterId,
     page: input.pageContext,
-  }).slice(0, 10_000)}`;
+    conversationState: input.conversationState,
+  }).slice(0, 22_000)}`;
   try {
     const result = await model("assistant-planner", [{ role: "user", content: prompt }], {
       systemInstruction: LAWYER_ASSISTANT_CHARTER,

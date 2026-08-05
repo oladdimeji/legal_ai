@@ -47,6 +47,13 @@ function input(content: string, overrides: Partial<AssistantPlannerInput> = {}):
     temporaryFileNames: [],
     pageContext: page,
     currentMatterId: "case_acme",
+    conversationState: {
+      rollingMemory: "",
+      recentTurns: [],
+      recentArtifacts: [],
+      recentResearchSources: [],
+      latestCreatedArtifact: null,
+    },
     ...overrides,
   };
 }

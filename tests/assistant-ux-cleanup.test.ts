@@ -85,17 +85,23 @@ test("Assistant message wrappers no longer include a bottom separator", async ()
   assert.doesNotMatch(wrapperLine, /border-b|last:border-0|border-zinc-150/);
 });
 
-test("Assistant user messages persist sanitized page context with attachment names only", async () => {
-  const [server, assistant] = await Promise.all([
+test("Assistant user messages persist sanitized research sources internally and strip them from public responses", async () => {
+  const [server, assistant, conversationState] = await Promise.all([
     readFile("server.ts", "utf8"),
     readFile("src/components/AssistantView.tsx", "utf8"),
+    readFile("server/assistant/assistantConversationState.ts", "utf8"),
   ]);
   const metadataHelper = server.slice(server.indexOf("function temporaryAttachmentMetadata"), server.indexOf("function sanitizePlainEditableText"));
-  const metadataBody = metadataHelper.slice(metadataHelper.indexOf("const attachments"));
   assert.match(server, /\{ \.\.\.temporaryAttachmentMetadata\(temporaryFiles\), pageContext \}/);
-  assert.match(metadataHelper, /map\(\(name\) => \(\{ name \}\)\)/);
-  assert.match(metadataHelper, /filename\.trim\(\)\.slice\(0, 180\)/);
-  assert.doesNotMatch(metadataBody, /\.text|text:/);
+  assert.match(metadataHelper, /conversationResearchSourceMetadata\(files\)/);
+  assert.match(conversationState, /researchSourcesPerMessage: 5/);
+  assert.match(conversationState, /researchSourceCharacters: 30_000/);
+  assert.match(conversationState, /storedResearchCharactersPerMessage: 75_000/);
+  assert.match(conversationState, /sanitizeEvidenceText/);
+  assert.match(conversationState, /publicAssistantMessage[\s\S]*researchSources[\s\S]*available:/);
+  assert.match(server, /publicAssistantMessages\(await db\.getMessages/);
+  assert.match(server, /publicAssistantMessage\(userMessage\)/);
+  assert.match(server, /publicAssistantMessage\(assistantMessage\)/);
   assert.match(assistant, /metadata: \{[\s\S]*attachments: submittedAttachments[\s\S]*pageContext: submittedPageContext/);
   assert.match(assistant, /submittedTemporaryFiles = temporaryFiles\.filter\(\(file\) => file\.status === "ready"\)/);
   assert.match(assistant, /attachmentNamesForMessage/);

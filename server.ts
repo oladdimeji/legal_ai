@@ -47,6 +47,12 @@ import { buildAssistantSessionContext, sessionContextForPrompt } from "./server/
 import { legacyRequestMode, planAssistantRequest } from "./server/assistant/assistantPlanner.js";
 import { executeAssistantToolPlan } from "./server/assistant/assistantToolExecutor.js";
 import { temporaryAttachmentEvidence, wrapAuthorizedEvidence } from "./server/assistant/assistantEvidence.js";
+import {
+  buildAssistantConversationState,
+  conversationResearchSourceMetadata,
+  publicAssistantMessage,
+  publicAssistantMessages,
+} from "./server/assistant/assistantConversationState.js";
 import { resolveAssistantClarification } from "./server/assistant/assistantClarification.js";
 import { adaptiveAssistantThinkingLevel, buildAssistantTaskPrompt } from "./server/assistant/assistantPrompts.js";
 import {
@@ -258,16 +264,7 @@ function portalResponseErrorStatus(error: unknown) {
 }
 
 function temporaryAttachmentMetadata(files: Array<{ filename: string; text: string }>) {
-  const seen = new Set<string>();
-  const attachments = files
-    .map((file) => file.filename.trim().slice(0, 180))
-    .filter((name) => {
-      if (!name || seen.has(name)) return false;
-      seen.add(name);
-      return true;
-    })
-    .map((name) => ({ name }));
-  return attachments.length ? { attachments } : {};
+  return conversationResearchSourceMetadata(files);
 }
 
 function sanitizePlainEditableText(text: string): string {
@@ -1901,7 +1898,7 @@ ${sourceText}`;
   app.get("/api/threads/:id/messages", async (req, res) => {
     const thread = await db.getThreadById(req.params.id, ownership(req));
     if (!thread) return res.status(404).json({ error: "Thread not found" });
-    return res.json(await db.getMessages(req.params.id, ownership(req)));
+    return res.json(publicAssistantMessages(await db.getMessages(req.params.id, ownership(req))));
   });
 
   // Core Legal Search (semantic + keyword search fallback)
@@ -2030,24 +2027,7 @@ ${sourceText}`;
         }
       }
 
-      const assistantSession = buildAssistantSessionContext({
-        account: (req as AuthenticatedRequest).auth!,
-        pageContext,
-        currentMatter,
-      });
-      const assistantSessionPrompt = sessionContextForPrompt(assistantSession);
-      const assistantPlan = await planAssistantRequest({
-        content,
-        pageContext,
-        responseMode: req.body.responseMode === "draft" ? "draft" : "chat",
-        enableWebSearch: enableWebSearch === true,
-        forceThorough: forceDeepResearch === true,
-        hasTemporaryFiles: temporaryFiles.length > 0,
-        temporaryFileNames,
-        currentMatterId,
-      });
-      const assistantMode = legacyRequestMode(assistantPlan);
-      const priorHistory = await db.getRecentMessages(threadId, requestOwnership, 12);
+      const priorHistory = await db.getRecentMessages(threadId, requestOwnership, 32);
 
       // Save user message first
       const userMessage = await db.addMessage(
@@ -2112,6 +2092,28 @@ ${sourceText}`;
         memorySummary,
         recentConversationContext
       );
+      const conversationState = buildAssistantConversationState({
+        messages: [...priorHistory, userMessage],
+        rollingMemory: memorySummary,
+      });
+      const assistantSession = buildAssistantSessionContext({
+        account: (req as AuthenticatedRequest).auth!,
+        pageContext,
+        currentMatter,
+      });
+      const assistantSessionPrompt = sessionContextForPrompt(assistantSession);
+      const assistantPlan = await planAssistantRequest({
+        content,
+        pageContext,
+        responseMode: req.body.responseMode === "draft" ? "draft" : "chat",
+        enableWebSearch: enableWebSearch === true,
+        forceThorough: forceDeepResearch === true,
+        hasTemporaryFiles: temporaryFiles.length > 0,
+        temporaryFileNames,
+        currentMatterId,
+        conversationState,
+      });
+      const assistantMode = legacyRequestMode(assistantPlan);
       const retrievalQuery = [...conversationHistory.filter((m) => m.role === "user").slice(-3).map((m) => m.content), content].join("\n");
       const toolRun = await executeAssistantToolPlan({
         plan: assistantPlan,
@@ -2156,8 +2158,8 @@ ${sourceText}`;
           { suggestions: [], requestMode: assistantMode, assistantIntent: assistantPlan.intent }
         );
         return res.status(201).json({
-          userMessage,
-          assistantMessage,
+          userMessage: publicAssistantMessage(userMessage),
+          assistantMessage: publicAssistantMessage(assistantMessage),
           requestMode: assistantMode,
           assistantIntent: assistantPlan.intent,
         });
@@ -2254,8 +2256,8 @@ ${sourceText}`;
           { suggestions: [], requestMode: assistantMode, assistantIntent: assistantPlan.intent, document: documentReference }
         );
         return res.status(201).json({
-          userMessage,
-          assistantMessage,
+          userMessage: publicAssistantMessage(userMessage),
+          assistantMessage: publicAssistantMessage(assistantMessage),
           requestMode: assistantMode,
           assistantIntent: assistantPlan.intent,
           document: documentReference,
@@ -2322,8 +2324,8 @@ ${sourceText}`;
           { suggestions, requestMode: assistantMode, assistantIntent: assistantPlan.intent }
         );
         return res.status(201).json({
-          userMessage,
-          assistantMessage,
+          userMessage: publicAssistantMessage(userMessage),
+          assistantMessage: publicAssistantMessage(assistantMessage),
           requestMode: assistantMode,
           assistantIntent: assistantPlan.intent,
         });
@@ -2392,7 +2394,12 @@ User question: ${content}`;
           null,
           { suggestions, requestMode: assistantMode, assistantIntent: assistantPlan.intent }
         );
-        return res.status(201).json({ userMessage, assistantMessage, requestMode: assistantMode, assistantIntent: assistantPlan.intent });
+        return res.status(201).json({
+          userMessage: publicAssistantMessage(userMessage),
+          assistantMessage: publicAssistantMessage(assistantMessage),
+          requestMode: assistantMode,
+          assistantIntent: assistantPlan.intent,
+        });
       }
 
       const retrievalScope = currentMatterId || "wide";
@@ -2720,8 +2727,8 @@ ${citationInstSearch}`;
       );
 
       res.status(201).json({
-        userMessage,
-        assistantMessage,
+        userMessage: publicAssistantMessage(userMessage),
+        assistantMessage: publicAssistantMessage(assistantMessage),
         requestMode: assistantMode,
         assistantIntent: assistantPlan.intent
       });

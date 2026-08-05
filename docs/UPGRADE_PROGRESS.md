@@ -1540,3 +1540,28 @@ Manual browser acceptance and remaining limitations:
 - Browser preview uses explicit orientation/page-break paper sections and minimum physical page dimensions; it intentionally does not fake automatic pagination or browser page numbers.
 - GFM restrictions intentionally exclude merged cells, arbitrary multi-block cell content, media, manual column-width persistence, tracked changes, comments, collaborative editing, import, and a pagination engine.
 - npm reported one moderate vulnerability during the dependency update; no broad `npm audit fix` was run because it could change unrelated dependency versions.
+
+## Unified Autonomous Lawyer Assistant
+
+### Checkpoint 1 — Conversation continuity and deterministic references
+
+Status: Implementation complete; checkpoint verification recorded below.
+
+- Reordered the lawyer Assistant message lifecycle so the authenticated thread and submitted page entity are authorized first, owned prior messages are loaded, the user message is persisted, first-message title generation is started, recent conversation and rolling memory are assembled, and only then is the planner called with deterministic conversation state.
+- Added a framework-neutral conversation-state builder with exact recent turns, page labels, attachment names, a generated-artifact ledger, conversation research-source references, the latest created artifact, and rolling memory. Limits are 20 turns, 12 artifacts, 10 research-source references, and 16,000 recent-turn characters for planning.
+- The artifact ledger derives only from owned `message.metadata.document` values, preserves exact IDs and Matter IDs, deduplicates by exact artifact ID while keeping the newest reference, and never treats titles as authorization.
+- Assistant prompt/history formatting now includes safe document kind, title, exact artifact ID, Matter ownership where applicable, page labels, and attachment names without loading full generated-document content or arbitrary metadata.
+- Rolling-memory input now receives those safe document and attachment references while retaining the existing refresh thresholds, 6,000-character summary ceiling, lightweight model, secret filtering, and failure fallback. Memory remains continuity context rather than authoritative artifact identity.
+- Extracted Research source text is sanitized and stored under owned user-message metadata without schema changes: at most five sources, 30,000 characters per source, and 75,000 characters per message. Binary bytes, cloud credentials, provider URLs, and tokens are not stored by this path.
+- Added a public Assistant-message mapper used by lawyer message GET and POST responses. It preserves attachment names, document cards, citations, suggestions, steps, and other safe metadata while removing every stored `researchSources[].text` value before browser delivery.
+- Historical name-only attachments remain visible but are deterministically marked unavailable; later turns can reuse only source text that actually exists in owned server metadata.
+- Added deterministic artifact and research-source resolvers. Current authorized page documents take precedence, exact named/validated ledger references are honored, clear “document you just created” references use the newest ledger entry, and ambiguous direct revision pronouns request clarification.
+- Explicitly retrieved historical conversations now include safe document references and attachment names rather than plain message text alone.
+- Added focused conversation-state, artifact-continuity, and research-source-continuity tests. No database migration was added. Client Assistant, model assignments, thinking defaults, DOCX routes, canonical preview, Tiptap editor, and Markdown persistence were not changed.
+
+Checkpoint 1 verification:
+
+- `npm run lint`: passed (`tsc --noEmit`).
+- `npm test`: passed, 292/292 tests.
+- `npm run build`: passed outside the managed filesystem sandbox; the existing large-chunk warning remains.
+- `npm run verify`: passed outside the managed filesystem sandbox; lint, all 292 tests, and the production Vite/esbuild build completed successfully.
