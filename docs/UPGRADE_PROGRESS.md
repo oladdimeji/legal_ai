@@ -1610,3 +1610,33 @@ Checkpoint 3 verification:
 - `npm test`: passed, 317/317 tests.
 - `npm run build`: passed outside the managed filesystem sandbox; the existing large-chunk warning remains.
 - `npm run verify`: passed outside the managed filesystem sandbox; lint, all 317 tests, and the production Vite/esbuild build completed successfully.
+
+### Checkpoint 4 â€” Unified Send composer and obsolete-mode removal
+
+Status: Implementation complete; checkpoint verification recorded below.
+
+- Simplified the lawyer `AssistantView` to one autonomous composer. Its bottom control row contains Research sources on the left and one Send button on the right, with only Send and Sendingâ€¦ states. Matter and non-Matter placeholders remain context-aware without exposing a Draft mode.
+- Research sources continues to open the existing Device, Google Drive, and Dropbox file picker. Selected/extracting/error files remain visible as removable chips, ready extracted files are submitted, and the selection clears after a successful response. The dropdown explains that attached files remain available to the conversation.
+- Removed the Draft toggle, Draft state, Draft-specific placeholder and progress copy, Create Draft/Ask submit labels, Web Search chip, Google Grounding control, quick-enable suggestion, and all related resets and visual branches. Autonomous web citations remain visible after a response through the unchanged citation renderer and panel.
+- The browser message payload now contains only `content`, sanitized `pageContext`, and ready `temporaryFiles`. It no longer sends `responseMode`, `enableWebSearch`, or `forceDeepResearch`; the server ignores obsolete fields because planning reads none of them.
+- Deleted the browser-side `assistantRequestRouting` classifier and its production export. The client no longer predicts general, workspace, deep-research, or document outcomes; the server planner and bounded orchestrator own every decision.
+- Replaced mode-aware working activities with one neutral progressive sequence: understanding the request, checking the conversation/current context, optionally reviewing attached research sources, working with relevant information, and preparing the response. It does not claim document creation or web research before server results exist.
+- Updated the empty-state language to describe questions, workspace work, document creation, and research sources as capabilities of one Assistant. Ordinary answers no longer display the misleading `0 sources matched` footer; the source control appears only when citations exist.
+- Preserved simulated response reveal, citation hover/panel, copying, feedback, rewrite shortcut, follow-up pills, thorough-research steps, document cards and navigation, DOCX download controls, the side response editor, compact layout, panel width behavior, and chat `FormattedMarkdown`.
+- Added focused unified-composer and autonomous-orchestrator coverage, renamed the obsolete Draft-mode regression file, and updated neutral-activity and prior UI regressions. Client Assistant files were not changed. No schema migration was added, and formal preview/editor/DOCX behavior remains on the existing pipeline.
+
+Checkpoint 4 verification:
+
+- `npm run lint`: passed (`tsc --noEmit`).
+- `npm test`: passed, 323/323 tests.
+- `npm run build`: passed outside the managed filesystem sandbox; the existing large-chunk warning remains.
+- `npm run verify`: passed outside the managed filesystem sandbox; lint, all 323 tests, and the production Vite/esbuild build completed successfully.
+
+Final verification and acceptance coverage:
+
+- The final committed implementation passed `npm run lint`, `npm test` (323/323), `npm run build`, and `npm run verify`. The established large JavaScript chunk warning remains non-fatal.
+- `npm run docx:fixtures` passed and regenerated all 16 review documents through the unchanged shared DOCX faÃ§ade under the gitignored `tmp/docx-review/` directory.
+- Production source searches found no `draftMode`, `enableWebSearch`, `responseMode`, `forceDeepResearch`, `routeAssistantRequest`, `legacyRequestMode`, `search_workspace_documents`, pre-request Google Grounding UI, Create Draft control, Ask submit control, misleading zero-source footer, or direct-vector branch in the lawyer message endpoint.
+- Automated scenarios cover exact generated-document follow-ups, non-overwriting Work Product and Assistant Document revisions, selected Matter/Library/Assistant documents, separate Matter and Firm Library retrieval, conversation-bound research sources and API stripping, autonomous private-safe public research, message/document combined outcomes, general tool-free conversation, and explicit cross-thread History behavior.
+- No authenticated interactive browser or live production Gemini/database session was available, so end-to-end visual clicks, real cloud-picker authorization, live grounded queries, persisted database reloads, and opening/exporting both sides of a live autonomous revision were not manually executed and are not claimed as passed. Their deterministic service, route, UI, authorization, compiler, editor, and export paths are covered by the passing automated suite.
+- No database migration was added. Client Assistant was unchanged. Existing model assignments, thinking defaults, five DOCX routes, canonical preview, Tiptap editor, Markdown persistence, authentication, and workspace/Matter/client isolation remain covered by regression tests.

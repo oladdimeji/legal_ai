@@ -9,7 +9,6 @@ import {
   MIN_ASSISTANT_PANEL_WIDTH,
   clampAssistantPanelWidth,
 } from "../src/lib/assistantPanelWidth.js";
-import { routeAssistantRequest } from "../src/lib/assistantRequestRouting.js";
 import {
   conversationMessageForPrompt,
   currentMatterIdForAssistant,
@@ -130,18 +129,11 @@ test("page context sanitizer bounds browser-authored strings and action counts",
   assert.equal(sanitizeWorkspacePageContext({ routeKind: "matter", pageTitle: "Missing Matter" }), null);
 });
 
-test("deterministic assistant routing separates UI help, general chat, workspace research, and deep research", () => {
-  assert.equal(routeAssistantRequest({ content: "What does this button do?", pageContext: matterContext }), "ui_help");
-  assert.equal(routeAssistantRequest({ content: "What is the capital of Ghana?", pageContext: generalContext }), "general");
-  assert.equal(routeAssistantRequest({ content: "What is the capital of Ghana?", pageContext: matterContext }), "general");
-  assert.equal(routeAssistantRequest({ content: "What do our Firm Library documents say?", pageContext: generalContext }), "workspace_research");
-  assert.equal(routeAssistantRequest({ content: "Analyze the key claims", pageContext: matterContext }), "workspace_research");
-  assert.equal(routeAssistantRequest({ content: "Compare all relevant cases comprehensively", pageContext: matterContext }), "deep_research");
-  assert.equal(routeAssistantRequest({ content: "Hello", pageContext: matterContext }), "general");
-  assert.equal(routeAssistantRequest({ content: "Simple question", pageContext: generalContext, forceDeepResearch: true }), "deep_research");
-  const settingsContext: WorkspacePageContext = { routeKind: "settings", pageTitle: "Settings" };
-  assert.equal(routeAssistantRequest({ content: "Can you explain the content of the settings for me?", pageContext: settingsContext }), "ui_help");
-  assert.equal(routeAssistantRequest({ content: "Explain Windows settings generally.", pageContext: settingsContext }), "general");
+test("the browser no longer classifies Assistant requests before submission", async () => {
+  const assistant = await readFile("src/components/AssistantView.tsx", "utf8");
+  await assert.rejects(readFile("src/lib/assistantRequestRouting.ts", "utf8"));
+  assert.doesNotMatch(assistant, /routeAssistantRequest|responseMode|forceDeepResearch/);
+  assert.match(assistant, /buildAssistantWorkingActivities\(\{[\s\S]*hasAttachments/);
 });
 
 test("current assistant Matter comes only from the submitted page and history labels remain concise", () => {
@@ -173,7 +165,7 @@ test("App owns one fresh session-only active thread and navigation never replace
   assert.match(assistant, /if \(!activeThreadId\) return/);
   assert.match(assistant, /AbortController/);
   assert.match(assistant, /caseId: originContext\.routeKind === "matter"/);
-  assert.match(assistant, /const handleAsk[\s\S]*await handleStartNewThread/);
+  assert.match(assistant, /const handleSend[\s\S]*await handleStartNewThread/);
   assert.match(app, /const handleStartNewThread = \(\) => \{\s*setActiveThreadId\(null\);\s*setNewConversationVersion/);
   assert.doesNotMatch(app.slice(app.indexOf("const handleStartNewThread"), app.indexOf("const handleLogout")), /fetch\(/);
   assert.ok(app.indexOf("const navigate") < app.indexOf("setActiveThreadId(thread.id)"));
@@ -270,11 +262,10 @@ test("product help, general conversation, and workspace analysis share the unifi
   assert.match(prompts, /General knowledge may be used normally/);
 });
 
-test("composer keeps sources and Draft while removing manual Improve and Deep Research", async () => {
+test("composer keeps research sources and Send while removing manual modes", async () => {
   const assistant = await readFile("src/components/AssistantView.tsx", "utf8");
   assert.match(assistant, />Research sources</);
-  assert.match(assistant, /id="draft-mode-toggle"/);
-  assert.match(assistant, /draftMode \? "Create Draft" : "Ask"/);
+  assert.match(assistant, /id="btn-submit-send"/);
   assert.match(assistant, /FileSourcePicker/);
-  assert.doesNotMatch(assistant, /handleImprovePrompt|btn-improve-query|forceDeepResearch|deepResearchEnabled|setDeepResearchEnabled/);
+  assert.doesNotMatch(assistant, /draftMode|Create Draft|Web Search|Google Grounding|handleImprovePrompt|btn-improve-query|forceDeepResearch|deepResearchEnabled|setDeepResearchEnabled/);
 });

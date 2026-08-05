@@ -3,7 +3,6 @@ import type { Message } from "../src/types.js";
 import { sanitizeWorkspacePageContext } from "../src/lib/workspacePageContext.js";
 import { attachmentNamesForMessage } from "./assistant/assistantConversationState.js";
 import { sanitizeEvidenceText } from "./assistant/assistantEvidence.js";
-export { routeAssistantRequest } from "../src/lib/assistantRequestRouting.js";
 
 export function currentMatterIdForAssistant(
   pageContext: WorkspacePageContext

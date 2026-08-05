@@ -1,5 +1,3 @@
-import type { AssistantRequestMode } from "./assistantRequestRouting";
-
 export type WorkingActivity = {
   activeLabel: string;
   completedLabel: string;
@@ -12,10 +10,8 @@ export type VisibleWorkingActivity = WorkingActivity & {
 
 export function buildAssistantWorkingActivities({
   hasAttachments,
-  requestMode,
 }: {
   hasAttachments: boolean;
-  requestMode: AssistantRequestMode;
 }): WorkingActivity[] {
   const activities: WorkingActivity[] = [
     {
@@ -23,41 +19,28 @@ export function buildAssistantWorkingActivities({
       completedLabel: "Request understood",
     },
     {
-      activeLabel: "Checking the relevant context…",
-      completedLabel: "Relevant context checked",
+      activeLabel: "Checking the conversation and current context…",
+      completedLabel: "Conversation and context checked",
     },
   ];
 
   if (hasAttachments) {
     activities.push({
-      activeLabel: "Reviewing attached documents…",
-      completedLabel: "Attached documents reviewed",
+      activeLabel: "Reviewing attached research sources…",
+      completedLabel: "Research sources reviewed",
     });
   }
 
-  if (requestMode === "draft") {
-    activities.push(
-      {
-        activeLabel: "Preparing the document…",
-        completedLabel: "Document prepared",
-      },
-      {
-        activeLabel: "Refining the document…",
-        completedLabel: "Document refined",
-      }
-    );
-  } else {
-    activities.push(
-      {
-        activeLabel: "Preparing the response…",
-        completedLabel: "Response prepared",
-      },
-      {
-        activeLabel: "Refining the response…",
-        completedLabel: "Response refined",
-      }
-    );
-  }
+  activities.push(
+    {
+      activeLabel: "Working with the relevant information…",
+      completedLabel: "Relevant information reviewed",
+    },
+    {
+      activeLabel: "Preparing the response…",
+      completedLabel: "Response prepared",
+    }
+  );
 
   return activities;
 }

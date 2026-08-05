@@ -1486,10 +1486,8 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
       if (req.body.pageContext !== undefined && !pageContext) {
         return res.status(400).json({ error: "Page context is invalid" });
       }
-      const drafting = req.body.responseMode === "draft";
-
       const enhancePrompt = `Improve the user's request without changing its intended task, facts, tone, or requested output.
-Use the current page context only when it is relevant. ${drafting ? "The user is preparing a standalone document, so preserve the requested document type, audience, tone, and drafting instructions." : "Do not turn ordinary chat or product-help questions into formal legal research queries."}
+Use the current page context only when it is relevant. Preserve any requested document type, audience, tone, and drafting instructions, but do not turn ordinary chat or product-help questions into formal legal research queries.
 Output ONLY plain editable text. Do not use Markdown headings, bold, italics, bullet markers, code fences, or tables. Preserve ordinary legal punctuation and numbered prose only when numbering is substantively useful.
 
 Current page context:

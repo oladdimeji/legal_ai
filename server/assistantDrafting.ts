@@ -3,22 +3,6 @@ import type { AssistantDepth } from "./assistant/assistantTypes.js";
 import { extractGeneratedSubject, extractSummaryHeading } from "./extractGeneratedSubject.js";
 import { EXPORT_SAFE_DOCUMENT_MARKDOWN_RULES } from "./documentDraftingRules.js";
 
-const WORKSPACE_DRAFT_PATTERN = /\b(?:matter|client file|firm library|workspace|source|work product|uploaded|attached|document on (?:this|the) page)\b/i;
-
-export function assistantDraftNeedsWorkspaceEvidence({
-  hasMatter,
-  hasTemporaryFiles,
-  hasSelectedEntity,
-  instruction,
-}: {
-  hasMatter: boolean;
-  hasTemporaryFiles: boolean;
-  hasSelectedEntity: boolean;
-  instruction: string;
-}): boolean {
-  return hasMatter || hasTemporaryFiles || hasSelectedEntity || WORKSPACE_DRAFT_PATTERN.test(instruction);
-}
-
 export function buildAssistantDraftPrompt({
   instruction,
   pageContext,

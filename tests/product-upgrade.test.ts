@@ -215,7 +215,7 @@ test("Phase 10 removes misleading editor and attachment controls", async () => {
   ]);
   assert.doesNotMatch(assistant, /Add from Google Drive|Drive cloud OAuth picker|handleAttachMockFile|handleLocalFileUpload|Add from Workspace/);
   assert.doesNotMatch(assistant, /CourtListener|GovInfo/);
-  assert.match(assistant, /Web Search/);
+  assert.doesNotMatch(assistant, /Web Search|Google Grounding/);
   assert.match(assistant, /Temporary File Attachments/);
   assert.doesNotMatch(assistant, /\(Simulated\)/);
   assert.doesNotMatch(editor, /Format Painter|Show Edits|version-selector|V3 \(Current Work Product\)/);

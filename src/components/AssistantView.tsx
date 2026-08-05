@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { 
-  MessageSquare, Send, Search, AlertCircle,
+  MessageSquare, Send, AlertCircle,
   ChevronDown, ChevronUp, FileText, Check, Paperclip, RefreshCw, 
   ExternalLink, BookOpen, Copy, Pencil, X, Briefcase, 
-  Folder, Globe, ThumbsUp, ThumbsDown,
+  Folder, ThumbsUp, ThumbsDown,
   Bold, Italic, Underline, Strikethrough, List, ListOrdered,
   AlignLeft, AlignCenter, AlignRight, Scissors,
   Clipboard, Undo2, Redo2, Save, Link as LinkIcon, Download
@@ -14,7 +14,6 @@ import FormattedMarkdown from "./FormattedMarkdown";
 import FileSourcePicker from "./FileSourcePicker";
 import { browserFileIdentity, MAX_SELECTED_FILES } from "../hooks/useCumulativeFileSelection";
 import { assistantCitationsToDisplayText } from "../lib/assistantCitations";
-import { routeAssistantRequest } from "../lib/assistantRequestRouting";
 import {
   advanceWorkingActivityIndex,
   buildAssistantWorkingActivities,
@@ -146,7 +145,6 @@ export default function AssistantView({
 }: AssistantViewProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState("");
-  const [draftMode, setDraftMode] = useState(false);
   const [loading, setLoading] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [workingActivities, setWorkingActivities] = useState<WorkingActivity[]>([]);
@@ -154,8 +152,6 @@ export default function AssistantView({
   const [citationPanelSource, setCitationPanelSource] = useState<Citation | null>(null);
   const [activeMessageCitations, setActiveMessageCitations] = useState<Citation[]>([]);
   
-  // Custom states for toggleable retrieval sources
-  const [enableWebSearch, setEnableWebSearch] = useState(false);
   const [filesAndSourcesOpen, setFilesAndSourcesOpen] = useState(false);
   const [temporaryFiles, setTemporaryFiles] = useState<TemporaryFile[]>([]);
   const [temporaryFileError, setTemporaryFileError] = useState("");
@@ -279,8 +275,6 @@ export default function AssistantView({
     setInputValue("");
     setTemporaryFiles([]);
     setTemporaryFileError("");
-    setEnableWebSearch(false);
-    setDraftMode(false);
     setFilesAndSourcesOpen(false);
     setCitationPanelSource(null);
     setActiveMessageCitations([]);
@@ -416,7 +410,7 @@ export default function AssistantView({
     }
   };
 
-  const handleAsk = async (e?: React.FormEvent, customQuery?: string) => {
+  const handleSend = async (e?: React.FormEvent, customQuery?: string) => {
     if (e) e.preventDefault();
     const queryText = (customQuery || inputValue).trim();
     if (!queryText || loading || fileExtracting || cloudFilesBusy) return;
@@ -435,15 +429,8 @@ export default function AssistantView({
     setWorkingStageIndex(0);
     const submittedPageContext = pageContext;
     const submittedConversationVersion = conversationVersionRef.current;
-    const requestMode = routeAssistantRequest({
-      content: queryText,
-      pageContext: submittedPageContext,
-      responseMode: draftMode ? "draft" : "chat",
-      hasTemporaryFiles: temporaryFiles.some((file) => file.status === "ready"),
-    });
     setWorkingActivities(buildAssistantWorkingActivities({
       hasAttachments: temporaryFiles.some((file) => file.status === "ready"),
-      requestMode,
     }));
     setInputValue("");
     setFilesAndSourcesOpen(false);
@@ -489,8 +476,6 @@ export default function AssistantView({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           content: queryText,
-          enableWebSearch,
-          responseMode: draftMode ? "draft" : "chat",
           pageContext: submittedPageContext,
           temporaryFiles: submittedTemporaryFiles
             .map(({ filename, text }) => ({ filename, text }))
@@ -790,21 +775,14 @@ export default function AssistantView({
         }}
       />
     );
-  };  // Reusable Ask Bar Form component
-  const renderAskBarForm = () => {
+  };  // Reusable unified composer
+  const renderComposer = () => {
     return (
-      <form onSubmit={handleAsk} className="w-full relative flex flex-col select-none">
+      <form onSubmit={handleSend} className="w-full relative flex flex-col select-none">
         <div className="w-full border border-zinc-200 focus-within:border-zinc-400 rounded-lg bg-white p-3 transition-all flex flex-col gap-2.5">
           {/* Selected Files / Sources Chips Bar at the top of the container */}
-          {(enableWebSearch || temporaryFiles.length > 0) && (
+          {temporaryFiles.length > 0 && (
             <div className="flex flex-wrap gap-2 select-none pb-2 border-b border-zinc-100 animate-fade-in" id="attached-chips-row">
-              {enableWebSearch && (
-                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 bg-zinc-50 text-zinc-600 rounded-full text-xs font-mono border border-zinc-200 animate-fade-in">
-                  <Globe className="h-3 w-3 shrink-0 text-zinc-450" />
-                  <span>Web search</span>
-                  <button type="button" onClick={() => setEnableWebSearch(false)} className="hover:text-zinc-900 font-bold ml-1 text-[10px] focus:outline-none cursor-pointer">✕</button>
-                </span>
-              )}
               {temporaryFiles.map((file) => (
                 <span key={file.id} className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 bg-zinc-50 rounded-full text-xs font-mono border animate-fade-in ${file.status === "error" ? "text-red-700 border-red-200" : "text-zinc-600 border-zinc-200"}`}>
                   <FileText className={`h-3 w-3 shrink-0 ${file.status === "extracting" ? "animate-pulse" : ""}`} />
@@ -820,12 +798,12 @@ export default function AssistantView({
             ref={textareaRef}
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
-            placeholder={draftMode ? "Describe the document you want to create..." : pageContext.routeKind === "matter" ? "Ask about this Matter or anything else..." : "Ask about this page, your workspace, or anything else..."}
+            placeholder={pageContext.routeKind === "matter" ? "Ask about this Matter, create a document, or request anything else…" : "Ask about this page, your workspace, or anything else…"}
             className="w-full min-h-[64px] max-h-[180px] p-1.5 border-none outline-none focus:ring-0 text-sm text-zinc-900 placeholder-zinc-400 font-sans transition-all resize-none bg-white"
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
-                handleAsk();
+                handleSend();
               }
             }}
           />
@@ -858,33 +836,8 @@ export default function AssistantView({
                     }}
                     className="w-80 bg-white border border-zinc-200 rounded shadow-md p-4 z-50 flex flex-col gap-3.5 animate-fade-in text-zinc-900 font-sans"
                   >
-                    
-                    {/* Toggle-style selectable sources with icons inside dropdown */}
                     <div>
-                      <span className="text-[10px] font-mono uppercase text-zinc-400 font-bold block mb-2 tracking-wider">Legal Data Grounding</span>
-                      <div className="space-y-2">
-                        <button
-                          type="button"
-                          onClick={() => setEnableWebSearch(!enableWebSearch)}
-                          className={`w-full flex items-center justify-between px-3 py-2 text-xs rounded-md border transition-all cursor-pointer ${
-                            enableWebSearch
-                              ? "bg-amber-50 text-amber-900 border-amber-200 font-semibold"
-                              : "bg-white text-zinc-700 border-zinc-200 hover:bg-zinc-50"
-                          }`}
-                        >
-                          <div className="flex items-center gap-2.5">
-                            <Globe className="h-4 w-4 text-amber-600 shrink-0" />
-                            <span>Web search (Google Grounding)</span>
-                          </div>
-                          <div className={`w-4 h-4 rounded border flex items-center justify-center ${enableWebSearch ? "bg-amber-600 border-amber-600 text-white" : "border-zinc-300 bg-white"}`}>
-                            {enableWebSearch && <Check className="h-3 w-3" />}
-                          </div>
-                        </button>
-
-                      </div>
-                    </div>
-
-                    <div className="border-t border-zinc-100 pt-3">
+                      <p className="mb-3 text-xs leading-relaxed text-zinc-500">Files attached here remain available to this conversation.</p>
                       <span className="text-[10px] font-mono uppercase text-zinc-400 font-bold block mb-2 tracking-wider">Temporary File Attachments</span>
                       <FileSourcePicker
                         disabled={loading}
@@ -908,54 +861,18 @@ export default function AssistantView({
             {/* Right Side Controls */}
             <div className="flex flex-wrap items-center gap-2">
               <button
-                type="button"
-                id="draft-mode-toggle"
-                aria-pressed={draftMode}
-                onClick={() => setDraftMode((current) => !current)}
-                className={`inline-flex items-center gap-1.5 rounded border px-2.5 py-1.5 text-[11px] font-mono font-bold uppercase transition-colors ${draftMode ? "border-zinc-950 bg-zinc-950 text-white" : "border-zinc-200 bg-white text-zinc-600 hover:border-zinc-400 hover:text-zinc-950"}`}
-                title="Create and save one standalone document from this instruction"
-              >
-                <FileText className="h-3.5 w-3.5" />
-                Draft
-              </button>
-              <button
                 type="submit"
                 disabled={!inputValue.trim() || loading || fileExtracting || cloudFilesBusy}
-                id="btn-submit-ask"
+                id="btn-submit-send"
                 className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-mono uppercase font-bold text-white bg-zinc-950 hover:bg-zinc-900 border border-zinc-950 rounded shadow-xs disabled:opacity-40 transition-all cursor-pointer"
               >
-                {streaming ? (draftMode ? "Creating..." : "Responding...") : loading ? (draftMode ? "Creating..." : "Sending...") : draftMode ? "Create Draft" : "Ask"}
+                {loading ? "Sending…" : "Send"}
                 {loading ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
               </button>
             </div>
           </div>
         </div>
       </form>
-    );
-  };
-
-  // Clickable source suggestions on first message
-  const renderFirstMessageSuggestions = () => {
-    return (
-      <div className="flex flex-col items-center gap-3 w-full select-none" id="source-suggestions">
-        <span className="text-xs font-mono font-bold uppercase tracking-wider text-zinc-400">Quick-Enable Grounding Sources</span>
-        <div className="flex flex-wrap justify-center gap-2.5">
-          <button
-            type="button"
-            onClick={() => setEnableWebSearch(!enableWebSearch)}
-            className={`flex items-center gap-2 px-3.5 py-2 rounded-full border text-xs font-semibold transition-all cursor-pointer ${
-              enableWebSearch
-                ? "bg-amber-50 text-amber-900 border-amber-300 shadow-sm"
-                : "bg-white text-zinc-600 border-zinc-200 hover:bg-zinc-50 hover:border-zinc-300"
-            }`}
-          >
-            <Globe className="h-4 w-4 text-amber-600" />
-            <span>Web Search</span>
-            {enableWebSearch && <Check className="h-3.5 w-3.5 ml-0.5 text-amber-700" />}
-          </button>
-
-        </div>
-      </div>
     );
   };
 
@@ -1058,9 +975,7 @@ export default function AssistantView({
                   setActiveThreadId(null);
                   activeThreadIdRef.current = null;
                   setMessages([]);
-                  setEnableWebSearch(false);
                   setTemporaryFiles([]);
-                  setDraftMode(false);
                 }}
                 id="header-new-thread-btn"
                 className="text-xs uppercase font-mono font-bold border border-zinc-950 text-zinc-950 px-4 py-2 rounded hover:bg-zinc-100 transition-all cursor-pointer"
@@ -1166,11 +1081,7 @@ export default function AssistantView({
                                     <BookOpen className="h-3.5 w-3.5 text-zinc-400" />
                                     {m.citations.length} {m.citations.length === 1 ? "Source" : "Sources"} Referenced
                                   </button>
-                                ) : (
-                                  <span className="text-xs font-mono text-zinc-400">
-                                    0 sources matched
-                                  </span>
-                                )}
+                                ) : null}
 
                                 {/* Thumbs Feedback Controls */}
                                 <div className="flex items-center gap-1 border-l border-zinc-200 pl-3">
@@ -1251,7 +1162,7 @@ export default function AssistantView({
                             <button
                               key={idx}
                               type="button"
-                              onClick={() => handleAsk(undefined, suggestion)}
+                              onClick={() => handleSend(undefined, suggestion)}
                               className="px-3 py-1 text-xs text-zinc-700 hover:text-zinc-950 hover:bg-zinc-100 bg-white border border-zinc-200 rounded-full transition-all cursor-pointer text-left shadow-2xs"
                             >
                               {suggestion}
@@ -1304,9 +1215,9 @@ export default function AssistantView({
               <div ref={messagesEndRef} />
             </div>
 
-            {/* Pinned bottom-anchored Ask Bar Form wrapper */}
-            <div className={`${compact ? "p-3" : "px-8 py-6"} bg-white border-t border-zinc-100 shrink-0`} id="ask-bar-container">
-              {renderAskBarForm()}
+            {/* Pinned bottom-anchored composer wrapper */}
+            <div className={`${compact ? "p-3" : "px-8 py-6"} bg-white border-t border-zinc-100 shrink-0`} id="assistant-composer-container">
+              {renderComposer()}
             </div>
           </>
         ) : (
@@ -1315,11 +1226,10 @@ export default function AssistantView({
               <div className={compact ? "rounded border border-dashed border-zinc-200 px-4 py-3" : "text-center"}>
                 <p className="text-xs font-semibold text-zinc-800">Start a conversation</p>
                 <p className="mt-1 text-xs leading-relaxed text-zinc-500">
-                  Ask about the page you are working on, research a question, or attach a temporary file.
+                  Ask a question, work with your workspace, create a document, or attach research sources.
                 </p>
               </div>
-              <div className="w-full text-left">{renderAskBarForm()}</div>
-              {!compact && renderFirstMessageSuggestions()}
+              <div className="w-full text-left">{renderComposer()}</div>
             </div>
           </div>
         )}

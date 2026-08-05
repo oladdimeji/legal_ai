@@ -3,12 +3,10 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { Packer } from "docx";
 import {
-  assistantDraftNeedsWorkspaceEvidence,
   buildAssistantDraftPrompt,
   titleForAssistantDraft,
 } from "../server/assistantDrafting.js";
 import { markdownToDocxDocument } from "../server/docxMarkdown.js";
-import { routeAssistantRequest } from "../src/lib/assistantRequestRouting.js";
 import { parseRoute, routePath } from "../src/lib/routes.js";
 import type { WorkspacePageContext } from "../src/types.js";
 
@@ -17,26 +15,7 @@ const generalContext: WorkspacePageContext = {
   pageTitle: "History",
 };
 
-const matterContext: WorkspacePageContext = {
-  routeKind: "matter",
-  pageTitle: "Acme acquisition",
-  matter: { id: "case_acme", name: "Acme acquisition" },
-};
-
-test("Draft mode is selected before submission and accepts arbitrary document types", () => {
-  for (const instruction of [
-    "Draft an asset purchase agreement",
-    "Prepare an appellate brief",
-    "Write an employee privacy policy",
-    "Create a demand letter",
-  ]) {
-    assert.equal(routeAssistantRequest({
-      content: instruction,
-      pageContext: generalContext,
-      responseMode: "draft",
-    }), "draft");
-  }
-
+test("autonomous drafting accepts arbitrary standalone document types", () => {
   const prompt = buildAssistantDraftPrompt({
     instruction: "Draft an asset purchase agreement",
     pageContext: generalContext,
@@ -53,36 +32,13 @@ test("Draft mode is selected before submission and accepts arbitrary document ty
   assert.match(prompt, /exactly one polished standalone document/);
   assert.match(prompt, /Do not emit internal \[cit_\*\] tokens/);
   assert.doesNotMatch(prompt, /Format must be memo, email, or summary/);
-});
-
-test("Draft evidence routing keeps ordinary standalone drafting out of private retrieval", () => {
-  assert.equal(assistantDraftNeedsWorkspaceEvidence({
-    hasMatter: false,
-    hasTemporaryFiles: false,
-    hasSelectedEntity: false,
-    instruction: "Draft a generic mutual NDA",
-  }), false);
-  assert.equal(assistantDraftNeedsWorkspaceEvidence({
-    hasMatter: true,
-    hasTemporaryFiles: false,
-    hasSelectedEntity: false,
-    instruction: "Draft a letter",
-  }), true);
-  assert.equal(assistantDraftNeedsWorkspaceEvidence({
-    hasMatter: false,
-    hasTemporaryFiles: false,
-    hasSelectedEntity: true,
-    instruction: "Summarize this document",
-  }), true);
   assert.equal(titleForAssistantDraft("# Mutual Non-Disclosure Agreement\n\nTerms", "Draft an NDA", "New"), "Mutual Non-Disclosure Agreement");
 });
 
-test("composer removes post-response three-format drafting and renders persisted document cards", async () => {
+test("unified composer removes Draft controls and renders autonomous document cards", async () => {
   const assistant = await readFile("src/components/AssistantView.tsx", "utf8");
-  assert.match(assistant, /id="draft-mode-toggle"/);
-  assert.match(assistant, /aria-pressed=\{draftMode\}/);
-  assert.match(assistant, /responseMode: draftMode \? "draft" : "chat"/);
-  assert.match(assistant, /draftMode \? "Create Draft" : "Ask"/);
+  assert.doesNotMatch(assistant, /draft-mode-toggle|draftMode|responseMode|Create Draft/);
+  assert.match(assistant, /id="btn-submit-send"/);
   assert.match(assistant, /metadata\?\.document/);
   assert.match(assistant, /assistant-document-card/);
   assert.match(assistant, /Download \.docx/);
@@ -167,27 +123,13 @@ test("Matter and standalone document export paths produce genuine DOCX packages"
 });
 
 test("standalone assistant documents are private and are not added to Firm Library or client sharing", async () => {
-  const [view, server, database] = await Promise.all([
+  const [view, deliverables, database] = await Promise.all([
     readFile("src/components/AssistantDocumentView.tsx", "utf8"),
-    readFile("server.ts", "utf8"),
+    readFile("server/assistant/assistantDeliverables.ts", "utf8"),
     readFile("server/db.ts", "utf8"),
   ]);
-  const standaloneBranch = server.slice(
-    server.indexOf('assistantMode === "draft"'),
-    server.indexOf('assistantMode === "ui_help"')
-  );
-  assert.doesNotMatch(standaloneBranch, /uploadDocument|linkLibraryDocument|setDraftSharing/);
+  assert.doesNotMatch(deliverables, /uploadDocument|linkLibraryDocument|setDraftSharing/);
   assert.doesNotMatch(view, /Share with client|Firm Library/);
   assert.match(database, /INSERT INTO assistant_documents/);
   assert.doesNotMatch(database.slice(database.indexOf("public async createAssistantDocument")), /INSERT INTO documents/);
-});
-
-test("Matter Draft context remains server-validated before any draft is created", () => {
-  assert.equal(routeAssistantRequest({ content: "Draft a letter", pageContext: matterContext, responseMode: "draft" }), "draft");
-  assert.equal(assistantDraftNeedsWorkspaceEvidence({
-    hasMatter: true,
-    hasTemporaryFiles: false,
-    hasSelectedEntity: false,
-    instruction: "Draft a letter",
-  }), true);
 });

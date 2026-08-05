@@ -15,7 +15,7 @@ const citations: Citation[] = [
   { id: "cit_2", type: "web", title: "Case", textSnippet: "B", sourceName: "Google Search Grounding" },
 ];
 
-test("Assistant research sources retain web search and attachments without retired connectors", async () => {
+test("Assistant Research sources retain file attachments without pre-request web controls or retired connectors", async () => {
   const [assistant, server, evidence] = await Promise.all([
     readFile("src/components/AssistantView.tsx", "utf8"),
     readFile("server.ts", "utf8"),
@@ -28,8 +28,7 @@ test("Assistant research sources retain web search and attachments without retir
 
   assert.doesNotMatch(assistant, /CourtListener|GovInfo|enableCourtListener|enableGovInfo/);
   assert.doesNotMatch(route, /CourtListenerAdapter|GovInfoAdapter|enableCourtListener|enableGovInfo/);
-  assert.match(assistant, /const \[enableWebSearch, setEnableWebSearch\]/);
-  assert.match(assistant, /<span>Web Search<\/span>/);
+  assert.doesNotMatch(assistant, /enableWebSearch|setEnableWebSearch|Web Search|Google Grounding/);
   assert.match(assistant, /temporaryFiles: submittedTemporaryFiles/);
   assert.match(assistant, /Temporary File Attachments/);
   assert.match(route, /temporaryAttachmentMetadata\(temporaryFiles\)/);
@@ -45,12 +44,12 @@ test("Assistant uses progressive working activities and completes designed respo
 
   assert.doesNotMatch(activityImplementation, /ANALYZING MATERIALS|Analyzing materials|connector API endpoints/i);
   assert.match(activityHelper, /Understanding your request…[\s\S]*Request understood/);
-  assert.match(activityHelper, /Checking the relevant context…[\s\S]*Relevant context checked/);
+  assert.match(activityHelper, /Checking the conversation and current context…[\s\S]*Conversation and context checked/);
   assert.doesNotMatch(activityImplementation, /Reviewing Matter sources…|Reviewing Firm Library materials…/);
-  assert.match(activityHelper, /hasAttachments[\s\S]*Reviewing attached documents…[\s\S]*Attached documents reviewed/);
+  assert.match(activityHelper, /hasAttachments[\s\S]*Reviewing attached research sources…[\s\S]*Research sources reviewed/);
   assert.doesNotMatch(activityImplementation, /Searching the web…|Breaking the question into research steps…|Checking research depth…/);
+  assert.match(activityHelper, /Working with the relevant information…[\s\S]*Relevant information reviewed/);
   assert.match(activityHelper, /Preparing the response…[\s\S]*Response prepared/);
-  assert.match(activityHelper, /Refining the response…/);
   assert.match(assistant, /const WORKING_ACTIVITY_DELAY_MS = 2000/);
   assert.doesNotMatch(activityImplementation, /\(current(?:Index)? \+ 1\) %/);
   assert.match(activityHelper, /Math\.min\(currentIndex \+ 1, activityCount - 1\)/);
@@ -73,8 +72,8 @@ test("Assistant uses progressive working activities and completes designed respo
   assert.match(assistant, /message\.id === savedAssistantMessage\.id \? savedAssistantMessage : message/);
   assert.match(assistant, /message\.id !== savedUserMessage\.id && message\.id !== savedAssistantMessage\.id/);
   assert.match(assistant, /message\.id === tempUserMsg\.id \? savedUserMessage : message/);
-  assert.match(assistant, /streaming \? \(draftMode \? "Creating\.\.\." : "Responding\.\.\."\)/);
-  assert.match(assistant, /draftMode \? "Create Draft" : "Ask"/);
+  assert.match(assistant, /loading \? "Sending…" : "Send"/);
+  assert.doesNotMatch(assistant, /draftMode|Create Draft|btn-submit-ask/);
   assert.match(assistant, /window\.clearTimeout\(workingActivityTimerRef\.current\)/);
   assert.match(assistant, /window\.clearTimeout\(responseStreamTimerRef\.current\)/);
 });
