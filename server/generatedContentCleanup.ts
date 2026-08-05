@@ -29,6 +29,12 @@ export function cleanGeneratedBoilerplate(content: string): string {
   return paragraphs.join("\n\n").trim();
 }
 
+export function cleanGeneratedWorkProductContent(content: string): string {
+  return stripInternalCitationsForWorkProduct(cleanGeneratedBoilerplate(content), {
+    stripNumberedMarkers: true,
+  });
+}
+
 export function cleanClientAssistantContent(content: string): string {
   return cleanGeneratedBoilerplate(content)
     .replace(/\[+\s*sources?\s*:\s*[^\]\n]{1,240}\]+/gi, "")
@@ -41,3 +47,4 @@ export function cleanClientAssistantContent(content: string): string {
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
+import { stripInternalCitationsForWorkProduct } from "../src/lib/assistantCitations.js";

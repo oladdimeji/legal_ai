@@ -1,4 +1,5 @@
 import { WorkspacePageContext } from "../src/types.js";
+import type { AssistantDepth } from "./assistant/assistantTypes.js";
 import { extractGeneratedSubject, extractSummaryHeading } from "./extractGeneratedSubject.js";
 import { EXPORT_SAFE_DOCUMENT_MARKDOWN_RULES } from "./documentDraftingRules.js";
 
@@ -25,9 +26,9 @@ export function buildAssistantDraftPrompt({
   authorizedEvidence,
   accountMetadata,
   currentDate,
-  webSearchEnabled,
-  deepResearchEnabled,
-  researchPlan,
+  publicWebResearch,
+  webResearchPerformed,
+  depth,
 }: {
   instruction: string;
   pageContext: WorkspacePageContext;
@@ -35,9 +36,9 @@ export function buildAssistantDraftPrompt({
   authorizedEvidence: string;
   accountMetadata: string;
   currentDate: string;
-  webSearchEnabled: boolean;
-  deepResearchEnabled: boolean;
-  researchPlan?: string[];
+  publicWebResearch: string;
+  webResearchPerformed: boolean;
+  depth: AssistantDepth;
 }): string {
   return `Current task: create a meticulous legal document in Exepts. Infer the requested document type from the user's instruction. It may be a contract, agreement, letter, brief, report, policy, summary, email, memorandum, or another reasonable document type. Do not restrict the output to a fixed format list.
 
@@ -60,10 +61,10 @@ Prior conversation for task continuity only; it is not independent evidence:
 ${conversationContext || "No prior conversation."}
 </conversation_memory>
 
-Research configuration:
-- Live Google Search grounding is ${webSearchEnabled ? "enabled and may be used when useful" : "disabled; do not claim to have searched the web"}.
-- Deep Research is ${deepResearchEnabled ? "enabled; resolve complex issues carefully before drafting" : "not forced"}.
-${deepResearchEnabled && researchPlan?.length ? `- Research plan:\n${researchPlan.map((question) => `  - ${question}`).join("\n")}` : ""}
+Grounded public research:
+${webResearchPerformed ? publicWebResearch || "Public research was performed but returned no usable report." : "No public web research was performed. Do not claim to have searched the web."}
+
+Requested reasoning depth: ${depth}.
 
 Drafting rules:
 1. Return exactly one polished standalone document, beginning with a specific Markdown H1 title when appropriate for the document type.

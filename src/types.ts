@@ -186,6 +186,7 @@ export interface Message {
     attachments?: Array<{ name: string }> | string[];
     pageContext?: WorkspacePageContext;
     document?: AssistantDocumentReference;
+    sourceDocument?: AssistantDocumentReference;
     [key: string]: unknown;
   };
 }

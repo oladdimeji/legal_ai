@@ -478,10 +478,3 @@ ${JSON.stringify({
     return fallbackAssistantPlan(input);
   }
 }
-
-export function legacyRequestMode(plan: AssistantPlan): "ui_help" | "general" | "workspace_research" | "deep_research" | "draft" {
-  if (plan.deliverable.kind !== "message") return "draft";
-  if (plan.intent === "product_help") return "ui_help";
-  if (!plan.needsWorkspace) return "general";
-  return plan.depth === "thorough" ? "deep_research" : "workspace_research";
-}

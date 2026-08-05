@@ -83,7 +83,7 @@ test("message flow starts one non-blocking title task only for the first user me
   assert.match(route, /const isFirstUserMessage = !priorHistory\.some\(\(message\) => message\.role === "user"\)/);
   assert.match(route, /if \(isFirstUserMessage\) \{\s*void tryGenerateConversationTitle\(\s*content,/);
   assert.match(route, /db\.updateThreadTitleForFirstMessage\(\s*threadId,\s*userMessage\.id,\s*thread\.title,/);
-  assert.ok(route.indexOf("void tryGenerateConversationTitle") < route.indexOf("Deep Research is selected deterministically"));
+  assert.ok(route.indexOf("void tryGenerateConversationTitle") < route.indexOf("planAssistantRequest"));
   assert.match(database, /UPDATE threads t\s+SET title = \$1/);
   assert.match(database, /t\.id = \$2 AND t\.user_id = \$3 AND t\.title = \$4/);
   assert.match(database, /c\.id = t\.case_id AND c\.firm_id = \$5/);

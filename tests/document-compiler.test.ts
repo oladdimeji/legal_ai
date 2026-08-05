@@ -159,8 +159,9 @@ test("all exportable generation prompts share the exact export-safe rules", asyn
     authorizedEvidence: "",
     accountMetadata: "",
     currentDate: "August 4, 2026",
-    webSearchEnabled: false,
-    deepResearchEnabled: false,
+    publicWebResearch: "",
+    webResearchPerformed: false,
+    depth: "standard",
   });
   assert.ok(assistantPrompt.includes(EXPORT_SAFE_DOCUMENT_MARKDOWN_RULES));
   const server = await readFile("server.ts", "utf8");

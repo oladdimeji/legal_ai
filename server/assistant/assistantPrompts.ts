@@ -25,6 +25,7 @@ export function buildAssistantTaskPrompt(input: {
   evidenceBlock: string;
   checkedLocations?: string[];
   webResearchPerformed: boolean;
+  generatedDocumentContext?: string;
 }): string {
   const checked = input.checkedLocations?.length
     ? input.checkedLocations.join(", ")
@@ -51,6 +52,8 @@ ${input.conversationContext || "No prior conversation."}
 </conversation_memory>
 
 ${input.evidenceBlock}
+
+${input.generatedDocumentContext ? `<generated_document_context>\n${input.generatedDocumentContext}\n</generated_document_context>` : ""}
 
 User request:
 ${input.request}`;

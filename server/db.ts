@@ -2479,6 +2479,53 @@ class DatabaseService {
     };
   }
 
+  public async createAssistantDraftRevision(input: {
+    threadId: string;
+    sourceDraftId: string;
+    caseId: string;
+    title: string;
+    content: string;
+    ownership: OwnershipContext;
+  }): Promise<Draft> {
+    const revisionId = `draft_${randomUUID()}`;
+    const now = new Date().toISOString();
+    const rows = await this.query(
+      `INSERT INTO drafts
+        (id, thread_id, case_id, title, content, created_at, updated_at, origin,
+         parent_draft_id, revision_type)
+       SELECT $1, t.id, source.case_id, $5, $6, $7, $7,
+         'Assistant revision', source.id, 'Duplicate'
+       FROM drafts source
+       JOIN cases c ON c.id = source.case_id
+       JOIN threads t ON t.id = $2
+       WHERE source.id = $3
+         AND source.case_id = $4
+         AND c.firm_id = $9
+         AND t.user_id = $8
+         AND t.scope <> 'client'
+         AND (
+           t.case_id IS NULL OR EXISTS (
+             SELECT 1 FROM cases origin
+             WHERE origin.id = t.case_id AND origin.firm_id = $9
+           )
+         )
+       RETURNING drafts.*`,
+      [
+        revisionId,
+        input.threadId,
+        input.sourceDraftId,
+        input.caseId,
+        input.title,
+        input.content,
+        now,
+        input.ownership.userId,
+        input.ownership.firmId,
+      ]
+    );
+    if (!rows[0]) throw new Error("Work Product not found");
+    return rows[0];
+  }
+
   public async createManualDraft(
     caseId: string, title: string, content: string, context: OwnershipContext
   ): Promise<Draft> {

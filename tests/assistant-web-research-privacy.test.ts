@@ -92,9 +92,11 @@ test("no grounding chunks means no claim that web research was performed", async
 
 test("lawyer route final synthesis and document generation never enable Google Search directly", () => {
   const server = readFileSync(new URL("../server.ts", import.meta.url), "utf8");
+  const completion = readFileSync(new URL("../server/assistant/assistantCompletion.ts", import.meta.url), "utf8");
+  const deliverables = readFileSync(new URL("../server/assistant/assistantDeliverables.ts", import.meta.url), "utf8");
   const route = server.slice(server.indexOf('app.post("/api/threads/:id/messages"'), server.indexOf('app.put("/api/messages/:id"'));
   assert.doesNotMatch(route, /googleSearch:\s*true/);
-  assert.match(route, /performAssistantWebResearch|orchestrateAssistantRetrieval/);
-  assert.match(route, /googleSearch:\s*false/);
+  assert.match(route, /orchestrateAssistantRetrieval/);
+  assert.match(completion, /googleSearch:\s*false/);
+  assert.match(deliverables, /googleSearch:\s*false/);
 });
-

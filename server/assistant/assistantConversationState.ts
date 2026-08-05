@@ -285,8 +285,8 @@ export function resolveLatestArtifactReference(input: {
     if (selected) return { artifact: selected, needsClarification: false };
   }
 
-  const directLatestReference = /\b(?:the document you (?:just )?created|the draft you (?:just )?made|that document)\b/i.test(input.content);
-  const directRevision = /\b(?:revise|rewrite|make|shorten|expand|add|remove|change|turn)\b[\s\S]{0,80}\b(?:it|that|the document|the draft)\b/i.test(input.content);
+  const directLatestReference = /\b(?:the document you (?:just )?created|the draft you (?:just )?made|that (?:document|draft|memo|memorandum|letter|agreement|report))\b/i.test(input.content);
+  const directRevision = /\b(?:revise|rewrite|make|shorten|expand|add|remove|change|turn)\b[\s\S]{0,100}\b(?:it|that|the (?:document|draft|memo|memorandum|letter|agreement|report))\b/i.test(input.content);
   if (directLatestReference && input.conversationState.latestCreatedArtifact) {
     return { artifact: input.conversationState.latestCreatedArtifact, needsClarification: false };
   }

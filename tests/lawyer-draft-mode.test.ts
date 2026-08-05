@@ -44,8 +44,9 @@ test("Draft mode is selected before submission and accepts arbitrary document ty
     authorizedEvidence: "",
     accountMetadata: "Firm name: Example LLP",
     currentDate: "August 3, 2026",
-    webSearchEnabled: false,
-    deepResearchEnabled: false,
+    publicWebResearch: "",
+    webResearchPerformed: false,
+    depth: "standard",
   });
   assert.match(prompt, /contract, agreement, letter, brief, report, policy, summary, email, memorandum/);
   assert.match(prompt, /Do not restrict the output to a fixed format list/);
@@ -88,23 +89,15 @@ test("composer removes post-response three-format drafting and renders persisted
   assert.doesNotMatch(assistant, /action-draft-|drafting-modal|draftFormat|Drafting Format Style|Generate Draft/);
 });
 
-test("message Draft destination follows the current page rather than thread origin", async () => {
-  const server = await readFile("server.ts", "utf8");
-  const endpoint = server.slice(
-    server.indexOf('app.post("/api/threads/:id/messages"'),
-    server.indexOf('// PUT route for updating a message')
-  );
-  const draftBranch = endpoint.slice(
-    endpoint.indexOf('assistantMode === "draft"'),
-    endpoint.indexOf('assistantMode === "ui_help"')
-  );
-  assert.doesNotMatch(draftBranch, /thread\.case_id/);
-  assert.match(draftBranch, /currentMatterId[\s\S]*db\.createDraft\(threadId, currentMatterId/);
-  assert.match(draftBranch, /db\.createAssistantDocument\(threadId, title, draftContent, requestOwnership\)/);
-  assert.match(draftBranch, /kind: "matterWorkProduct"/);
-  assert.match(draftBranch, /kind: "assistantDocument"/);
-  assert.match(draftBranch, /document: documentReference/);
-  assert.match(draftBranch, /cleanGeneratedWorkProductContent\(draftResult\.text\)/);
+test("autonomous document destination follows the current page rather than thread origin", async () => {
+  const deliverables = await readFile("server/assistant/assistantDeliverables.ts", "utf8");
+  assert.doesNotMatch(deliverables, /thread\.case_id/);
+  assert.match(deliverables, /input\.currentMatter && input\.pageContext\.routeKind === "matter"/);
+  assert.match(deliverables, /database\.createDraft\(/);
+  assert.match(deliverables, /database\.createAssistantDocument\(/);
+  assert.match(deliverables, /kind: "matterWorkProduct"/);
+  assert.match(deliverables, /kind: "assistantDocument"/);
+  assert.match(deliverables, /cleanGeneratedWorkProductContent\(result\.text\)/);
 });
 
 test("standalone assistant-document migration is additive and preserves documents on thread deletion", async () => {

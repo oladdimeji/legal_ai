@@ -238,29 +238,31 @@ test("legacy Improve endpoint remains compatible while its Assistant control is 
 });
 
 test("Phase 11 Assistant uses bounded history and persists dynamic follow-ups", async () => {
-  const [server, database, migrations, types] = await Promise.all([
+  const [server, prompts, database, migrations, types] = await Promise.all([
     readFile("server.ts", "utf8"),
+    readFile("server/assistant/assistantPrompts.ts", "utf8"),
     readFile("server/db.ts", "utf8"),
     readFile("server/migrations.ts", "utf8"),
     readFile("src/types.ts", "utf8"),
   ]);
   assert.match(database, /getRecentMessages/);
-  assert.match(server, /Prior conversation for resolving follow-up references only/);
+  assert.match(prompts, /Prior conversation is for continuity and reference resolution/);
   assert.match(server, /generateFollowUpSuggestions/);
-  assert.match(server, /\{ suggestions, requestMode: assistantMode, assistantIntent: assistantPlan\.intent \}/);
+  assert.match(server, /completion\.metadata/);
   assert.match(migrations, /version: 10/);
   assert.match(migrations, /assistant_message_metadata/);
   assert.match(types, /metadata\?:/);
 });
 
-test("Phase 11 temporary Assistant file sources are extracted and cited without persistence", async () => {
-  const [server, assistant, extractor] = await Promise.all([
+test("Phase 11 temporary Assistant file sources are extracted, conversation-bound, and cited", async () => {
+  const [server, evidence, assistant, extractor] = await Promise.all([
     readFile("server.ts", "utf8"),
+    readFile("server/assistant/assistantEvidence.ts", "utf8"),
     readFile("src/components/AssistantView.tsx", "utf8"),
     readFile("server/fileExtraction.ts", "utf8"),
   ]);
   assert.match(server, /\/api\/extract-files/);
-  assert.match(server, /Temporary File Attachment/);
+  assert.match(evidence, /Temporary File Attachment/);
   assert.match(assistant, /temporaryFiles/);
   assert.match(assistant, /FileSourcePicker/);
   assert.match(extractor, /MAX_FILE_SIZE_BYTES/);

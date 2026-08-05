@@ -16,9 +16,10 @@ const citations: Citation[] = [
 ];
 
 test("Assistant research sources retain web search and attachments without retired connectors", async () => {
-  const [assistant, server] = await Promise.all([
+  const [assistant, server, evidence] = await Promise.all([
     readFile("src/components/AssistantView.tsx", "utf8"),
     readFile("server.ts", "utf8"),
+    readFile("server/assistant/assistantEvidence.ts", "utf8"),
   ]);
   const route = server.slice(
     server.indexOf('app.post("/api/threads/:id/messages"'),
@@ -32,7 +33,7 @@ test("Assistant research sources retain web search and attachments without retir
   assert.match(assistant, /temporaryFiles: submittedTemporaryFiles/);
   assert.match(assistant, /Temporary File Attachments/);
   assert.match(route, /temporaryAttachmentMetadata\(temporaryFiles\)/);
-  assert.match(route, /sourceName: "Temporary File Attachment"/);
+  assert.match(evidence, /sourceName: "Temporary File Attachment"/);
 });
 
 test("Assistant uses progressive working activities and completes designed response streaming", async () => {
@@ -110,7 +111,10 @@ test("Assistant user messages persist sanitized research sources internally and 
 });
 
 test("Assistant routes temporary and selected document evidence through existing authorized paths", async () => {
-  const server = await readFile("server.ts", "utf8");
+  const [server, completion] = await Promise.all([
+    readFile("server.ts", "utf8"),
+    readFile("server/assistant/assistantCompletion.ts", "utf8"),
+  ]);
   const route = server.slice(
     server.indexOf('app.post("/api/threads/:id/messages"'),
     server.indexOf('app.put("/api/messages/:id"', server.indexOf('app.post("/api/threads/:id/messages"'))
@@ -122,8 +126,8 @@ test("Assistant routes temporary and selected document evidence through existing
   assert.match(route, /\.slice\(0, MAX_FILE_COUNT\)/);
   assert.match(route, /temporaryFileNames,/);
   assert.match(route, /temporaryAttachmentEvidence\(temporaryFiles\)/);
-  assert.match(route, /assistantPlan\.needsWorkspace \|\| toolRun\.evidence\.length > 0/);
-  assert.match(route, /wrapAuthorizedEvidence\(evidenceWithCitationIds\)/);
+  assert.match(route, /completeAssistantResponse\(/);
+  assert.match(completion, /wrapAuthorizedEvidence\(evidence\)/);
 
   assert.match(route, /getDocumentById\(selectedItem\.id, requestOwnership, currentMatterId\)/);
   assert.match(route, /sourceName: "Matter Sources"/);
@@ -162,13 +166,14 @@ test("Generated boilerplate cleaner is narrow", () => {
 });
 
 test("Assistant prompts and copy path prevent generic disclaimers and internal citation display", async () => {
-  const [server, assistant, portal] = await Promise.all([
+  const [server, completion, assistant, portal] = await Promise.all([
     readFile("server.ts", "utf8"),
+    readFile("server/assistant/assistantCompletion.ts", "utf8"),
     readFile("src/components/AssistantView.tsx", "utf8"),
     readFile("src/components/ClientPortalView.tsx", "utf8"),
   ]);
   assert.match(server, /Do not append generic legal-advice, AI, lawyer-review, consultation, informational-purpose, or limitation-of-liability disclaimer boilerplate/);
-  assert.match(server, /cleanGeneratedText\(text\)/);
+  assert.match(completion, /cleanGeneratedBoilerplate\(modelResult\.text\)/);
   assert.match(server, /cleanGeneratedWorkProductContent\(draftResult\.text\)/);
   assert.doesNotMatch(server, /professional disclaimer|standard liability disclaimer|replacement for the lawyer's advice/);
   assert.match(assistant, /assistantCitationsToDisplayText\(m\.content, m\.citations\)/);

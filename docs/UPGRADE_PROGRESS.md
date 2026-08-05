@@ -1588,3 +1588,25 @@ Checkpoint 2 verification:
 - `npm test`: passed, 307/307 tests.
 - `npm run build`: passed outside the managed filesystem sandbox; the existing large-chunk warning remains.
 - `npm run verify`: passed outside the managed filesystem sandbox; lint, all 307 tests, and the production Vite/esbuild build completed successfully.
+
+### Checkpoint 3 â€” Autonomous Assistant documents and safe revisions
+
+Status: Implementation complete; checkpoint verification recorded below.
+
+- Removed `legacyRequestMode` and the lawyer message endpoint's Draft, workspace, general/UI, direct-vector, and deep-vector response branches. The authenticated route now delegates bounded retrieval to the orchestrator and all response/document outcomes to one completion path driven only by `assistantPlan.deliverable`.
+- Added a deliverable service that reuses the canonical export-safe drafting prompt, generated-work-product cleanup, title derivation, `draft-generation` model assignment, Markdown persistence, and existing Matter Work Product or private Assistant Document creation paths. Draft generation never enables Google Search directly; already-grounded public research is supplied as bounded evidence.
+- New documents created from an authorized Matter page are saved to that current Matter. Documents created outside a Matter remain user-owned and Firm-scoped Assistant Documents; a Matter found during research never becomes an implicit write destination.
+- Autonomous revisions fetch the exact deterministic artifact. Matter Work Product revisions are inserted as new records in the same authorized Matter with `parent_draft_id` set to the source ID, `revision_type = 'Duplicate'`, and `origin = 'Assistant revision'`. Assistant Document revisions create a separate private Assistant Document. Neither path updates or deletes the original.
+- Revision responses retain both `metadata.document` for the new card and `metadata.sourceDocument` for the exact original. Unknown source IDs are rejected, current selected documents retain deterministic precedence, and direct memo/letter/agreement/report revision language resolves through the artifact ledger rather than a workspace list search.
+- Implemented all three deliverable outcomes: `message` produces one normal answer; `document` produces a concise creation/revision confirmation with one document card; `message_and_document` creates the document and synthesizes one concise explanation covering the main conclusion, important assumptions or missing facts, and document contents from the same authorized evidence.
+- Unified metadata now records suggestions, Assistant intent, deliverable kind, actual workspace use, actual public-web use, the generated document, and source document where applicable. New lawyer Assistant messages no longer write `requestMode`; historical metadata remains readable.
+- Thorough requests retain bounded `ResearchStep[]` presentation built only from locations actually checked, actual public research, and an actual second retrieval round. Ordinary requests store `null` steps, and no hidden reasoning is exposed.
+- Follow-up suggestion generation receives only safe document title, kind, create/revise action, recent conversation, and the assistant response. Full private document content is not added solely for suggestions.
+- Added focused autonomous-deliverable, exact-follow-up, and safe-revision tests and updated stale mode-branch regressions to inspect the unified orchestrator/completion architecture. No schema migration was added. Client Assistant, model IDs/default thinking, all five DOCX routes, canonical preview, Tiptap editor, and Markdown persistence remain unchanged.
+
+Checkpoint 3 verification:
+
+- `npm run lint`: passed (`tsc --noEmit`).
+- `npm test`: passed, 317/317 tests.
+- `npm run build`: passed outside the managed filesystem sandbox; the existing large-chunk warning remains.
+- `npm run verify`: passed outside the managed filesystem sandbox; lint, all 317 tests, and the production Vite/esbuild build completed successfully.
