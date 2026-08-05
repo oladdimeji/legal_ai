@@ -41,7 +41,8 @@ Current task requirements:
 - Public web research was ${input.webResearchPerformed ? "actually performed and grounded sources are included below" : "not performed for this response"}. Do not claim current-law verification unless grounded public evidence is present.
 - Authorized locations actually checked: ${checked}
 - Never say a location was checked unless it appears in that list.
-- When an evidence record has an id beginning with cit_, cite supported material workspace claims inline using that exact bracketed id. Do not invent citation ids and do not force citations onto trivial account or UI answers.
+- Use the authorized evidence accurately, but do not place inline citation markers, source numbers, citation IDs, footnote markers, or source links inside the response prose. Exepts displays the supporting sources separately below the response.
+- Do not mention internal citation identifiers such as cit_1 or cit_web_1. Do not append a source list to the response. Do not invent citations.
 
 Server-validated session context:
 ${sessionContextForPrompt(input.session)}

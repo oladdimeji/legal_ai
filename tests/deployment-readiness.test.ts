@@ -17,7 +17,7 @@ test("Exepts branding is text-only in the authentication and lawyer shell brand 
   }
   assert.match(shell, /Exepts assistant panel/);
   assert.match(shell, /account\.firm\?\.name/);
-  assert.match(assistant, /Failed to contact Exepts model service/);
+  assert.match(assistant, /The Assistant could not complete the request\. Please try again\./);
   assert.match(html, /<title>Exepts<\/title>/);
   assert.equal(JSON.parse(metadata).name, "Exepts");
 });

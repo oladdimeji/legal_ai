@@ -85,7 +85,7 @@ test("Client Assistant removes source labels, generated source sections, and dis
   assert.equal(cleanClientAssistantContent("The selected document includes a Disclaimer of Warranties clause."), "The selected document includes a Disclaimer of Warranties clause.");
 });
 
-test("Client Assistant prompt and persistence prohibit visible citations while preserving lawyer Assistant citations", async () => {
+test("Client Assistant remains citation-free while Lawyer Assistant preserves source metadata without inline markers", async () => {
   const [server, assistant] = await Promise.all([
     readFile("server.ts", "utf8"),
     readFile("src/components/AssistantView.tsx", "utf8"),
@@ -98,7 +98,7 @@ test("Client Assistant prompt and persistence prohibit visible citations while p
   assert.match(route, /cleanClientAssistantContent\(result\.text\)/);
   assert.match(route, /cleanClientAssistantContent\(message\.content\)/);
   assert.doesNotMatch(route, /\[Source: exact title\]|Cite sources as/);
-  assert.match(assistant, /assistantCitationsToDisplayText/);
+  assert.match(assistant, /stripAssistantInlineCitations/);
 });
 
 test("Client request confirmation displays every returned attachment and preserves failed selections", async () => {

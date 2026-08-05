@@ -1658,3 +1658,17 @@ Status: Implementation complete; focused-phase verification recorded below.
 - Added `tests/assistant-document-intent.test.ts` covering direct creation, combined message/document requests, informational and short-wording messages, chat-only overrides, exact and ambiguous revisions, accepted offers, and valid-model-plan correction.
 - Verification passed: `npm run lint`; `npm test` (345/345); production build; DOCX fixture generation; and `npm run verify` (lint, 345/345 tests, and production build). The existing non-fatal large-chunk warning remains.
 - No database schema or migration, dependency, retrieval architecture, web-research boundary, authorization rule, document destination/storage/rendering, DOCX, preview, editor, composer, Client Assistant, or other UI behavior changed.
+
+### Lawyer Assistant Citation and Resilience Cleanup
+
+Status: Implementation complete; focused-phase verification recorded below.
+
+- Removed visible inline citation markers from newly saved Lawyer Assistant responses and from historical responses at render time. Response copying now uses the same deterministic citation-free text and does not append a source list.
+- Preserved complete citation arrays, workspace and web metadata, Google grounding conversion, source titles/names/snippets/URLs, and the singular/plural Sources Referenced footer and source panel.
+- Updated the final-response prompt to use authorized evidence accurately without exposing internal citation identifiers, source numbers, footnotes, source links, or an appended source list. Workspace facts, general knowledge, legal inference, current public research, and missing information remain distinct.
+- Added structured Gemini error classification for temporary capacity and network failures, authentication/configuration failures, invalid requests, content blocks, and unknown failures across common SDK error shapes.
+- Added a four-attempt shared model-call retry boundary (one initial attempt and three retries) with 1.5s, 3.5s, and 7s base delays, up to 500ms jitter, and clamped 1sâ€“15s `Retry-After` support. Retry logs contain task/model, retry, delay, classification, and status only.
+- Added calm final capacity, network, authentication/configuration, and unknown error messages. Removed the browser's unconditional API-key advice and error-symbol prefix; client-only failures are flagged locally so feedback/copy controls stay hidden.
+- Added focused inline-citation, transient-retry, and friendly-error tests and updated related Lawyer/Client Assistant source regressions.
+- No retrieval, planning, semantic document intent, document creation/revision/export/preview/editor, database, migration, dependency, composer, model assignment/thinking level, or Client Assistant behavior changed.
+- Verification passed: `npm run lint`; `npm test` (362/362); production build; all 16 DOCX review fixtures; and `npm run verify` (lint, 362/362 tests, and production build). The existing non-fatal large-chunk warning remains.

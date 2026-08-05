@@ -91,83 +91,160 @@ export function getAiClient(): GoogleGenAI {
 
 export type Provider = "gemini";
 
-/**
- * Sanitizes raw API errors (including JSON string messages returned by the SDK on 429 quota exhaustion)
- * into friendly, clean human-readable error messages.
- */
-function sanitizeErrorMessage(err: any): string {
-  if (!err) return "An unknown error occurred.";
-  const message = err.message || String(err);
-  
-  // Try to parse as JSON if it looks like JSON
-  if (typeof message === "string" && message.trim().startsWith("{")) {
-    try {
-      const parsed = JSON.parse(message);
-      if (parsed.error) {
-        const apiMsg = parsed.error.message || parsed.error.status;
-        const code = parsed.error.code;
-        const status = parsed.error.status;
-        
-        if (status === "RESOURCE_EXHAUSTED" || code === 429) {
-          return "The AI service is currently receiving too many requests or has exceeded its quota limits. Please retry your request in a moment.";
-        }
-        return apiMsg || `API Error (${code || status})`;
-      }
-    } catch {
-      // Not valid JSON, fallback
-    }
+export type ModelErrorKind =
+  | "transient_capacity"
+  | "transient_network"
+  | "authentication"
+  | "invalid_request"
+  | "content_blocked"
+  | "unknown";
+
+export type ModelErrorClassification = {
+  kind: ModelErrorKind;
+  retryable: boolean;
+  statusCode?: number;
+  providerStatus?: string;
+  retryAfterMs?: number;
+};
+
+export type RetryDetails = ModelErrorClassification & {
+  attempt: number;
+  retryNumber: number;
+  maxAttempts: number;
+  delayMs: number;
+  error: unknown;
+};
+
+export const MAX_MODEL_ATTEMPTS = 4;
+const MODEL_RETRY_DELAYS_MS = [1_500, 3_500, 7_000] as const;
+const MAX_RETRY_JITTER_MS = 500;
+const MIN_RETRY_AFTER_MS = 1_000;
+const MAX_RETRY_AFTER_MS = 15_000;
+
+function asRecord(value: unknown): Record<string, any> | null {
+  return value !== null && typeof value === "object" ? value as Record<string, any> : null;
+}
+
+function parsedMessageError(message: unknown): Record<string, any> | null {
+  if (typeof message !== "string" || !message.trim().startsWith("{")) return null;
+  try {
+    const parsed = JSON.parse(message);
+    return asRecord(parsed?.error) || asRecord(parsed);
+  } catch {
+    return null;
   }
-  
-  // Check for common keyword patterns in the raw message
-  const lowerMessage = message.toLowerCase();
+}
+
+function retryAfterMilliseconds(headers: unknown): number | undefined {
+  const record = asRecord(headers);
+  const raw = typeof record?.get === "function"
+    ? record.get("retry-after")
+    : record?.["retry-after"] ?? record?.["Retry-After"];
+  if (typeof raw !== "string" && typeof raw !== "number") return undefined;
+  const seconds = Number(raw);
+  let milliseconds = Number.isFinite(seconds)
+    ? seconds * 1_000
+    : Date.parse(String(raw)) - Date.now();
+  if (!Number.isFinite(milliseconds) || milliseconds <= 0) return undefined;
+  milliseconds = Math.max(MIN_RETRY_AFTER_MS, Math.min(MAX_RETRY_AFTER_MS, milliseconds));
+  return Math.round(milliseconds);
+}
+
+export function classifyModelError(error: unknown): ModelErrorClassification {
+  const root = asRecord(error);
+  const nested = asRecord(root?.error);
+  const response = asRecord(root?.response);
+  const parsed = parsedMessageError(root?.message);
+  const values = [
+    typeof error === "string" ? error : undefined,
+    root?.message, root?.status, root?.statusCode, root?.code,
+    nested?.message, nested?.status, nested?.code,
+    response?.status, parsed?.message, parsed?.status, parsed?.code,
+  ].filter((value) => value !== undefined && value !== null);
+  const text = values.map(String).join(" ").toLowerCase();
+  const numericCandidates = [root?.status, root?.statusCode, root?.code, nested?.code, response?.status, parsed?.code];
+  const statusCode = numericCandidates
+    .map((value) => typeof value === "number" ? value : /^\d{3}$/.test(String(value || "")) ? Number(value) : undefined)
+    .find((value) => value !== undefined);
+  const providerCandidate = [nested?.status, root?.status, root?.code, parsed?.status]
+    .find((value) => typeof value === "string" && /^[A-Z][A-Z_]+$/.test(value));
+  const providerStatus = typeof providerCandidate === "string" ? providerCandidate : undefined;
+  const retryAfterMs = retryAfterMilliseconds(response?.headers || root?.headers);
+
   if (
-    lowerMessage.includes("resource_exhausted") || 
-    lowerMessage.includes("429") || 
-    lowerMessage.includes("quota exceeded") ||
-    lowerMessage.includes("rate limit")
-  ) {
-    return "The AI service is currently receiving too many requests or has exceeded its quota limits. Please retry your request in a moment.";
-  }
-  
-  return message;
+    statusCode === 401 || /unauthenticated|authentication fail|invalid api key|missing api key|gemini_api_key|api[_ ]key.*(?:invalid|required|missing)/i.test(text)
+  ) return { kind: "authentication", retryable: false, statusCode, providerStatus };
+  if (
+    /content[_ -]?policy|content blocked|safety block|blocked.*safety|recitation block|finish_reason.*(?:safety|recitation)/i.test(text)
+  ) return { kind: "content_blocked", retryable: false, statusCode, providerStatus };
+  if (
+    statusCode === 400 || statusCode === 403 || statusCode === 404 ||
+    /invalid_argument|permission_denied|model not found|unsupported model|invalid request|malformed response schema|missing embedding text|no text provided for embedding|failed to retrieve embedding/i.test(text)
+  ) return { kind: "invalid_request", retryable: false, statusCode, providerStatus };
+
+  const transientStatuses = new Set([408, 429, 500, 502, 503, 504]);
+  const transientProviderStatuses = new Set(["RESOURCE_EXHAUSTED", "UNAVAILABLE", "DEADLINE_EXCEEDED", "INTERNAL"]);
+  if (
+    (statusCode !== undefined && transientStatuses.has(statusCode)) ||
+    (providerStatus !== undefined && transientProviderStatuses.has(providerStatus)) ||
+    /high demand|temporarily overloaded|temporarily unavailable|service unavailable|server overloaded|try again later|resource exhausted|resource_exhausted|quota exceeded|rate limit|too many requests|capacity/i.test(text)
+  ) return { kind: "transient_capacity", retryable: true, statusCode, providerStatus, retryAfterMs };
+  if (
+    /econnreset|etimedout|eai_again|econnrefused|und_err_connect_timeout|und_err_socket|fetch failed|socket hang up|network timeout/i.test(text)
+  ) return { kind: "transient_network", retryable: true, statusCode, providerStatus, retryAfterMs };
+  return { kind: "unknown", retryable: false, statusCode, providerStatus };
 }
 
-/**
- * Helper function to determine if an error is a 429 or RESOURCE_EXHAUSTED rate limit.
- */
-function isRateLimitError(err: any): boolean {
-  if (!err) return false;
-  const message = err.message || String(err);
-  
-  if (typeof message === "string") {
-    if (message.trim().startsWith("{")) {
-      try {
-        const parsed = JSON.parse(message);
-        if (parsed.error) {
-          const code = parsed.error.code;
-          const status = parsed.error.status;
-          if (status === "RESOURCE_EXHAUSTED" || code === 429) {
-            return true;
-          }
-        }
-      } catch {
-        // Ignored
-      }
-    }
-    const lowerMessage = message.toLowerCase();
-    if (
-      lowerMessage.includes("resource_exhausted") || 
-      lowerMessage.includes("429") || 
-      lowerMessage.includes("quota exceeded") ||
-      lowerMessage.includes("rate limit")
-    ) {
-      return true;
-    }
+export function friendlyModelErrorMessage(error: unknown): string {
+  const classification = classifyModelError(error);
+  if (classification.kind === "transient_capacity") {
+    return "The Assistant is temporarily busy and could not complete this request. Please try again in a moment.";
   }
-  return false;
+  if (classification.kind === "transient_network") {
+    return "The Assistant could not connect to the AI service. Please try again.";
+  }
+  if (classification.kind === "authentication") {
+    return "The Assistant is not configured correctly. Please contact the administrator.";
+  }
+  return "The Assistant could not complete the request. Please try again.";
 }
 
-const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const delay = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+
+export async function runWithTransientModelRetries<T>(
+  operation: (attempt: number) => Promise<T>,
+  options: {
+    maxAttempts?: number;
+    sleep?: (milliseconds: number) => Promise<void>;
+    random?: () => number;
+    onRetry?: (details: RetryDetails) => void;
+  } = {}
+): Promise<T> {
+  const maxAttempts = Math.max(1, Math.floor(options.maxAttempts ?? MAX_MODEL_ATTEMPTS));
+  const sleep = options.sleep ?? delay;
+  const random = options.random ?? Math.random;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await operation(attempt);
+    } catch (error) {
+      const classification = classifyModelError(error);
+      if (!classification.retryable || attempt >= maxAttempts) throw error;
+      const baseDelay = MODEL_RETRY_DELAYS_MS[Math.min(attempt - 1, MODEL_RETRY_DELAYS_MS.length - 1)];
+      const delayMs = classification.retryAfterMs
+        ?? baseDelay + Math.floor(Math.max(0, Math.min(1, random())) * (MAX_RETRY_JITTER_MS + 1));
+      options.onRetry?.({
+        ...classification,
+        attempt,
+        retryNumber: attempt,
+        maxAttempts,
+        delayMs,
+        error,
+      });
+      await sleep(delayMs);
+    }
+  }
+  throw new Error("Model retry runner exhausted unexpectedly");
+}
 
 /**
  * Call model through a unified calling layer.
@@ -182,12 +259,9 @@ export async function callModel(
 
   switch (provider) {
     case "gemini": {
-      const maxRetries = 2;
-      let attempt = 0;
-      let lastError: any = null;
-
-      while (attempt <= maxRetries) {
-        try {
+      const modelName = MODEL_CONFIGS[taskType];
+      try {
+        return await runWithTransientModelRetries(async () => {
           const ai = getAiClient();
 
           if (taskType === "embedding") {
@@ -222,8 +296,6 @@ export async function callModel(
 
           const config = buildGenerationConfig(taskType, options);
 
-          const modelName = MODEL_CONFIGS[taskType];
-
           const response = await ai.models.generateContent({
             model: modelName,
             contents,
@@ -235,25 +307,21 @@ export async function callModel(
             text: response.text || "",
             groundingMetadata: response.candidates?.[0]?.groundingMetadata || null,
           };
-        } catch (err: any) {
-          lastError = err;
-          
-          if (isRateLimitError(err) && attempt < maxRetries) {
-            attempt++;
-            const backoffMs = Math.pow(2, attempt) * 1000 + Math.random() * 200;
-            console.warn(`[callModel] Rate limit (429/RESOURCE_EXHAUSTED) hit. Retrying attempt ${attempt}/${maxRetries} in ${backoffMs.toFixed(0)}ms...`);
-            await delay(backoffMs);
-            continue;
-          }
-          
-          // Out of retries or non-rate-limit error: sanitize and throw
-          const cleanMsg = sanitizeErrorMessage(err);
-          throw new Error(cleanMsg);
-        }
+        }, {
+          onRetry: (details) => {
+            const status = details.statusCode ? ` status=${details.statusCode}` : "";
+            console.warn(
+              `[callModel] Transient Gemini failure for ${taskType}/${modelName}. ` +
+              `Retry ${details.retryNumber} of ${details.maxAttempts - 1} in ${details.delayMs}ms. ` +
+              `kind=${details.kind}${status}`
+            );
+          },
+        });
+      } catch (error) {
+        const safeError = new Error(friendlyModelErrorMessage(error));
+        (safeError as Error & { cause?: unknown }).cause = error;
+        throw safeError;
       }
-      
-      const cleanMsg = sanitizeErrorMessage(lastError);
-      throw new Error(cleanMsg);
     }
 
     default:

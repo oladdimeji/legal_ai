@@ -175,7 +175,7 @@ test("Assistant prompts and copy path prevent generic disclaimers and internal c
   assert.match(completion, /cleanGeneratedBoilerplate\(modelResult\.text\)/);
   assert.match(server, /cleanGeneratedWorkProductContent\(draftResult\.text\)/);
   assert.doesNotMatch(server, /professional disclaimer|standard liability disclaimer|replacement for the lawyer's advice/);
-  assert.match(assistant, /assistantCitationsToDisplayText\(m\.content, m\.citations\)/);
+  assert.match(assistant, /stripAssistantInlineCitations\(m\.content, m\.citations\)/);
   assert.doesNotMatch(assistant, /standard liability disclaimer|replacement for your lawyer/);
   assert.doesNotMatch(portal, /replacement for your lawyer's advice|Document understanding only/);
 });

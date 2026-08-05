@@ -13,7 +13,7 @@ import { AssistantDocumentReference, Message, Citation, ResearchStep, WorkspaceP
 import FormattedMarkdown from "./FormattedMarkdown";
 import FileSourcePicker from "./FileSourcePicker";
 import { browserFileIdentity, MAX_SELECTED_FILES } from "../hooks/useCumulativeFileSelection";
-import { assistantCitationsToDisplayText } from "../lib/assistantCitations";
+import { stripAssistantInlineCitations } from "../lib/assistantCitations";
 import {
   advanceWorkingActivityIndex,
   buildAssistantWorkingActivities,
@@ -46,6 +46,19 @@ const STOP_WORDS = new Set([
 ]);
 
 const WORKING_ACTIVITY_DELAY_MS = 2000;
+
+export class AssistantServerError extends Error {}
+
+export function friendlyAssistantClientError(error: unknown): string {
+  if (error instanceof AssistantServerError && error.message.trim()) {
+    return error.message.trim();
+  }
+  const message = error instanceof Error ? error.message : "";
+  if (/failed to fetch|networkerror|network request failed/i.test(message)) {
+    return "The Assistant could not connect. Please check your connection and try again.";
+  }
+  return "The Assistant could not complete the request. Please try again.";
+}
 
 function getProcessedSnippet(snippet: string, queryText: string, maxLen: number = 300): { element: React.ReactNode; isTruncated: boolean } {
   if (!snippet) {
@@ -190,13 +203,6 @@ export default function AssistantView({
   const filesAndSourcesDropdownRef = useRef<HTMLDivElement>(null);
   const [dropdownPosition, setDropdownPosition] = useState<{ left: number; bottom: number } | null>(null);
 
-  // Hover citation portal state
-  const [hoveredCitation, setHoveredCitation] = useState<{
-    citation: Citation;
-    rect: DOMRect;
-    lastUserQuery: string;
-  } | null>(null);
-
   // Auto-resize search input textarea useEffect
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -253,19 +259,6 @@ export default function AssistantView({
       document.removeEventListener("mousedown", handleClickOutside);
     };
   }, [filesAndSourcesOpen]);
-
-  // Global dismiss for citation hover card on click or scroll
-  useEffect(() => {
-    const handleGlobalDismiss = () => {
-      setHoveredCitation(null);
-    };
-    window.addEventListener("click", handleGlobalDismiss);
-    window.addEventListener("scroll", handleGlobalDismiss, true);
-    return () => {
-      window.removeEventListener("click", handleGlobalDismiss);
-      window.removeEventListener("scroll", handleGlobalDismiss, true);
-    };
-  }, []);
 
   useEffect(() => {
     conversationVersionRef.current = newConversationVersion;
@@ -483,8 +476,8 @@ export default function AssistantView({
       });
       
       const data = await res.json();
-      if (data.error) {
-        throw new Error(data.error);
+      if (typeof data.error === "string" && data.error.trim()) {
+        throw new AssistantServerError(data.error);
       }
       if (
         !componentMountedRef.current ||
@@ -579,10 +572,11 @@ export default function AssistantView({
         id: `temp_err_${Date.now()}`,
         thread_id: currentThreadId,
         role: "assistant",
-        content: `❌ Error: ${err.message || "Failed to contact Exepts model service."} Please verify your GEMINI_API_KEY in Secrets.`,
+        content: friendlyAssistantClientError(err),
         citations: [],
         steps: null,
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
+        metadata: { error: true },
       };
       setMessages((prev) => [...prev, errAssistantMsg]);
     } finally {
@@ -762,17 +756,7 @@ export default function AssistantView({
     if (!text) return null;
     return (
       <FormattedMarkdown
-        content={text}
-        citations={citationsList}
-        onCitationHover={(citation, rect) => {
-          const lastUserQuery = [...messages].reverse().find(m => m.role === "user")?.content || "";
-          setHoveredCitation({ citation, rect, lastUserQuery });
-        }}
-        onCitationLeave={() => setHoveredCitation(null)}
-        onCitationClick={(citation, all) => {
-          setCitationPanelSource(citation);
-          setActiveMessageCitations(all);
-        }}
+        content={stripAssistantInlineCitations(text, citationsList)}
       />
     );
   };  // Reusable unified composer
@@ -1065,7 +1049,7 @@ export default function AssistantView({
                           })()}
 
                           {/* Message Action Items */}
-                          {!m.content.startsWith("❌") && (
+                          {m.metadata?.error !== true && (
                             <div className="mt-5 pt-3.5 border-t border-zinc-100 flex items-center justify-between flex-wrap gap-2.5 select-none">
                               <div className="flex items-center gap-3">
                                 {m.citations && m.citations.length > 0 ? (
@@ -1118,7 +1102,7 @@ export default function AssistantView({
                                 <button
                                   type="button"
                                   onClick={() => {
-                                    navigator.clipboard.writeText(assistantCitationsToDisplayText(m.content, m.citations));
+                                    navigator.clipboard.writeText(stripAssistantInlineCitations(m.content, m.citations));
                                     alert("Response copied to clipboard!");
                                   }}
                                   id={`action-copy-${m.id}`}
@@ -1355,52 +1339,6 @@ export default function AssistantView({
         </div>
       )}
 
-      {hoveredCitation && createPortal(
-        <span 
-          style={{
-            position: "fixed",
-            left: `${hoveredCitation.rect.left + hoveredCitation.rect.width / 2}px`,
-            bottom: `${window.innerHeight - hoveredCitation.rect.top + 8}px`,
-            transform: "translateX(-50%)",
-          }}
-          className="flex flex-col w-80 bg-white border border-zinc-200 rounded-md shadow-md p-4 z-50 text-left pointer-events-none animate-fade-in font-sans"
-        >
-          <span className="flex items-center gap-1.5 mb-1">
-            <span className="text-[10px] font-mono font-semibold uppercase text-zinc-400">
-              {hoveredCitation.citation.sourceName || "Source"}
-            </span>
-          </span>
-          <span className="text-xs font-bold text-zinc-900 leading-snug block">
-            {hoveredCitation.citation.title || "Untitled Reference"}
-          </span>
-          
-          {hoveredCitation.citation.url ? (
-            <span className="text-[10px] font-mono text-zinc-400 mt-1 truncate block animate-fade-in">
-              {hoveredCitation.citation.url}
-            </span>
-          ) : (
-            <span className="text-[10px] font-mono text-zinc-400 mt-1 block truncate animate-fade-in">
-              {hoveredCitation.citation.title || "Workspace Document"}
-            </span>
-          )}
-          
-          <span className="mt-3 pt-2.5 border-t border-zinc-100 block">
-            <span className="max-h-[140px] overflow-y-auto text-[11px] leading-relaxed text-zinc-600 font-mono block whitespace-pre-wrap break-words select-text">
-              {(() => {
-                const processed = getProcessedSnippet(hoveredCitation.citation.textSnippet || "", hoveredCitation.lastUserQuery);
-                return (
-                  <>
-                    "{processed.element}{processed.isTruncated ? "..." : ""}"
-                  </>
-                );
-              })()}
-            </span>
-          </span>
-          
-          <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-white border-r border-b border-zinc-200 rotate-45 block"></span>
-        </span>,
-        document.body
-      )}
     </div>
   );
 }

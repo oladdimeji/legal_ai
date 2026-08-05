@@ -8,7 +8,10 @@ import type {
   Thread,
   WorkspacePageContext,
 } from "../../src/types.js";
-import { canonicalizeAssistantCitations } from "../../src/lib/assistantCitations.js";
+import {
+  canonicalizeAssistantCitations,
+  stripAssistantInlineCitations,
+} from "../../src/lib/assistantCitations.js";
 import type { OwnershipContext } from "../db.js";
 import { cleanGeneratedBoilerplate } from "../generatedContentCleanup.js";
 import { callModel } from "../model.js";
@@ -152,7 +155,11 @@ export async function completeAssistantResponse(input: {
       thinkingLevel: adaptiveAssistantThinkingLevel(input.plan),
       systemInstruction: LAWYER_ASSISTANT_CHARTER,
     });
-    content = canonicalizeAssistantCitations(cleanGeneratedBoilerplate(modelResult.text), citations);
+    const canonicalContent = canonicalizeAssistantCitations(
+      cleanGeneratedBoilerplate(modelResult.text),
+      citations
+    );
+    content = stripAssistantInlineCitations(canonicalContent, citations);
   }
 
   const documentContext = deliverable ? {
