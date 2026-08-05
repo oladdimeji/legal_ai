@@ -285,8 +285,10 @@ export function resolveLatestArtifactReference(input: {
     if (selected) return { artifact: selected, needsClarification: false };
   }
 
-  const directLatestReference = /\b(?:the document you (?:just )?created|the draft you (?:just )?made|that (?:document|draft|memo|memorandum|letter|agreement|report))\b/i.test(input.content);
-  const directRevision = /\b(?:revise|rewrite|make|shorten|expand|add|remove|change|turn)\b[\s\S]{0,100}\b(?:it|that|the (?:document|draft|memo|memorandum|letter|agreement|report))\b/i.test(input.content);
+  const artifactNoun = "(?:document|draft|memo|memorandum|letter|agreement|contract|report|policy|brief|checklist|advice note|email)";
+  const directLatestReference = new RegExp(`\\b(?:the ${artifactNoun} you (?:just )?created|the draft you (?:just )?made|the previous ${artifactNoun})\\b`, "i").test(input.content);
+  const directRevision = new RegExp(`\\b(?:revise|rewrite|update|amend|make|shorten|expand|add|remove|change)\\b[\\s\\S]{0,100}\\b(?:it|that|(?:the |that |this |previous )?${artifactNoun})\\b`, "i").test(input.content)
+    || new RegExp(`\\b(?:turn|convert)\\b[\\s\\S]{0,80}\\b(?:the |that |this |previous )${artifactNoun}\\b[\\s\\S]{0,80}\\b(?:into|to)\\b`, "i").test(input.content);
   if (directLatestReference && input.conversationState.latestCreatedArtifact) {
     return { artifact: input.conversationState.latestCreatedArtifact, needsClarification: false };
   }

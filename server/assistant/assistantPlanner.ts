@@ -16,6 +16,10 @@ import {
   type AssistantToolCall,
   type AssistantToolName,
 } from "./assistantTypes.js";
+import {
+  detectAssistantDocumentIntent,
+  reconcileAssistantDocumentIntent,
+} from "./assistantDocumentIntent.js";
 
 const DEPTHS = new Set(["brief", "standard", "thorough"]);
 const INTENTS = new Set<string>(ASSISTANT_INTENTS);
@@ -324,67 +328,19 @@ function fallbackToolCalls(input: AssistantPlannerInput, intent: AssistantIntent
   return [];
 }
 
-function fallbackDeliverable(input: AssistantPlannerInput): {
-  intent: AssistantIntent;
-  deliverable: AssistantDeliverablePlan;
-  artifactIds: string[];
-  needsClarification: boolean;
-  clarificationQuestion?: string;
-} {
-  const text = input.content;
-  const revisionRequest = /\b(?:revise|rewrite|make|shorten|expand|add|remove|change|turn)\b[\s\S]{0,100}\b(?:it|that|document|draft|memo|letter|agreement|report)\b/i.test(text);
-  const creationRequest = /\b(?:draft|prepare|write|create|generate|produce)\b[\s\S]{0,100}\b(?:letter|agreement|memorandum|memo|policy|report|contract|brief|notice|document)\b/i.test(text);
-  const explanatoryRequest = /\b(?:analy[sz]e|explain|tell me|assess|identify|risks?|strategy|recommend)\b/i.test(text);
-  if (revisionRequest) {
-    const resolved = resolveLatestArtifactReference({
-      content: text,
-      conversationState: input.conversationState,
-      pageContext: input.pageContext,
-      currentMatterId: input.currentMatterId,
-    });
-    if (resolved.artifact) {
-      return {
-        intent: "document_revision",
-        deliverable: { kind: explanatoryRequest ? "message_and_document" : "document", documentAction: "revise", sourceArtifactId: resolved.artifact.id },
-        artifactIds: [resolved.artifact.id],
-        needsClarification: false,
-      };
-    }
-    if (resolved.needsClarification) {
-      return {
-        intent: "document_revision",
-        deliverable: { kind: "message" },
-        artifactIds: [],
-        needsClarification: true,
-        clarificationQuestion: "Which previously created document would you like me to revise?",
-      };
-    }
-  }
-  if (creationRequest) {
-    return {
-      intent: "document_creation",
-      deliverable: { kind: explanatoryRequest ? "message_and_document" : "document", documentAction: "create" },
-      artifactIds: [],
-      needsClarification: false,
-    };
-  }
-  return {
-    intent: "general_conversation",
-    deliverable: { kind: "message" },
-    artifactIds: [],
-    needsClarification: false,
-  };
-}
-
 export function fallbackAssistantPlan(input: AssistantPlannerInput): AssistantPlan {
   const text = input.content.trim().toLowerCase();
-  const deliverableDecision = fallbackDeliverable(input);
+  const documentHint = detectAssistantDocumentIntent(input);
   const pageReference = /\b(this|current|open|selected) (?:page|document|source|work product|record)\b|\bwhat can i do here\b|\bthese controls\b/.test(text);
   const selectedDocument = input.hasTemporaryFiles || Boolean(input.pageContext.selectedItem &&
     ["source", "libraryDocument", "workProduct", "assistantDocument"].includes(input.pageContext.selectedItem.kind));
   const workspaceFact = /\b(my|our|this|the) (?:matter|client|work product|sources?|account|profile|firm|professional role|practice areas?|history)\b|\bwhich matters?\b|\bworkspace\b|\bcollaboration\b|\bfirm library\b|\bassistant documents?\b|\bfacts we have\b|\bbased on the facts\b/.test(text);
   const legalAnalysis = /\b(?:law|legal|clause|contract|liability|claim|defen[cs]e|jurisdiction|statute|case law|issue|promissory estoppel|estoppel)\b/.test(text);
-  let intent = deliverableDecision.intent;
+  let intent: AssistantIntent = documentHint.kind === "explicit_revision"
+    ? "document_revision"
+    : documentHint.kind === "explicit_create" || documentHint.kind === "accepted_document_offer"
+      ? "document_creation"
+      : "general_conversation";
   if (intent === "general_conversation") {
     intent = selectedDocument
       ? "document_analysis"
@@ -404,16 +360,13 @@ export function fallbackAssistantPlan(input: AssistantPlannerInput): AssistantPl
     content: input.content,
     conversationState: input.conversationState,
   });
-  const referencedArtifactIds = deliverableDecision.artifactIds.length
-    ? deliverableDecision.artifactIds
-    : artifactResolution.artifact ? [artifactResolution.artifact.id] : [];
+  const referencedArtifactIds = artifactResolution.artifact ? [artifactResolution.artifact.id] : [];
   const referencedResearchSourceIds = sourceResolution.source?.available ? [sourceResolution.source.id] : [];
   const toolCalls = fallbackToolCalls(input, intent);
-  const needsClarification = deliverableDecision.needsClarification || sourceResolution.needsClarification || Boolean(sourceResolution.source && !sourceResolution.source.available);
-  const clarificationQuestion = deliverableDecision.clarificationQuestion
-    || (sourceResolution.needsClarification ? "Which attached research source do you mean?" : undefined)
+  const needsClarification = sourceResolution.needsClarification || Boolean(sourceResolution.source && !sourceResolution.source.available);
+  const clarificationQuestion = (sourceResolution.needsClarification ? "Which attached research source do you mean?" : undefined)
     || (sourceResolution.source && !sourceResolution.source.available ? `Please reattach ${sourceResolution.source.name}; this older conversation saved its name but not its extracted text.` : undefined);
-  return {
+  const fallbackPlan: AssistantPlan = {
     intent,
     depth: /\b(?:thorough|deep|comprehensive|exhaustive)\b/.test(text) ? "thorough" : text.length < 100 ? "brief" : "standard",
     needsWorkspace: toolCalls.length > 0 || selectedDocument || referencedArtifactIds.length > 0 || referencedResearchSourceIds.length > 0,
@@ -422,11 +375,12 @@ export function fallbackAssistantPlan(input: AssistantPlannerInput): AssistantPl
       && !/\b(?:summarize|rewrite|explain)\b[\s\S]{0,80}\b(?:attached|agreement|document|clause)\b/.test(text),
     needsClarification,
     ...(clarificationQuestion ? { clarificationQuestion } : {}),
-    deliverable: deliverableDecision.deliverable,
+    deliverable: { kind: "message" },
     referencedArtifactIds,
     referencedResearchSourceIds,
     toolCalls,
   };
+  return reconcileAssistantDocumentIntent(fallbackPlan, documentHint, input);
 }
 
 export async function planAssistantRequest(
@@ -437,9 +391,12 @@ export async function planAssistantRequest(
 
 Deliverable rules:
 - Use message for explanations, summaries, clause analysis, assumptions, product help, and short wording fragments.
-- Use document/create for a requested standalone letter, agreement, memorandum, policy, report, or similar formal deliverable.
+- Do not require the literal verb "generate". Infer whether the user wants a reusable standalone deliverable from meaning. Draft, prepare, write, compose, create, produce, turn into, convert into, return as, provide as, format as, and equivalent instructions may request a document.
+- Formal deliverables include emails and email messages, letters, memoranda, reports, review documents, agreements, policies, briefs, notices, checklists, advice notes, and transmittals.
+- Examples: "Draft an accompanying email" -> document/create; "Turn that into a review document" -> document/create; "Return this as a document" -> document/create; "Analyse the risks and prepare a memo" -> message_and_document/create; "What should the email say?" -> message; "How should I draft a memo?" -> message; "Draft it here but do not save it" -> message.
 - Use message_and_document/create when the user asks both for analysis or strategy and for a formal standalone document.
 - Use document/revise only for a clear revision of one exact authorized generated artifact. Never overwrite it.
+- A short affirmative reply can accept the immediately preceding Assistant offer to create a formal deliverable.
 - A long answer alone is not a saved document. A two-sentence clause normally remains a message.
 
 Retrieval rules:
@@ -471,8 +428,9 @@ ${JSON.stringify({
       responseMimeType: "application/json",
       responseSchema: plannerResponseSchema,
     });
-    const parsed = validateAssistantPlan(JSON.parse(result.text), input);
-    return parsed || fallbackAssistantPlan(input);
+    const hint = detectAssistantDocumentIntent(input);
+    const parsed = validateAssistantPlan(JSON.parse(result.text), input) || fallbackAssistantPlan(input);
+    return reconcileAssistantDocumentIntent(parsed, hint, input);
   } catch (error) {
     console.error("Assistant planning failed; using safe fallback:", error);
     return fallbackAssistantPlan(input);

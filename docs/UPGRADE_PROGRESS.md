@@ -1644,3 +1644,17 @@ Final verification and acceptance coverage:
 ### User-perspective Assistant follow-up wording
 
 - Suggested follow-ups are now prompted and deterministically normalized as user-authored, context-specific messages that are ready to send verbatim when clicked. Assistant-offer prefixes are converted to direct instructions, normalized duplicates are removed case-insensitively, and existing direct questions and instructions remain unchanged.
+
+### Semantic Assistant Document Intent
+
+Status: Implementation complete; focused-phase verification recorded below.
+
+- Added a deterministic, framework-independent document-intent detector and plan reconciler with six bounded outcomes: explicit message-only, explicit creation, explicit revision, accepted document offer, informational message, and no high-confidence override.
+- Formal-deliverable creation is now meaning-based rather than dependent on `generate`. It recognizes direct drafting language, emails and email messages, conversion instructions such as turn/convert/return/provide/put/format/save as, and the supported reusable document types.
+- Short affirmative replies accept only the latest preceding Assistant turn when that turn clearly offers to create a supported formal deliverable. Explanation, search, review-only, opening, and workspace-edit offers do not trigger document creation.
+- Explicit chat-only and non-persistence language has highest precedence and always removes document creation or revision fields from the deliverable plan.
+- Conversation-content conversions create new documents. Revisions require wording that identifies an existing saved artifact, continue through the authorized artifact resolver, use an exact artifact ID when deterministic, and ask one focused clarification when missing or ambiguous.
+- Both valid model plans and deterministic fallback plans now pass through the same high-confidence reconciliation layer. Corrected plans preserve depth, retrieval, current-page, web, tool-call, research-source, and relevant artifact decisions.
+- Added `tests/assistant-document-intent.test.ts` covering direct creation, combined message/document requests, informational and short-wording messages, chat-only overrides, exact and ambiguous revisions, accepted offers, and valid-model-plan correction.
+- Verification passed: `npm run lint`; `npm test` (345/345); production build; DOCX fixture generation; and `npm run verify` (lint, 345/345 tests, and production build). The existing non-fatal large-chunk warning remains.
+- No database schema or migration, dependency, retrieval architecture, web-research boundary, authorization rule, document destination/storage/rendering, DOCX, preview, editor, composer, Client Assistant, or other UI behavior changed.
