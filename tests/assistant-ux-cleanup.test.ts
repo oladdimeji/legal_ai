@@ -72,7 +72,7 @@ test("Assistant uses progressive working activities and completes designed respo
   assert.match(assistant, /message\.id === savedAssistantMessage\.id \? savedAssistantMessage : message/);
   assert.match(assistant, /message\.id !== savedUserMessage\.id && message\.id !== savedAssistantMessage\.id/);
   assert.match(assistant, /message\.id === tempUserMsg\.id \? savedUserMessage : message/);
-  assert.match(assistant, /loading \? "Sending…" : "Send"/);
+  assert.match(assistant, />\s*Send\s*<Send className="h-3 w-3" \/>/);
   assert.doesNotMatch(assistant, /draftMode|Create Draft|btn-submit-ask/);
   assert.match(assistant, /window\.clearTimeout\(workingActivityTimerRef\.current\)/);
   assert.match(assistant, /window\.clearTimeout\(responseStreamTimerRef\.current\)/);

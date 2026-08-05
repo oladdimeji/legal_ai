@@ -56,3 +56,19 @@ test("all five DOCX routes continue through the shared facade and migrations rem
   assert.equal((server.match(/markdownToDocxDocument\(/g) ?? []).length, 5);
   assert.doesNotMatch(migrations, /tiptap|editor_json|document_preview/i);
 });
+
+test("requested DOCX controls download same-origin blobs without opening tabs", async () => {
+  const [surface, assistant, downloader] = await Promise.all([
+    readFile("src/components/DocumentEditorSurface.tsx", "utf8"),
+    readFile("src/components/AssistantView.tsx", "utf8"),
+    readFile("src/lib/downloadDocx.ts", "utf8"),
+  ]);
+  assert.match(surface, /void downloadDocx\(exportUrl\)/);
+  assert.match(assistant, /void downloadDocx\(exportUrl\)/);
+  assert.doesNotMatch(`${surface}\n${assistant}`, /window\.open\(exportUrl/);
+  assert.match(downloader, /fetch\(exportUrl, \{ credentials: "same-origin" \}\)/);
+  assert.match(downloader, /if \(!response\.ok\) throw/);
+  assert.match(downloader, /Content-Disposition/);
+  assert.match(downloader, /anchor\.download = safeDocxFilename/);
+  assert.match(downloader, /URL\.revokeObjectURL\(objectUrl\)/);
+});

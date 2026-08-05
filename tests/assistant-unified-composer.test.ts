@@ -11,7 +11,9 @@ test("composer exposes only Research sources and Send controls", async () => {
   const composer = source.slice(source.indexOf("const renderComposer"), source.indexOf("// Persistent Citation Metadata Panel helper"));
   assert.match(composer, />Research sources<\/span>/);
   assert.match(composer, /id="btn-submit-send"/);
-  assert.match(composer, /loading \? "Sending…" : "Send"/);
+  assert.match(composer, /disabled=\{!inputValue\.trim\(\) \|\| loading \|\| fileExtracting \|\| cloudFilesBusy\}/);
+  assert.match(composer, />\s*Send\s*<Send className="h-3 w-3" \/>/);
+  assert.doesNotMatch(composer, /Sending|animate-spin/);
   assert.doesNotMatch(composer, /Draft|Create Draft|Web Search|Google Grounding|Legal Data Grounding|btn-submit-ask|>Ask<|aria-pressed/);
 });
 
@@ -49,4 +51,3 @@ test("unified placeholders and empty state describe capabilities without separat
   assert.match(source, /Ask a question, work with your workspace, create a document, or attach research sources\./);
   assert.doesNotMatch(source, /Describe the document you want to create|Quick-Enable Grounding Sources/);
 });
-

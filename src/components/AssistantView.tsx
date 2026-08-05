@@ -14,6 +14,7 @@ import FormattedMarkdown from "./FormattedMarkdown";
 import FileSourcePicker from "./FileSourcePicker";
 import { browserFileIdentity, MAX_SELECTED_FILES } from "../hooks/useCumulativeFileSelection";
 import { stripAssistantInlineCitations } from "../lib/assistantCitations";
+import { downloadDocx } from "../lib/downloadDocx";
 import {
   advanceWorkingActivityIndex,
   buildAssistantWorkingActivities,
@@ -850,8 +851,8 @@ export default function AssistantView({
                 id="btn-submit-send"
                 className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-mono uppercase font-bold text-white bg-zinc-950 hover:bg-zinc-900 border border-zinc-950 rounded shadow-xs disabled:opacity-40 transition-all cursor-pointer"
               >
-                {loading ? "Sending…" : "Send"}
-                {loading ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
+                Send
+                <Send className="h-3 w-3" />
               </button>
             </div>
           </div>
@@ -1042,7 +1043,7 @@ export default function AssistantView({
                                 </div>
                                 <div className="mt-3 flex flex-wrap gap-2">
                                   <button type="button" onClick={() => onOpenDocument(document)} className="rounded bg-zinc-950 px-3 py-1.5 text-[10px] font-mono font-bold uppercase text-white">Open</button>
-                                  <button type="button" onClick={() => window.open(exportUrl, "_blank")} className="inline-flex items-center gap-1 rounded border border-zinc-300 bg-white px-3 py-1.5 text-[10px] font-mono font-bold uppercase text-zinc-800"><Download className="h-3.5 w-3.5" />Download .docx</button>
+                                  <button type="button" onClick={() => void downloadDocx(exportUrl)} className="inline-flex items-center gap-1 rounded border border-zinc-300 bg-white px-3 py-1.5 text-[10px] font-mono font-bold uppercase text-zinc-800"><Download className="h-3.5 w-3.5" />Download .docx</button>
                                 </div>
                               </div>
                             );

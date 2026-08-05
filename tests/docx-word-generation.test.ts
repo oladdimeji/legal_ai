@@ -231,15 +231,17 @@ test("packed DOCX has professional styles, real structures, fields, and readable
 });
 
 test("all existing Word routes retain the shared renderer and scoped cleanup", async () => {
-  const [server, migrations, docxFiles] = await Promise.all([
+  const [server, migrations, docxFiles, parser] = await Promise.all([
     readFile("server.ts", "utf8"),
     readFile("server/migrations.ts", "utf8"),
     readdir("server/docx"),
+    readFile("shared/document/parseDocument.ts", "utf8"),
   ]);
   assert.equal((server.match(/markdownToDocxDocument\(/g) ?? []).length, 5);
   assert.match(server, /markdownToDocxDocument\(draft\.title, cleanWorkProductContent\(draft\.content\)\)/);
   assert.match(server, /markdownToDocxDocument\(document\.title, cleanWorkProductContent\(document\.content\)\)/);
   assert.match(server, /markdownToDocxDocument\(`\$\{matter\.name\} Matter Intelligence`, cleanMatterIntelligenceContent\(record\.content\)\)/);
   assert.ok(docxFiles.includes("normalizeMarkdown.ts") && docxFiles.includes("parseMarkdownBlocks.ts") && docxFiles.includes("renderDocx.ts"));
+  assert.match(parser, /use\(remarkParsePlugin\)\.use\(remarkGfmPlugin\)/);
   assert.doesNotMatch(migrations, /docx/i);
 });

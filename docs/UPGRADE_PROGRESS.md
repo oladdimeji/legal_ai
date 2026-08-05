@@ -1672,3 +1672,13 @@ Status: Implementation complete; focused-phase verification recorded below.
 - Added focused inline-citation, transient-retry, and friendly-error tests and updated related Lawyer/Client Assistant source regressions.
 - No retrieval, planning, semantic document intent, document creation/revision/export/preview/editor, database, migration, dependency, composer, model assignment/thinking level, or Client Assistant behavior changed.
 - Verification passed: `npm run lint`; `npm test` (362/362); production build; all 16 DOCX review fixtures; and `npm run verify` (lint, 362/362 tests, and production build). The existing non-fatal large-chunk warning remains.
+
+### DOCX export and Assistant control hotfix
+
+Status: Implementation complete; focused verification recorded below.
+
+- Normalized the ESM-only `remark-parse` and `remark-gfm` default exports at the shared parser boundary so both direct ESM execution and the externalized CommonJS production server bundle pass plugin functions to Unified.
+- Replaced only the formal editor and Assistant document-card tab-opening exports with a shared same-origin fetch/blob download helper. It checks HTTP success, honors a safe `Content-Disposition` filename with a `.docx` fallback, and revokes its temporary object URL.
+- Kept the main Lawyer Assistant submit button visually fixed as Send with the normal Send icon while preserving its existing loading-based disabled guard and request processing.
+- Focused DOCX/UI tests passed (45/45), `npm run lint` passed, and `npm run build` passed outside the managed filesystem sandbox with the existing non-fatal large-chunk warning. A production-format CommonJS check generated a valid 12,832-byte DOCX ZIP containing `word/document.xml`.
+- No dependency, schema, migration, route, authentication, ownership, document content, formatting, API, or architecture change was made.

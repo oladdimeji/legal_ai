@@ -12,6 +12,17 @@ import type {
   TableBlockRow,
 } from "./documentTypes.js";
 
+function resolveRemarkPlugin(plugin: unknown): typeof remarkParse {
+  const candidate = typeof plugin === "function"
+    ? plugin
+    : (plugin as { default?: unknown } | null)?.default;
+  if (typeof candidate !== "function") throw new TypeError("Expected a Remark plugin function.");
+  return candidate as typeof remarkParse;
+}
+
+const remarkParsePlugin = resolveRemarkPlugin(remarkParse);
+const remarkGfmPlugin = resolveRemarkPlugin(remarkGfm);
+
 type AstNode = {
   type: string;
   value?: string;
@@ -105,7 +116,7 @@ function inlineNodes(nodes: AstNode[], diagnostics: DocumentDiagnostic[], inheri
 
 export function parseInlineMarkdown(text: string): InlineContent[] {
   const diagnostics: DocumentDiagnostic[] = [];
-  const tree = unified().use(remarkParse).use(remarkGfm).parse(text) as AstNode;
+  const tree = unified().use(remarkParsePlugin).use(remarkGfmPlugin).parse(text) as AstNode;
   const paragraph = tree.children?.find((node) => node.type === "paragraph");
   return inlineNodes(paragraph?.children ?? [{ type: "text", value: text }], diagnostics);
 }
@@ -322,7 +333,7 @@ function preserveAuthoredListRestarts(markdown: string): string {
 }
 
 export function parseDocument(markdown: string, diagnostics: DocumentDiagnostic[] = []): DocumentBlock[] {
-  const tree = unified().use(remarkParse).use(remarkGfm).parse(preserveAuthoredListRestarts(markdown)) as AstNode;
+  const tree = unified().use(remarkParsePlugin).use(remarkGfmPlugin).parse(preserveAuthoredListRestarts(markdown)) as AstNode;
   const blocks: DocumentBlock[] = [];
   for (const node of tree.children ?? []) {
     switch (node.type) {

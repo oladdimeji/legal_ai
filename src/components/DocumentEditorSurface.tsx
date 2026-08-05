@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { Check, Download, Edit, Eye, RefreshCw, Save } from "lucide-react";
 import RichDocumentEditor from "./RichDocumentEditor";
 import WorkProductDocument from "./WorkProductDocument";
+import { downloadDocx } from "../lib/downloadDocx";
 
 export type DocumentSaveStatus = "idle" | "saving" | "saved" | "error";
 
@@ -65,7 +66,7 @@ export default function DocumentEditorSurface({
             {saveStatus === "saving" ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : saveStatus === "saved" ? <Check className="h-3.5 w-3.5 text-green-700" /> : <Save className="h-3.5 w-3.5" />}
             {saveStatus === "saving" ? "Saving..." : saveStatus === "saved" ? "Saved" : saveStatus === "error" ? "Retry save" : "Save"}
           </button>
-          <button onClick={() => window.open(exportUrl, "_blank")} id={idPrefix === "editor" ? "editor-export-btn" : `${idPrefix}-export-btn`} className="inline-flex items-center gap-1.5 rounded bg-zinc-950 px-3.5 py-1.5 text-[10px] font-mono font-bold uppercase text-white hover:bg-zinc-900"><Download className="h-3.5 w-3.5" />Download .docx</button>
+          <button onClick={() => void downloadDocx(exportUrl)} id={idPrefix === "editor" ? "editor-export-btn" : `${idPrefix}-export-btn`} className="inline-flex items-center gap-1.5 rounded bg-zinc-950 px-3.5 py-1.5 text-[10px] font-mono font-bold uppercase text-white hover:bg-zinc-900"><Download className="h-3.5 w-3.5" />Download .docx</button>
         </div>
       </div>
 
