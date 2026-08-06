@@ -26,7 +26,7 @@ const matterContext: WorkspacePageContext = {
   visibleActions: [{ id: "add-source", label: "Add Source", description: "Adds an authorized source." }],
 };
 
-test("lawyer authentication and onboarding default to Matters while assistant bookmarks stay valid", async () => {
+test("approved lawyer authentication defaults to Matters while onboarding submits for access review", async () => {
   const [app, server, routes] = await Promise.all([
     readFile("src/App.tsx", "utf8"),
     readFile("server.ts", "utf8"),
@@ -35,8 +35,9 @@ test("lawyer authentication and onboarding default to Matters while assistant bo
   assert.equal(safeInternalPath(undefined), "/matters");
   assert.equal(safeInternalPath("/assistant"), "/assistant");
   assert.match(app, /route\.kind === "assistant"[\s\S]*navigate\("\/matters", true\)/);
-  assert.match(app, /onCompleted={[\s\S]*navigate\("\/matters", true\)/);
-  assert.match(server, /redirectTo: "\/matters"/);
+  assert.match(app, /onCompleted={[\s\S]*navigate\("\/access", true\)/);
+  assert.match(server, /redirectTo: "\/access"/);
+  assert.match(server, /platform_access_status !== "approved"[\s\S]*return "\/access"/);
   assert.match(routes, /if \(path === "\/assistant"\) return \{ kind: "assistant" \}/);
 });
 

@@ -13,9 +13,14 @@ export interface User {
   workspace_type: WorkspaceType | null;
   practice_areas: string[];
   custom_practice_area: string | null;
+  platform_access_status: PlatformAccessStatus;
+  access_submitted_at: string | null;
+  access_reviewed_at: string | null;
+  client_access_granted: boolean;
 }
 
 export type AccountType = "lawyer" | "client";
+export type PlatformAccessStatus = "pending" | "approved" | "denied";
 
 export interface Firm {
   id: string;

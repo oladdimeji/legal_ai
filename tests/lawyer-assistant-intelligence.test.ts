@@ -233,6 +233,8 @@ const account = {
     name: "Ada", email: "ada@example.com", google_sub: "secret-google-sub", email_verified_at: null,
     onboarding_completed: true, professional_role: "Lawyer" as const, custom_professional_role: null,
     workspace_type: "firm" as const, practice_areas: ["Litigation"], custom_practice_area: null,
+    platform_access_status: "approved" as const, access_submitted_at: null,
+    access_reviewed_at: null, client_access_granted: false,
   },
   firm: { id: "firm_1", name: "Example Firm", invitation_code: "EXE-SECRET" },
 };

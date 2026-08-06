@@ -2,6 +2,8 @@ export type AppRoute =
   | { kind: "landing" }
   | { kind: "auth" }
   | { kind: "onboarding" }
+  | { kind: "accessGate" }
+  | { kind: "accessReview"; token: string }
   | { kind: "assistant" }
   | { kind: "matters" }
   | { kind: "matter"; matterId: string }
@@ -30,6 +32,7 @@ export function parseRoute(pathname: string): AppRoute {
   if (path === "/") return { kind: "landing" };
   if (path === "/auth" || path === "/login" || path === "/signup") return { kind: "auth" };
   if (path === "/onboarding") return { kind: "onboarding" };
+  if (path === "/access") return { kind: "accessGate" };
   if (path === "/assistant") return { kind: "assistant" };
   if (path === "/matters") return { kind: "matters" };
   if (path === "/library") return { kind: "library" };
@@ -41,6 +44,12 @@ export function parseRoute(pathname: string): AppRoute {
   if (path === "/client/shared-matters") return { kind: "clientSharedMatters" };
   if (path === "/client/history") return { kind: "clientHistory" };
   if (path === "/client/settings") return { kind: "clientSettings" };
+
+  const accessReviewMatch = path.match(/^\/access-review\/([^/]+)$/);
+  if (accessReviewMatch) {
+    const token = decodeSegment(accessReviewMatch[1]);
+    return token ? { kind: "accessReview", token } : { kind: "unknown" };
+  }
 
   const sharedMatterMatch = path.match(/^\/client\/shared-matters\/([^/]+)$/);
   if (sharedMatterMatch) {
@@ -91,6 +100,10 @@ export function safeReturnTo(value: string | null, fallback = "/matters"): strin
 }
 
 export function routePath(route: AppRoute): string {
+  if (route.kind === "accessGate") return "/access";
+  if (route.kind === "accessReview") {
+    return `/access-review/${encodeURIComponent(route.token)}`;
+  }
   if (route.kind === "matter") return `/matters/${encodeURIComponent(route.matterId)}`;
   if (route.kind === "assistantDocument") return `/documents/${encodeURIComponent(route.documentId)}`;
   if (route.kind === "clientAssistant") return "/client/assistant";

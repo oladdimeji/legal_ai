@@ -99,6 +99,7 @@ export function isProtectedApplicationPath(pathname: string): boolean {
   const path = pathname.replace(/\/+$/, "") || "/";
   return (
     path === "/onboarding" ||
+    path === "/access" ||
     path === "/assistant" ||
     path === "/matters" ||
     path.startsWith("/matters/") ||

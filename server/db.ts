@@ -13,6 +13,7 @@ import {
   Citation,
   FirmAdminSettings,
   FirmRole,
+  PlatformAccessStatus,
   ProfessionalRole,
   WorkspaceType,
 } from "../src/types.js";
@@ -23,6 +24,8 @@ import {
   OTP_MAX_REQUESTS_PER_WINDOW,
   OTP_REQUEST_WINDOW_MS,
   OTP_RESEND_COOLDOWN_MS,
+  ACCESS_REVIEW_DAILY_LIMIT,
+  ACCESS_REVIEW_RESEND_COOLDOWN_MS,
   verifyOtpHash,
 } from "./auth.js";
 import {
@@ -58,12 +61,44 @@ function accountFromRow(row: Record<string, unknown>): Account {
       custom_practice_area: row.custom_practice_area
         ? String(row.custom_practice_area)
         : null,
+      platform_access_status: (row.platform_access_status || "pending") as PlatformAccessStatus,
+      access_submitted_at: row.access_submitted_at ? String(row.access_submitted_at) : null,
+      access_reviewed_at: row.access_reviewed_at ? String(row.access_reviewed_at) : null,
+      client_access_granted: Boolean(row.client_access_granted),
     },
     firm: row.firm_id
       ? { id: String(row.firm_id), name: String(row.firm_name) }
       : null,
   };
 }
+
+export interface AccessReviewApplicant {
+  userId: string;
+  fullName: string;
+  email: string;
+  professionalRole: ProfessionalRole;
+  customProfessionalRole: string | null;
+  workspaceType: WorkspaceType;
+  firmName: string | null;
+  practiceAreas: string[];
+  customPracticeArea: string | null;
+  submittedAt: string;
+}
+
+export type AccessReviewLookup =
+  | { state: "invalid" }
+  | { state: "completed"; decision: "approved" | "denied" }
+  | { state: "pending"; applicant: AccessReviewApplicant; expiresAt: string };
+
+export type AccessReviewDecisionResult =
+  | { state: "invalid" }
+  | { state: "completed"; decision: "approved" | "denied"; changed: false }
+  | {
+      state: "completed";
+      decision: "approved" | "denied";
+      changed: true;
+      user: { email: string; name: string | null };
+    };
 
 // Lazy initialization of Pool
 let poolInstance: pg.Pool | null = null;
@@ -359,7 +394,14 @@ class DatabaseService {
          AND s.user_id = u.id
          AND s.expires_at > $2
        RETURNING u.*,
-         (SELECT f.name FROM firm f WHERE f.id = u.firm_id) AS firm_name`,
+         (SELECT f.name FROM firm f WHERE f.id = u.firm_id) AS firm_name,
+         EXISTS (
+           SELECT 1 FROM matter_client_access access
+           WHERE access.claimed_by_user_id = u.id
+             AND access.invitation_status = 'Active'
+             AND access.revoked_at IS NULL
+             AND access.token_hash IS NOT NULL
+         ) AS client_access_granted`,
       [tokenHash, now]
     );
     return rows[0] ? accountFromRow(rows[0]) : null;
@@ -543,7 +585,14 @@ class DatabaseService {
         );
       }
       const accountResult = await client.query(
-        `SELECT u.*, f.name AS firm_name
+        `SELECT u.*, f.name AS firm_name,
+           EXISTS (
+             SELECT 1 FROM matter_client_access access
+             WHERE access.claimed_by_user_id = u.id
+               AND access.invitation_status = 'Active'
+               AND access.revoked_at IS NULL
+               AND access.token_hash IS NOT NULL
+           ) AS client_access_granted
          FROM users u LEFT JOIN firm f ON f.id = u.firm_id WHERE u.id = $1`,
         [userId]
       );
@@ -611,7 +660,14 @@ class DatabaseService {
         );
       }
       const accountResult = await client.query(
-        `SELECT u.*, f.name AS firm_name
+        `SELECT u.*, f.name AS firm_name,
+           EXISTS (
+             SELECT 1 FROM matter_client_access access
+             WHERE access.claimed_by_user_id = u.id
+               AND access.invitation_status = 'Active'
+               AND access.revoked_at IS NULL
+               AND access.token_hash IS NOT NULL
+           ) AS client_access_granted
          FROM users u LEFT JOIN firm f ON f.id = u.firm_id WHERE u.id = $1`,
         [userId]
       );
@@ -672,6 +728,8 @@ class DatabaseService {
           `UPDATE users SET firm_id = $2, name = $3, professional_role = $4,
              custom_professional_role = $5, workspace_type = $6, practice_areas = $7::jsonb,
              custom_practice_area = $8, firm_role = $9, onboarding_completed = TRUE,
+             platform_access_status = 'pending',
+             access_submitted_at = COALESCE(access_submitted_at, $10),
              updated_at = $10
            WHERE id = $1`,
           [
@@ -689,7 +747,14 @@ class DatabaseService {
         );
       }
       const accountResult = await client.query(
-        `SELECT u.*, f.name AS firm_name
+        `SELECT u.*, f.name AS firm_name,
+           EXISTS (
+             SELECT 1 FROM matter_client_access access
+             WHERE access.claimed_by_user_id = u.id
+               AND access.invitation_status = 'Active'
+               AND access.revoked_at IS NULL
+               AND access.token_hash IS NOT NULL
+           ) AS client_access_granted
          FROM users u LEFT JOIN firm f ON f.id = u.firm_id WHERE u.id = $1`,
         [input.userId]
       );
@@ -705,6 +770,242 @@ class DatabaseService {
 
   public async deleteSession(tokenHash: string): Promise<void> {
     await this.query("DELETE FROM sessions WHERE token_hash = $1", [tokenHash]);
+  }
+
+  public async issueAccessReviewRequest(input: {
+    userId: string;
+    tokenHash: string;
+    expiresAt: string;
+  }): Promise<
+    | { allowed: false; reason: "unavailable" }
+    | { allowed: false; reason: "rate_limited"; retryAfterSeconds: number }
+    | { allowed: true; requestId: string; applicant: AccessReviewApplicant }
+  > {
+    await this.ensureSchema();
+    const client = await getPool().connect();
+    const now = new Date();
+    const nowText = now.toISOString();
+    try {
+      await client.query("BEGIN");
+      const userResult = await client.query<{
+        id: string;
+        name: string | null;
+        email: string;
+        professional_role: ProfessionalRole | null;
+        custom_professional_role: string | null;
+        workspace_type: WorkspaceType | null;
+        firm_name: string | null;
+        practice_areas: unknown;
+        custom_practice_area: string | null;
+        access_submitted_at: string | null;
+        account_type: AccountType;
+        onboarding_completed: boolean;
+        platform_access_status: PlatformAccessStatus;
+      }>(
+        `SELECT u.*, f.name AS firm_name
+         FROM users u LEFT JOIN firm f ON f.id = u.firm_id
+         WHERE u.id = $1 FOR UPDATE OF u`,
+        [input.userId]
+      );
+      const user = userResult.rows[0];
+      if (
+        !user || user.account_type !== "lawyer" || !user.onboarding_completed ||
+        user.platform_access_status !== "pending" || !user.name ||
+        !user.professional_role || !user.workspace_type || !user.access_submitted_at
+      ) {
+        await client.query("COMMIT");
+        return { allowed: false, reason: "unavailable" };
+      }
+      const recent = await client.query<{ created_at: string }>(
+        `SELECT created_at FROM access_review_requests
+         WHERE user_id = $1 AND created_at > $2
+         ORDER BY created_at DESC`,
+        [input.userId, new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString()]
+      );
+      const latestMs = recent.rows[0] ? new Date(recent.rows[0].created_at).getTime() : 0;
+      const cooldownMs = ACCESS_REVIEW_RESEND_COOLDOWN_MS - (now.getTime() - latestMs);
+      const dailyMs = recent.rows.length >= ACCESS_REVIEW_DAILY_LIMIT
+        ? new Date(recent.rows[recent.rows.length - 1].created_at).getTime() +
+          24 * 60 * 60 * 1000 - now.getTime()
+        : 0;
+      if (cooldownMs > 0 || dailyMs > 0) {
+        await client.query("COMMIT");
+        return {
+          allowed: false,
+          reason: "rate_limited",
+          retryAfterSeconds: Math.max(1, Math.ceil(Math.max(cooldownMs, dailyMs) / 1000)),
+        };
+      }
+      await client.query(
+        `UPDATE access_review_requests SET invalidated_at = $2
+         WHERE user_id = $1 AND consumed_at IS NULL AND invalidated_at IS NULL`,
+        [input.userId, nowText]
+      );
+      const requestId = `access_review_${randomUUID()}`;
+      await client.query(
+        `INSERT INTO access_review_requests
+          (id, user_id, token_hash, created_at, expires_at)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [requestId, input.userId, input.tokenHash, nowText, input.expiresAt]
+      );
+      await client.query("COMMIT");
+      return {
+        allowed: true,
+        requestId,
+        applicant: {
+          userId: user.id,
+          fullName: user.name,
+          email: user.email,
+          professionalRole: user.professional_role,
+          customProfessionalRole: user.custom_professional_role,
+          workspaceType: user.workspace_type,
+          firmName: user.workspace_type === "firm" ? user.firm_name : null,
+          practiceAreas: Array.isArray(user.practice_areas)
+            ? user.practice_areas.map(String)
+            : [],
+          customPracticeArea: user.custom_practice_area,
+          submittedAt: user.access_submitted_at,
+        },
+      };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async markAccessReviewNotification(
+    requestId: string,
+    delivered: boolean
+  ): Promise<void> {
+    if (delivered) {
+      await this.query(
+        "UPDATE access_review_requests SET notification_sent_at = $2 WHERE id = $1",
+        [requestId, new Date().toISOString()]
+      );
+    } else {
+      await this.query(
+        "UPDATE access_review_requests SET notification_failed_at = $2 WHERE id = $1",
+        [requestId, new Date().toISOString()]
+      );
+    }
+  }
+
+  public async getAccessReview(tokenHash: string): Promise<AccessReviewLookup> {
+    const rows = await this.query(
+      `SELECT request.expires_at, request.consumed_at, request.invalidated_at,
+         request.decision, u.id, u.name, u.email, u.professional_role,
+         u.custom_professional_role, u.workspace_type, u.practice_areas,
+         u.custom_practice_area, u.access_submitted_at, f.name AS firm_name
+       FROM access_review_requests request
+       JOIN users u ON u.id = request.user_id
+       LEFT JOIN firm f ON f.id = u.firm_id
+       WHERE request.token_hash = $1`,
+      [tokenHash]
+    );
+    const row = rows[0];
+    if (!row) return { state: "invalid" };
+    if (row.consumed_at && (row.decision === "approved" || row.decision === "denied")) {
+      return { state: "completed", decision: row.decision };
+    }
+    if (row.invalidated_at || row.expires_at <= new Date().toISOString()) {
+      return { state: "invalid" };
+    }
+    return {
+      state: "pending",
+      expiresAt: String(row.expires_at),
+      applicant: {
+        userId: String(row.id),
+        fullName: String(row.name),
+        email: String(row.email),
+        professionalRole: row.professional_role as ProfessionalRole,
+        customProfessionalRole: row.custom_professional_role
+          ? String(row.custom_professional_role) : null,
+        workspaceType: row.workspace_type as WorkspaceType,
+        firmName: row.workspace_type === "firm" && row.firm_name
+          ? String(row.firm_name) : null,
+        practiceAreas: Array.isArray(row.practice_areas) ? row.practice_areas.map(String) : [],
+        customPracticeArea: row.custom_practice_area
+          ? String(row.custom_practice_area) : null,
+        submittedAt: String(row.access_submitted_at),
+      },
+    };
+  }
+
+  public async decideAccessReview(
+    tokenHash: string,
+    decision: "approved" | "denied"
+  ): Promise<AccessReviewDecisionResult> {
+    await this.ensureSchema();
+    const client = await getPool().connect();
+    const now = new Date().toISOString();
+    try {
+      await client.query("BEGIN");
+      const requestResult = await client.query<{
+        id: string;
+        user_id: string;
+        expires_at: string;
+        consumed_at: string | null;
+        invalidated_at: string | null;
+        decision: "approved" | "denied" | null;
+      }>(
+        `SELECT id, user_id, expires_at, consumed_at, invalidated_at, decision
+         FROM access_review_requests WHERE token_hash = $1 FOR UPDATE`,
+        [tokenHash]
+      );
+      const request = requestResult.rows[0];
+      if (!request) {
+        await client.query("COMMIT");
+        return { state: "invalid" };
+      }
+      if (request.consumed_at && request.decision) {
+        await client.query("COMMIT");
+        return { state: "completed", decision: request.decision, changed: false };
+      }
+      if (request.invalidated_at || request.expires_at <= now) {
+        await client.query("COMMIT");
+        return { state: "invalid" };
+      }
+      const userResult = await client.query<{
+        id: string;
+        email: string;
+        name: string | null;
+        account_type: AccountType;
+        onboarding_completed: boolean;
+        firm_id: string | null;
+      }>(
+        `SELECT id, email, name, account_type, onboarding_completed, firm_id
+         FROM users WHERE id = $1 FOR UPDATE`,
+        [request.user_id]
+      );
+      const user = userResult.rows[0];
+      if (!user || user.account_type !== "lawyer" || !user.onboarding_completed || !user.firm_id) {
+        await client.query("ROLLBACK");
+        return { state: "invalid" };
+      }
+      await client.query(
+        `UPDATE users SET platform_access_status = $2, access_reviewed_at = $3,
+           updated_at = $3 WHERE id = $1`,
+        [user.id, decision, now]
+      );
+      await client.query(
+        `UPDATE access_review_requests SET consumed_at = $2, decision = $3 WHERE id = $1`,
+        [request.id, now, decision]
+      );
+      await client.query("COMMIT");
+      return {
+        state: "completed",
+        decision,
+        changed: true,
+        user: { email: user.email, name: user.name },
+      };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   public async getFirmAdminSettings(
@@ -729,6 +1030,8 @@ class DatabaseService {
       `SELECT id, name, email, professional_role, custom_professional_role, firm_role
        FROM users
        WHERE firm_id = $1
+         AND account_type = 'lawyer'
+         AND platform_access_status = 'approved'
        ORDER BY CASE firm_role WHEN 'admin' THEN 0 ELSE 1 END,
                 LOWER(COALESCE(name, email)), LOWER(email)`,
       [context.firmId]
@@ -790,6 +1093,7 @@ class DatabaseService {
       const members = await this.query(
         `SELECT name, email, professional_role, custom_professional_role, firm_role
          FROM users WHERE firm_id = $1 AND account_type = 'lawyer'
+           AND platform_access_status = 'approved'
          ORDER BY CASE firm_role WHEN 'admin' THEN 0 ELSE 1 END,
            LOWER(COALESCE(name, email)), LOWER(email)
          LIMIT 50`,
@@ -1361,6 +1665,11 @@ class DatabaseService {
           [clientUserId, access.id]
         );
       }
+      await client.query(
+        `UPDATE users SET platform_access_status = 'approved', updated_at = $2
+         WHERE id = $1 AND account_type = 'client'`,
+        [clientUserId, new Date().toISOString()]
+      );
       await client.query("COMMIT");
       return {
         id: access.id,

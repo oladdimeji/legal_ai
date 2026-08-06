@@ -19,6 +19,9 @@ export const OTP_MAX_ATTEMPTS = 5;
 export const OTP_RESEND_COOLDOWN_MS = 60 * 1000;
 export const OTP_REQUEST_WINDOW_MS = 60 * 60 * 1000;
 export const OTP_MAX_REQUESTS_PER_WINDOW = 5;
+export const ACCESS_REVIEW_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+export const ACCESS_REVIEW_RESEND_COOLDOWN_MS = 5 * 60 * 1000;
+export const ACCESS_REVIEW_DAILY_LIMIT = 5;
 
 export type AuthenticationAccountType = "lawyer" | "client";
 
@@ -89,6 +92,17 @@ export function createCollaborationToken(): { token: string; tokenHash: string }
   const random = randomBytes(16).toString("hex").toUpperCase();
   const token = `MAT-${random.match(/.{1,4}/g)!.join("-")}`;
   return { token, tokenHash: hashSessionToken(token) };
+}
+
+export function createAccessReviewToken(): { token: string; tokenHash: string } {
+  const token = randomBytes(32).toString("base64url");
+  return { token, tokenHash: hashSessionToken(token) };
+}
+
+export function parseAccessReviewToken(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const token = value.trim();
+  return /^[A-Za-z0-9_-]{43}$/.test(token) ? token : null;
 }
 
 export function hashSessionToken(token: string): string {

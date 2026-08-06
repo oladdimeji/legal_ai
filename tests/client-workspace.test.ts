@@ -63,10 +63,11 @@ test("server has reusable account guards and keeps client APIs outside the lawye
   const server = await readFile("server.ts", "utf8");
   const clientRoutes = server.indexOf('app.post(\n    "/api/client/shared-matters/redeem"');
   const lawyerGate = server.indexOf(
-    'app.use("/api", requireAuth, requireLawyerAccount, requireCompletedOnboarding)'
+    "requireApprovedPlatformAccess\n  );"
   );
   assert.match(server, /const requireLawyerAccount/);
   assert.match(server, /const requireClientAccount/);
+  assert.match(server, /const requireClientCollaboration/);
   assert.match(server, /account_type !== "lawyer"/);
   assert.match(server, /account_type !== "client"/);
   assert.ok(clientRoutes > 0 && clientRoutes < lawyerGate);

@@ -215,7 +215,7 @@ export default function OnboardingView({ account, onCompleted }: OnboardingViewP
               disabled={submitting}
               className="w-full rounded bg-zinc-950 px-5 py-3 text-xs font-mono font-semibold uppercase text-white hover:bg-zinc-800 disabled:opacity-50"
             >
-              {submitting ? "Creating workspace..." : "Continue to Assistant"}
+              {submitting ? "Submitting access request..." : "Submit access request"}
             </button>
           </div>
         </form>

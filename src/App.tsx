@@ -12,6 +12,9 @@ import ClientWorkspace from "./components/ClientWorkspace";
 import LandingPage from "./components/LandingPage";
 import OnboardingView from "./components/OnboardingView";
 import SiteLockScreen from "./components/SiteLockScreen";
+import AccessGateView from "./components/AccessGateView";
+import AccessReviewView from "./components/AccessReviewView";
+import ClientAccessGateView from "./components/ClientAccessGateView";
 import { Account, AssistantDocumentReference, Case, WorkspacePageContext } from "./types";
 import { parseRoute, routePath, safeReturnTo } from "./lib/routes";
 import {
@@ -32,6 +35,7 @@ const protectedRouteKinds = new Set([
   "history",
   "settings",
   "assistantDocument",
+  "accessGate",
   "clientAssistant",
   "clientSharedMatters",
   "clientSharedMatter",
@@ -184,6 +188,7 @@ function AppContent() {
 
   useEffect(() => {
     if (authLoading || !siteStatus) return;
+    if (route.kind === "accessReview") return;
     if (!account) {
       if (siteStatus.locked) {
         if (route.kind === "auth" && window.location.pathname !== "/auth") {
@@ -206,12 +211,20 @@ function AppContent() {
       return;
     }
     if (account.user.account_type === "client") {
-      if (!clientRouteKinds.has(route.kind)) navigate("/client/assistant", true);
+      if (!account.user.client_access_granted) {
+        if (route.kind !== "clientSharedMatters") navigate("/client/shared-matters", true);
+      } else if (!clientRouteKinds.has(route.kind)) {
+        navigate("/client/shared-matters", true);
+      }
       return;
     }
     if (clientRouteKinds.has(route.kind)) {
       navigate(
-        account.user.onboarding_completed && account.firm ? "/matters" : "/onboarding",
+        !account.user.onboarding_completed || !account.firm
+          ? "/onboarding"
+          : account.user.platform_access_status === "approved"
+            ? "/matters"
+            : "/access",
         true
       );
       return;
@@ -220,10 +233,15 @@ function AppContent() {
       if (route.kind !== "onboarding") navigate("/onboarding", true);
       return;
     }
+    if (account.user.platform_access_status !== "approved") {
+      if (route.kind !== "accessGate") navigate("/access", true);
+      return;
+    }
     if (
       route.kind === "landing" ||
       route.kind === "auth" ||
       route.kind === "onboarding" ||
+      route.kind === "accessGate" ||
       route.kind === "unknown" ||
       route.kind === "assistant"
     ) {
@@ -245,7 +263,8 @@ function AppContent() {
     if (
       account?.user.account_type === "lawyer" &&
       account.user.onboarding_completed &&
-      account.firm
+      account.firm &&
+      account.user.platform_access_status === "approved"
     ) {
       void fetchCases();
     } else {
@@ -289,6 +308,10 @@ function AppContent() {
     }
   };
 
+  if (route.kind === "accessReview") {
+    return <AccessReviewView token={route.token} />;
+  }
+
   if (authLoading || !siteStatus) {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-white text-xs font-mono uppercase text-zinc-500">
@@ -310,17 +333,21 @@ function AppContent() {
           accountMode={accountMode}
           returnTo={safeReturnTo(
             params.get("returnTo"),
-            accountMode === "client" ? "/client/assistant" : "/matters"
+            accountMode === "client" ? "/client/shared-matters" : "/matters"
           )}
           initialError={params.get("authError") || ""}
           onAuthenticated={(nextAccount, redirectTo) => {
             setAccount(nextAccount);
             navigate(
               nextAccount.user.account_type === "client"
-                ? safeReturnTo(redirectTo, "/client/assistant")
-                : nextAccount.user.onboarding_completed
-                  ? safeReturnTo(redirectTo, "/matters")
-                  : "/onboarding",
+                ? nextAccount.user.client_access_granted
+                  ? safeReturnTo(redirectTo, "/client/shared-matters")
+                  : "/client/shared-matters"
+                : !nextAccount.user.onboarding_completed || !nextAccount.firm
+                  ? "/onboarding"
+                  : nextAccount.user.platform_access_status === "approved"
+                    ? safeReturnTo(redirectTo, "/matters")
+                    : "/access",
               true
             );
           }}
@@ -339,6 +366,16 @@ function AppContent() {
   }
 
   if (account.user.account_type === "client") {
+    if (!account.user.client_access_granted) {
+      return (
+        <ClientAccessGateView
+          account={account}
+          onAccountChange={setAccount}
+          navigate={navigate}
+          onLogout={handleLogout}
+        />
+      );
+    }
     return (
       <ClientWorkspace
         account={account}
@@ -355,8 +392,18 @@ function AppContent() {
         account={account}
         onCompleted={(nextAccount) => {
           setAccount(nextAccount);
-          navigate("/matters", true);
+          navigate("/access", true);
         }}
+      />
+    );
+  }
+
+  if (account.user.platform_access_status !== "approved") {
+    return (
+      <AccessGateView
+        account={account}
+        onAccountChange={setAccount}
+        onLogout={handleLogout}
       />
     );
   }

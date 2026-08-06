@@ -5,7 +5,7 @@ import multer from "multer";
 import { OAuth2Client } from "google-auth-library";
 import { createServer as createViteServer } from "vite";
 import { db } from "./server/db.js";
-import type { OwnershipContext } from "./server/db.js";
+import type { AccessReviewApplicant, OwnershipContext } from "./server/db.js";
 import { callModel, MODEL_CONFIGS } from "./server/model.js";
 import {
   Account,
@@ -68,9 +68,11 @@ import {
   SESSION_TTL_MS,
   OAUTH_STATE_COOKIE_NAME,
   OTP_TTL_MS,
+  ACCESS_REVIEW_TTL_MS,
   clearSessionCookie,
   clearOAuthStateCookie,
   createCollaborationToken,
+  createAccessReviewToken,
   createOAuthState,
   createOtpHash,
   createSessionToken,
@@ -82,6 +84,7 @@ import {
   oauthAccountTypeFromCookie,
   oauthStateCookie,
   parseCollaborationToken,
+  parseAccessReviewToken,
   parseCookie,
   safeInternalPath,
   sessionCookie,
@@ -115,7 +118,8 @@ function ownership(req: Request): OwnershipContext {
     auth?.user.account_type !== "lawyer" ||
     !auth.user.onboarding_completed ||
     !auth.firm ||
-    auth.user.firm_id !== auth.firm.id
+    auth.user.firm_id !== auth.firm.id ||
+    auth.user.platform_access_status !== "approved"
   ) {
     throw new Error("Completed workspace authentication is required.");
   }
@@ -153,6 +157,20 @@ function redirectUrl(req: Request, pathname: string): string {
 }
 
 async function sendOtpEmail(email: string, code: string): Promise<void> {
+  await sendBrevoEmail({
+    to: [email],
+    subject: "Your Exepts verification code",
+    textContent: `Your verification code is: ${code}\n\nThis code expires in 10 minutes.`,
+    htmlContent: `<p>Your verification code is: <strong>${code}</strong></p><p>This code expires in 10 minutes.</p>`,
+  });
+}
+
+async function sendBrevoEmail(input: {
+  to: string[];
+  subject: string;
+  textContent: string;
+  htmlContent: string;
+}): Promise<void> {
   const apiKey = process.env.BREVO_API_KEY;
   const senderEmail = process.env.BREVO_SENDER_EMAIL;
   const senderName = process.env.BREVO_SENDER_NAME || "Exepts";
@@ -165,10 +183,10 @@ async function sendOtpEmail(email: string, code: string): Promise<void> {
     },
     body: JSON.stringify({
       sender: { email: senderEmail, name: senderName },
-      to: [{ email }],
-      subject: "Your Exepts verification code",
-      textContent: `Your verification code is: ${code}\n\nThis code expires in 10 minutes.`,
-      htmlContent: `<p>Your verification code is: <strong>${code}</strong></p><p>This code expires in 10 minutes.</p>`,
+      to: input.to.map((email) => ({ email })),
+      subject: input.subject,
+      textContent: input.textContent,
+      htmlContent: input.htmlContent,
     }),
   });
   if (!response.ok) throw new Error(`BREVO_DELIVERY_FAILED_${response.status}`);
@@ -234,6 +252,134 @@ function parsePortalDraftIds(value: unknown): string[] {
   }).filter(Boolean);
   if (new Set(ids).size !== ids.length) throw new Error("Select each Work Product only once");
   return ids;
+}
+
+function escapeEmailHtml(value: unknown): string {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function accessReviewAdminEmails(): string[] {
+  const configured = process.env.ACCESS_REVIEW_ADMIN_EMAILS?.trim();
+  if (!configured) throw new Error("ACCESS_REVIEW_NOT_CONFIGURED");
+  const entries = configured.split(",").map((entry) => normalizeEmail(entry));
+  if (entries.some((entry) => !isValidEmail(entry))) {
+    throw new Error("ACCESS_REVIEW_NOT_CONFIGURED");
+  }
+  return Array.from(new Set(entries));
+}
+
+function accessReviewUrl(rawToken: string): string {
+  const appUrl = process.env.APP_URL?.trim();
+  if (!appUrl) throw new Error("ACCESS_REVIEW_NOT_CONFIGURED");
+  return new URL(`/access-review/${encodeURIComponent(rawToken)}`, appUrl).toString();
+}
+
+async function sendAccessReviewAdminEmail(
+  applicant: AccessReviewApplicant,
+  rawToken: string
+): Promise<void> {
+  const administrators = accessReviewAdminEmails();
+  const reviewUrl = accessReviewUrl(rawToken);
+  const practices = applicant.practiceAreas.join(", ") || "Not provided";
+  const fields = [
+    ["Full name", applicant.fullName],
+    ["Verified email", applicant.email],
+    ["Professional role", applicant.professionalRole],
+    ...(applicant.customProfessionalRole
+      ? [["Custom professional role", applicant.customProfessionalRole]]
+      : []),
+    ["Workspace type", applicant.workspaceType],
+    ...(applicant.firmName ? [["Firm name", applicant.firmName]] : []),
+    ["Practice areas", practices],
+    ...(applicant.customPracticeArea
+      ? [["Custom practice area", applicant.customPracticeArea]]
+      : []),
+    ["Submitted", applicant.submittedAt],
+    ["Internal user ID", applicant.userId],
+  ];
+  const text = fields.map(([label, value]) => `${label}: ${value}`).join("\n");
+  const html = fields
+    .map(([label, value]) => `<p><strong>${escapeEmailHtml(label)}:</strong> ${escapeEmailHtml(value)}</p>`)
+    .join("");
+  await sendBrevoEmail({
+    to: administrators,
+    subject: "Exepts access request ready for review",
+    textContent: `${text}\n\nReview access request: ${reviewUrl}`,
+    htmlContent: `${html}<p><a href="${escapeEmailHtml(reviewUrl)}">Review access request</a></p>`,
+  });
+}
+
+async function sendAccessDecisionEmail(
+  email: string,
+  name: string | null,
+  decision: "approved" | "denied"
+): Promise<void> {
+  const greeting = name ? `Hello ${name},` : "Hello,";
+  if (decision === "approved") {
+    const appUrl = process.env.APP_URL?.trim();
+    const openUrl = appUrl
+      ? new URL("/auth?returnTo=%2Fmatters", appUrl).toString()
+      : "/auth?returnTo=%2Fmatters";
+    await sendBrevoEmail({
+      to: [email],
+      subject: "Your Exepts access is approved",
+      textContent: `${greeting}\n\nYour Exepts access has been approved.\n\nOpen Exepts: ${openUrl}`,
+      htmlContent: `<p>${escapeEmailHtml(greeting)}</p><p>Your Exepts access has been approved.</p><p><a href="${escapeEmailHtml(openUrl)}">Open Exepts</a></p>`,
+    });
+    return;
+  }
+  await sendBrevoEmail({
+    to: [email],
+    subject: "Your Exepts access request",
+    textContent: `${greeting}\n\nWe are unable to approve your Exepts access request at this time.`,
+    htmlContent: `<p>${escapeEmailHtml(greeting)}</p><p>We are unable to approve your Exepts access request at this time.</p>`,
+  });
+}
+
+async function issueAndNotifyAccessReview(userId: string): Promise<
+  | { allowed: false; reason: "unavailable" }
+  | { allowed: false; reason: "rate_limited"; retryAfterSeconds: number }
+  | {
+      allowed: true;
+      requestId: string;
+      applicant: AccessReviewApplicant;
+      notificationSent: boolean;
+    }
+> {
+  accessReviewAdminEmails();
+  const { token, tokenHash } = createAccessReviewToken();
+  accessReviewUrl(token);
+  const issued = await db.issueAccessReviewRequest({
+    userId,
+    tokenHash,
+    expiresAt: new Date(Date.now() + ACCESS_REVIEW_TTL_MS).toISOString(),
+  });
+  if (issued.allowed === false) return issued;
+  try {
+    await sendAccessReviewAdminEmail(issued.applicant, token);
+    await db.markAccessReviewNotification(issued.requestId, true);
+    return { ...issued, notificationSent: true as const };
+  } catch {
+    await db.markAccessReviewNotification(issued.requestId, false);
+    console.error("Access review administrator email delivery failed.");
+    return { ...issued, notificationSent: false as const };
+  }
+}
+
+function authenticatedDestination(account: Account, requested: unknown): string {
+  if (account.user.account_type === "client") {
+    return account.user.client_access_granted
+      ? safeInternalPath(requested, "/client/shared-matters")
+      : "/client/shared-matters";
+  }
+  if (!account.user.onboarding_completed || !account.firm) return "/onboarding";
+  if (account.user.platform_access_status !== "approved") return "/access";
+  return safeInternalPath(requested, "/matters");
 }
 
 function parseClientAssistantDocumentIds(value: unknown): string[] | null {
@@ -488,12 +634,7 @@ async function startServer() {
         tokenHash,
         new Date(Date.now() + SESSION_TTL_MS).toISOString()
       );
-      const destination =
-        account.user.account_type === "client"
-          ? safeInternalPath(stateResult.returnTo, "/client/assistant")
-          : account.user.onboarding_completed
-            ? safeInternalPath(stateResult.returnTo)
-            : "/onboarding";
+      const destination = authenticatedDestination(account, stateResult.returnTo);
       res.setHeader("Set-Cookie", [
         sessionCookie(token, isProduction),
         clearOAuthStateCookie(isProduction),
@@ -577,12 +718,7 @@ async function startServer() {
       res.setHeader("Cache-Control", "no-store");
       return res.json({
         account,
-        redirectTo:
-          account.user.account_type === "client"
-            ? safeInternalPath(req.body.returnTo, "/client/assistant")
-            : account.user.onboarding_completed
-              ? safeInternalPath(req.body.returnTo)
-              : "/onboarding",
+        redirectTo: authenticatedDestination(account, req.body.returnTo),
       });
     } catch (error) {
       console.error("Email verification failed.");
@@ -638,6 +774,100 @@ async function startServer() {
     }
     return next();
   };
+
+  const requireCompletedOnboarding = (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ) => {
+    if (
+      req.auth?.user.account_type !== "lawyer" ||
+      !req.auth.user.onboarding_completed ||
+      !req.auth.user.firm_id ||
+      !req.auth.firm ||
+      req.auth.user.firm_id !== req.auth.firm.id
+    ) {
+      return res.status(403).json({ error: "Complete onboarding before using the workspace." });
+    }
+    return next();
+  };
+
+  const requireApprovedPlatformAccess = (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ) => {
+    if (req.auth?.user.platform_access_status === "pending") {
+      return res.status(403).json({
+        error: "Your access request is awaiting review.",
+        code: "ACCESS_REVIEW_PENDING",
+      });
+    }
+    if (req.auth?.user.platform_access_status === "denied") {
+      return res.status(403).json({
+        error: "Your access request was not approved.",
+        code: "ACCESS_REVIEW_DENIED",
+      });
+    }
+    if (req.auth?.user.platform_access_status !== "approved") {
+      return res.status(403).json({ error: "Approved platform access is required." });
+    }
+    return next();
+  };
+
+  const requireClientCollaboration = (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ) => {
+    if (req.auth?.user.client_access_granted !== true) {
+      return res.status(403).json({
+        error: "A lawyer collaboration is required to use the Client Workspace.",
+        code: "CLIENT_COLLABORATION_REQUIRED",
+      });
+    }
+    return next();
+  };
+
+  app.get("/api/access-reviews/:token", async (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    const token = parseAccessReviewToken(req.params.token);
+    if (!token) return res.status(404).json({ state: "invalid" });
+    try {
+      const review = await db.getAccessReview(hashSessionToken(token));
+      return review.state === "invalid" ? res.status(404).json(review) : res.json(review);
+    } catch {
+      console.error("Access review loading failed.");
+      return res.status(500).json({ error: "The access review could not be loaded." });
+    }
+  });
+
+  app.post("/api/access-reviews/:token/decision", async (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    const token = parseAccessReviewToken(req.params.token);
+    const decision = req.body?.decision;
+    if (!token || (decision !== "approved" && decision !== "denied")) {
+      return res.status(400).json({ error: "A valid access decision is required." });
+    }
+    try {
+      const result = await db.decideAccessReview(hashSessionToken(token), decision);
+      if (result.state === "invalid") return res.status(404).json({ state: "invalid" });
+      if (!result.changed) {
+        return result.decision === decision
+          ? res.json(result)
+          : res.status(409).json(result);
+      }
+      try {
+        await sendAccessDecisionEmail(result.user.email, result.user.name, decision);
+      } catch {
+        console.error("Access decision applicant email delivery failed.");
+      }
+      return res.json(result);
+    } catch {
+      console.error("Access review decision failed.");
+      return res.status(500).json({ error: "The access decision could not be saved." });
+    }
+  });
 
   app.get("/api/auth/me", requireAuth, (req: AuthenticatedRequest, res) => {
     res.setHeader("Cache-Control", "no-store");
@@ -705,6 +935,7 @@ async function startServer() {
       return res.status(400).json({ error: "Practice area must be 80 characters or fewer." });
     }
     try {
+      const firstCompletion = !req.auth!.user.onboarding_completed;
       const account = await db.completeOnboarding({
         userId: req.auth!.user.id,
         name,
@@ -715,8 +946,17 @@ async function startServer() {
         practiceAreas,
         customPracticeArea: practiceAreas.includes("Other") ? customPracticeArea : null,
       });
+      let reviewNotificationSent = false;
+      if (firstCompletion) {
+        try {
+          const review = await issueAndNotifyAccessReview(account.user.id);
+          reviewNotificationSent = review.allowed && review.notificationSent === true;
+        } catch {
+          console.error("Access review notification setup failed after onboarding.");
+        }
+      }
       res.setHeader("Cache-Control", "no-store");
-      return res.json({ account, redirectTo: "/matters" });
+      return res.json({ account, redirectTo: "/access", reviewNotificationSent });
     } catch (error) {
       if (error instanceof Error && error.message === "INVALID_INVITATION_CODE") {
         return res.status(400).json({ error: "That Firm invitation code is invalid." });
@@ -724,6 +964,47 @@ async function startServer() {
       console.error("Onboarding completion failed.");
       return res.status(500).json({ error: "Unable to complete onboarding." });
     }
+    }
+  );
+
+  app.post(
+    "/api/access/request-review",
+    requireAuth,
+    requireLawyerAccount,
+    requireCompletedOnboarding,
+    async (req: AuthenticatedRequest, res) => {
+      res.setHeader("Cache-Control", "no-store");
+      if (req.auth!.user.platform_access_status !== "pending") {
+        return res.status(409).json({ error: "Only pending access requests can be resent." });
+      }
+      try {
+        const review = await issueAndNotifyAccessReview(req.auth!.user.id);
+        if (review.allowed === false) {
+          if (review.reason === "rate_limited") {
+            res.setHeader("Retry-After", String(review.retryAfterSeconds));
+            return res.status(429).json({
+              error: "Please wait before resending the review request.",
+              retryAfterSeconds: review.retryAfterSeconds,
+            });
+          }
+          return res.status(409).json({ error: "This access request cannot be resent." });
+        }
+        if (!review.notificationSent) {
+          return res.status(502).json({
+            error: "The review request was saved, but the notification could not be delivered.",
+          });
+        }
+        return res.json({ success: true });
+      } catch (error) {
+        if (error instanceof Error && error.message === "ACCESS_REVIEW_NOT_CONFIGURED") {
+          return res.status(503).json({
+            error: "Access review administrator email is not configured.",
+            code: "ACCESS_REVIEW_NOT_CONFIGURED",
+          });
+        }
+        console.error("Access review resend failed.");
+        return res.status(500).json({ error: "The review request could not be resent." });
+      }
     }
   );
 
@@ -769,6 +1050,13 @@ async function startServer() {
       res.setHeader("Cache-Control", "no-store");
       return res.json(await db.getClientSharedMatters(req.auth!.user.id));
     }
+  );
+
+  app.use(
+    "/api/client",
+    requireAuth,
+    requireClientAccount,
+    requireClientCollaboration
   );
 
   app.get(
@@ -1390,24 +1678,7 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
     }
   });
 
-  // All remaining API routes require a completed, server-validated workspace session.
-  const requireCompletedOnboarding = (
-    req: AuthenticatedRequest,
-    res: Response,
-    next: NextFunction
-  ) => {
-    if (
-      req.auth?.user.account_type !== "lawyer" ||
-      !req.auth?.user.onboarding_completed ||
-      !req.auth.user.firm_id ||
-      !req.auth.firm ||
-      req.auth.user.firm_id !== req.auth.firm.id
-    ) {
-      return res.status(403).json({ error: "Complete onboarding before using the workspace." });
-    }
-    return next();
-  };
-
+  // All remaining API routes require a completed, approved, server-validated lawyer session.
   const requireFirmAdmin = (
     req: AuthenticatedRequest,
     res: Response,
@@ -1421,7 +1692,8 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
       !req.auth.user.firm_id ||
       !req.auth.firm ||
       req.auth.user.firm_id !== req.auth.firm.id ||
-      req.auth.user.firm_role !== "admin"
+      req.auth.user.firm_role !== "admin" ||
+      req.auth.user.platform_access_status !== "approved"
     ) {
       return res.status(403).json({ error: "Firm Admin access is required." });
     }
@@ -1429,7 +1701,13 @@ CLIENT QUESTION: ${query}\n\nSELECTED DOCUMENTS:\n${context}`;
   };
 
   // The former lawyer gate was: app.use("/api", requireAuth, requireCompletedOnboarding)
-  app.use("/api", requireAuth, requireLawyerAccount, requireCompletedOnboarding);
+  app.use(
+    "/api",
+    requireAuth,
+    requireLawyerAccount,
+    requireCompletedOnboarding,
+    requireApprovedPlatformAccess
+  );
 
   app.get(
     "/api/settings/firm-admin",

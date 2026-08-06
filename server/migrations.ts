@@ -683,6 +683,82 @@ const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 26,
+    name: "controlled_testing_access_gate",
+    async run(client) {
+      await client.query(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS platform_access_status TEXT NOT NULL DEFAULT 'pending'"
+      );
+      await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS access_submitted_at TEXT");
+      await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS access_reviewed_at TEXT");
+      await client.query(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint
+            WHERE conname = 'users_platform_access_status_check'
+              AND conrelid = 'users'::regclass
+          ) THEN
+            ALTER TABLE users
+            ADD CONSTRAINT users_platform_access_status_check
+            CHECK (platform_access_status IN ('pending', 'approved', 'denied'));
+          END IF;
+        END
+        $$
+      `);
+      await client.query(`
+        UPDATE users
+        SET platform_access_status = 'pending'
+        WHERE account_type = 'lawyer'
+      `);
+      await client.query(`
+        UPDATE users u
+        SET platform_access_status = 'approved'
+        WHERE u.account_type = 'client'
+          AND EXISTS (
+            SELECT 1 FROM matter_client_access access
+            WHERE access.claimed_by_user_id = u.id
+              AND access.invitation_status = 'Active'
+              AND access.revoked_at IS NULL
+              AND access.token_hash IS NOT NULL
+          )
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS access_review_requests (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          token_hash TEXT NOT NULL UNIQUE,
+          created_at TEXT NOT NULL,
+          expires_at TEXT NOT NULL,
+          consumed_at TEXT,
+          invalidated_at TEXT,
+          decision TEXT,
+          notification_sent_at TEXT,
+          notification_failed_at TEXT,
+          CONSTRAINT access_review_requests_decision_check
+            CHECK (decision IS NULL OR decision IN ('approved', 'denied'))
+        )
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS access_review_requests_user_created_idx
+        ON access_review_requests(user_id, created_at DESC)
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS access_review_requests_token_idx
+        ON access_review_requests(token_hash)
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS access_review_requests_expiry_idx
+        ON access_review_requests(expires_at)
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS access_review_requests_pending_user_idx
+        ON access_review_requests(user_id)
+        WHERE consumed_at IS NULL AND invalidated_at IS NULL
+      `);
+    },
+  },
 ];
 
 export async function runMigrations(pool: Pool): Promise<void> {
