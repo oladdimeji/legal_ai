@@ -45,6 +45,23 @@ test("unified composer removes Draft controls and renders autonomous document ca
   assert.doesNotMatch(assistant, /action-draft-|drafting-modal|draftFormat|Drafting Format Style|Generate Draft/);
 });
 
+test("lawyer Assistant response actions lazily reuse one private document per message", async () => {
+  const [assistant, database, server] = await Promise.all([
+    readFile("src/components/AssistantView.tsx", "utf8"),
+    readFile("server/db.ts", "utf8"),
+    readFile("server.ts", "utf8"),
+  ]);
+  assert.match(assistant, /if \(existingDocument\) return existingDocument/);
+  assert.match(assistant, /action-open-\$\{m\.id\}/);
+  assert.match(assistant, /action-download-\$\{m\.id\}/);
+  assert.match(assistant, /await downloadDocx\(documentExportUrl\(document\)\)/);
+  assert.match(database, /assistant_response_\$\{messageId\}/);
+  assert.match(database, /m\.role = 'assistant'/);
+  assert.match(database, /ON CONFLICT \(id\) DO NOTHING/);
+  assert.match(server, /app\.post\("\/api\/messages\/:id\/assistant-document"/);
+  assert.match(server, /getOrCreateAssistantDocumentForMessage/);
+});
+
 test("autonomous document destination follows the current page rather than thread origin", async () => {
   const deliverables = await readFile("server/assistant/assistantDeliverables.ts", "utf8");
   assert.doesNotMatch(deliverables, /thread\.case_id/);

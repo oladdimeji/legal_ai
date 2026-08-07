@@ -2526,6 +2526,21 @@ ${sourceText}`;
     }
   });
 
+  app.post("/api/messages/:id/assistant-document", async (req, res) => {
+    try {
+      const threadId = typeof req.body.threadId === "string" ? req.body.threadId.trim() : "";
+      if (!threadId) return res.status(400).json({ error: "Thread context is required" });
+      const document = await db.getOrCreateAssistantDocumentForMessage(
+        req.params.id,
+        threadId,
+        ownership(req)
+      );
+      return res.json(document);
+    } catch (err: any) {
+      return res.status(ownedErrorStatus(err)).json({ error: err.message });
+    }
+  });
+
   // Draft Generation and Editable View APIs
   app.get("/api/assistant-documents/:id", async (req, res) => {
     const document = await db.getAssistantDocumentById(req.params.id, ownership(req));

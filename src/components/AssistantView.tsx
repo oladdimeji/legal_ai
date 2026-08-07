@@ -753,6 +753,46 @@ export default function AssistantView({
     return value;
   };
 
+  const documentExportUrl = (document: AssistantDocumentReference): string => document.kind === "matterWorkProduct"
+    ? `/api/drafts/${encodeURIComponent(document.id)}/export?caseId=${encodeURIComponent(document.matterId || "")}`
+    : `/api/assistant-documents/${encodeURIComponent(document.id)}/export`;
+
+  const ensureResponseDocument = async (message: Message): Promise<AssistantDocumentReference> => {
+    const existingDocument = documentReferenceForMessage(message);
+    if (existingDocument) return existingDocument;
+
+    const response = await fetch(`/api/messages/${encodeURIComponent(message.id)}/assistant-document`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ threadId: message.thread_id }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(typeof payload.error === "string" ? payload.error : "Could not prepare this response document.");
+    }
+    if (typeof payload.id !== "string" || typeof payload.title !== "string") {
+      throw new Error("Could not prepare this response document.");
+    }
+    return { id: payload.id, kind: "assistantDocument", title: payload.title };
+  };
+
+  const openResponseDocument = async (message: Message) => {
+    try {
+      onOpenDocument(await ensureResponseDocument(message));
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Could not open this response document.");
+    }
+  };
+
+  const downloadResponseDocument = async (message: Message) => {
+    try {
+      const document = await ensureResponseDocument(message);
+      await downloadDocx(documentExportUrl(document));
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Could not download this response document.");
+    }
+  };
+
   const renderMessageTextWithCitations = (text: string, citationsList: Citation[]) => {
     if (!text) return null;
     return (
@@ -1029,9 +1069,7 @@ export default function AssistantView({
 
                           {documentReferenceForMessage(m) && (() => {
                             const document = documentReferenceForMessage(m)!;
-                            const exportUrl = document.kind === "matterWorkProduct"
-                              ? `/api/drafts/${encodeURIComponent(document.id)}/export?caseId=${encodeURIComponent(document.matterId || "")}`
-                              : `/api/assistant-documents/${encodeURIComponent(document.id)}/export`;
+                            const exportUrl = documentExportUrl(document);
                             return (
                               <div className="mt-4 rounded-lg border border-zinc-200 bg-zinc-50 p-3" id={`assistant-document-card-${m.id}`}>
                                 <div className="flex min-w-0 items-start gap-2.5">
@@ -1130,6 +1168,28 @@ export default function AssistantView({
                                     <span>Rewrite</span>
                                   </button>
                                 )}
+
+                                <button
+                                  type="button"
+                                  onClick={() => void openResponseDocument(m)}
+                                  id={`action-open-${m.id}`}
+                                  className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-mono font-medium text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 rounded transition-colors"
+                                  title="Open response document"
+                                >
+                                  <ExternalLink className="h-3.5 w-3.5" />
+                                  <span>Open</span>
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={() => void downloadResponseDocument(m)}
+                                  id={`action-download-${m.id}`}
+                                  className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-mono font-medium text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 rounded transition-colors"
+                                  title="Download response document"
+                                >
+                                  <Download className="h-3.5 w-3.5" />
+                                  <span>Download</span>
+                                </button>
 
                               </div>
                             </div>

@@ -1709,3 +1709,13 @@ Status: Implementation complete; focused-phase verification recorded below.
 - Added focused migration, token security, idempotency, middleware ordering, Brevo failure-boundary, client gate, site-lock, and frontend routing tests. Updated only existing tests directly affected by the new account shape, middleware boundary, and onboarding destination.
 - Verification passed: `npm run lint`; `npm test` (380/380); and `npm run build`. The build required execution outside the managed filesystem sandbox after its initial Vite config resolution was denied. The existing non-fatal large-chunk warning remains.
 - Deployment action: configure `ACCESS_REVIEW_ADMIN_EMAILS` with valid Exepts reviewer addresses, verify the existing Brevo sender and `APP_URL` settings, and deploy/restart so migration 26 runs normally. No data was deleted or reset. Any desired full testing-data reset remains a separate, deliberate external deployment operation.
+
+### Universal Lawyer Assistant response documents
+
+Status: Implementation complete; focused verification recorded below.
+
+- Added lightweight Open and Download actions to every successful Lawyer Assistant response while preserving the existing Copy, latest-response-only Rewrite, feedback, citation, suggestion, streaming, and generated-document card behavior.
+- Existing Assistant Document and Matter Work Product references are reused directly. Ordinary text responses lazily get one deterministic private Assistant document through the existing editor, save, and DOCX export infrastructure.
+- Added an authenticated get-or-create message endpoint and an idempotent, workspace/Matter-scoped database method using `INSERT ... ON CONFLICT DO NOTHING`. Existing saved edits are never overwritten on repeated Open or Download requests.
+- Focused test passed (9/9), `npm run lint` passed, and `npm run build` passed outside the managed filesystem sandbox after the initial Vite config read was denied. The existing non-fatal large-chunk warning remains.
+- No schema migration, dependency, model call, prompt, retrieval, citation, conversation, Client Assistant, generated-document, editor, DOCX implementation, or routing architecture change was made.

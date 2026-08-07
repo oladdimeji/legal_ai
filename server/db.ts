@@ -3131,6 +3131,49 @@ class DatabaseService {
     return rows[0];
   }
 
+  public async getOrCreateAssistantDocumentForMessage(
+    messageId: string,
+    threadId: string,
+    context: OwnershipContext
+  ): Promise<AssistantDocument> {
+    await this.assertThreadMatterAccess(threadId, context);
+    const id = `assistant_response_${messageId}`;
+    const now = new Date().toISOString();
+    await this.query(
+      `INSERT INTO assistant_documents
+        (id, thread_id, user_id, firm_id, title, content, created_at, updated_at)
+       SELECT $1, t.id, t.user_id, u.firm_id,
+         LEFT(COALESCE(NULLIF(BTRIM(t.title), ''), 'Assistant Response'), 300),
+         m.content, $6, $6
+       FROM messages m
+       JOIN threads t ON t.id = m.thread_id
+       JOIN users u ON u.id = t.user_id
+       WHERE m.id = $2
+         AND m.thread_id = $3
+         AND m.role = 'assistant'
+         AND t.user_id = $4
+         AND u.firm_id = $5
+         AND t.scope <> 'client'
+         AND (
+           t.case_id IS NULL OR EXISTS (
+             SELECT 1 FROM cases c
+             JOIN matter_user_access access
+               ON access.case_id = c.id AND access.user_id = $4
+             WHERE c.id = t.case_id AND c.firm_id = $5
+           )
+         )
+       ON CONFLICT (id) DO NOTHING`,
+      [id, messageId, threadId, context.userId, context.firmId, now]
+    );
+    const rows = await this.query(
+      `SELECT * FROM assistant_documents
+       WHERE id = $1 AND thread_id = $2 AND user_id = $3 AND firm_id = $4`,
+      [id, threadId, context.userId, context.firmId]
+    );
+    if (!rows[0]) throw new Error("Assistant response not found");
+    return rows[0];
+  }
+
   public async getAssistantDocumentById(
     id: string,
     context: OwnershipContext
