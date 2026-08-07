@@ -83,7 +83,10 @@ test("review issuance and decisions are locked, expiring, rate-limited, and idem
 });
 
 test("pending lawyers keep auth and onboarding routes but are blocked at the central product gate", async () => {
-  const server = await readFile("server.ts", "utf8");
+  const [server, accessGate] = await Promise.all([
+    readFile("server.ts", "utf8"),
+    readFile("src/components/AccessGateView.tsx", "utf8"),
+  ]);
   const me = server.indexOf('app.get("/api/auth/me"');
   const onboarding = server.indexOf('"/api/onboarding/complete"');
   const resend = server.indexOf('"/api/access/request-review"');
@@ -91,6 +94,8 @@ test("pending lawyers keep auth and onboarding routes but are blocked at the cen
   assert.ok(me > 0 && onboarding > me && resend > onboarding && product > resend);
   assert.match(server, /code: "ACCESS_REVIEW_PENDING"/);
   assert.match(server, /code: "ACCESS_REVIEW_DENIED"/);
+  assert.match(accessGate, /Exepts access/);
+  assert.match(accessGate, /Your access request is under review/);
   assert.match(server, /function ownership[\s\S]*platform_access_status !== "approved"/);
   assert.match(server, /const requireFirmAdmin[\s\S]*platform_access_status !== "approved"/);
   const sessions = await readFile("server/db.ts", "utf8");

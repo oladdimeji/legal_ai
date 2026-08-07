@@ -28,6 +28,7 @@ export default function AuthView({
   const [error, setError] = useState(initialError);
   const [submitting, setSubmitting] = useState(false);
   const [cooldown, setCooldown] = useState(0);
+  const isLawyerMode = accountMode === "lawyer";
 
   useEffect(() => {
     if (cooldown <= 0) return;
@@ -119,21 +120,10 @@ export default function AuthView({
               {accountMode === "client" ? "Access Client Portal" : "Sign in to Exepts"}
             </h2>
             <p className="mt-2 text-xs leading-5 text-zinc-500">
-              Continue securely with Google or a one-time code sent to your email.
+              {isLawyerMode
+                ? "Enter the email associated with your approved Exepts access. We’ll send you a one-time code."
+                : "Enter your email to receive a one-time code for secure access."}
             </p>
-          </div>
-
-          <a
-            href={`/api/auth/google?returnTo=${encodeURIComponent(returnTo)}&accountType=${accountMode}`}
-            className="flex w-full items-center justify-center rounded border border-zinc-300 px-4 py-2.5 text-xs font-semibold hover:border-zinc-950 hover:bg-zinc-50"
-          >
-            Continue with Google
-          </a>
-
-          <div className="flex items-center gap-3">
-            <div className="h-px flex-1 bg-zinc-200" />
-            <span className="text-[10px] font-mono uppercase text-zinc-400">or</span>
-            <div className="h-px flex-1 bg-zinc-200" />
           </div>
 
           {step === "email" ? (

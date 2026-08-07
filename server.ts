@@ -602,6 +602,9 @@ async function startServer() {
       return fail("Google sign-in could not be completed.");
     }
     try {
+      if (requestedAccountType === "lawyer") {
+        return fail("Google sign-in is not available for Exepts lawyer accounts.");
+      }
       const client = new OAuth2Client(clientId, clientSecret, redirectUri);
       const { tokens } = await client.getToken(code);
       if (!tokens.id_token) return fail("Google sign-in did not provide a verified identity.");
@@ -650,12 +653,96 @@ async function startServer() {
     }
   });
 
+  app.post("/api/access/request", async (req, res) => {
+    const email = normalizeEmail(typeof req.body.email === "string" ? req.body.email : "");
+    const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
+    const professionalRole = req.body.professionalRole as ProfessionalRole;
+    const customProfessionalRole = typeof req.body.customProfessionalRole === "string"
+      ? req.body.customProfessionalRole.trim()
+      : "";
+    const workspaceType = req.body.workspaceType as WorkspaceType;
+    const invitationCode = normalizeInvitationCode(req.body.invitationCode);
+    const rawPracticeAreas: unknown[] = Array.isArray(req.body.practiceAreas)
+      ? req.body.practiceAreas
+      : [];
+    const practiceAreas: string[] = Array.from(
+      new Set(
+        rawPracticeAreas.filter(
+          (area): area is string => typeof area === "string" && PRACTICE_AREAS.includes(area as (typeof PRACTICE_AREAS)[number])
+        )
+      )
+    );
+    const customPracticeArea = typeof req.body.customPracticeArea === "string"
+      ? req.body.customPracticeArea.trim()
+      : "";
+    if (!isValidEmail(email)) return res.status(400).json({ error: "Enter a valid email address." });
+    if (!name || name.length > 120) return res.status(400).json({ error: "Full name is required." });
+    if (!PROFESSIONAL_ROLES.includes(professionalRole)) return res.status(400).json({ error: "Select a professional role." });
+    if (professionalRole === "Other" && !customProfessionalRole) return res.status(400).json({ error: "Enter your professional role." });
+    if (customProfessionalRole.length > 80) return res.status(400).json({ error: "Professional role must be 80 characters or fewer." });
+    if (!['firm', 'independent'].includes(workspaceType)) return res.status(400).json({ error: "Select how you will use Exepts." });
+    if (workspaceType === "firm" && !invitationCode) return res.status(400).json({ error: "Enter a Firm invitation code." });
+    if (invitationCode.length > 100) return res.status(400).json({ error: "Firm invitation code is too long." });
+    if (rawPracticeAreas.length !== practiceAreas.length) return res.status(400).json({ error: "One or more practice areas are invalid." });
+    if (practiceAreas.includes("Other") && !customPracticeArea) return res.status(400).json({ error: "Enter the other practice area." });
+    if (customPracticeArea.length > 80) return res.status(400).json({ error: "Practice area must be 80 characters or fewer." });
+    try {
+      const result = await db.submitPublicAccessRequest({
+        email,
+        name,
+        professionalRole,
+        customProfessionalRole: professionalRole === "Other" ? customProfessionalRole : null,
+        workspaceType,
+        invitationCode: workspaceType === "firm" ? invitationCode : null,
+        practiceAreas,
+        customPracticeArea: practiceAreas.includes("Other") ? customPracticeArea : null,
+      });
+      if (result.status !== "pending") {
+        const messages = {
+          approved: "Access has already been approved for this email. Please log in.",
+          denied: "Access has not been approved for this email.",
+        } as const;
+        return res.status(200).json({ message: messages[result.status] });
+      }
+      let reviewNotificationSent = false;
+      try {
+        const review = await issueAndNotifyAccessReview(result.account.user.id);
+        reviewNotificationSent = review.allowed && review.notificationSent === true;
+      } catch {
+        console.error("Access review notification setup failed after public access request.");
+      }
+      res.setHeader("Cache-Control", "no-store");
+      return res.status(201).json({ success: true, reviewNotificationSent });
+    } catch (error) {
+      if (error instanceof Error && error.message === "INVALID_INVITATION_CODE") {
+        return res.status(400).json({ error: "That Firm invitation code is invalid." });
+      }
+      console.error("Public access request failed.");
+      return res.status(500).json({ error: "Unable to submit your access request." });
+    }
+  });
+
   app.post("/api/auth/email/request-code", async (req, res) => {
     const email = normalizeEmail(typeof req.body.email === "string" ? req.body.email : "");
     const accountType = normalizeAccountType(req.body.accountType);
     if (!isValidEmail(email)) return res.status(400).json({ error: "Enter a valid email address." });
     if (!canAccessPrivateApplication(email, siteLockPolicy)) return denySiteLockAccess(res);
     try {
+      if (accountType === "lawyer") {
+        const existing = await db.getUserByEmail(email);
+        if (!existing || existing.account_type !== "lawyer") {
+          return res.status(404).json({ error: "No Exepts account was found for this email. Request access first." });
+        }
+        if (!existing.onboarding_completed) {
+          return res.status(403).json({ error: "Your Exepts access request is still under review." });
+        }
+        if (existing.platform_access_status === "pending") {
+          return res.status(403).json({ error: "Your Exepts access request is still under review." });
+        }
+        if (existing.platform_access_status === "denied") {
+          return res.status(403).json({ error: "Access has not been approved for this email." });
+        }
+      }
       const code = generateOtp();
       const { salt, hash } = createOtpHash(code);
       const issue = await db.issueEmailOtp({

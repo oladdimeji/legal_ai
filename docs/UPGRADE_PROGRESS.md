@@ -659,6 +659,17 @@ Status: Complete.
 
 Implemented:
 
+- Standardized the public entry flow so a lawyer can request demo access without authentication while approved lawyer login remains restricted to email OTP for existing approved accounts.
+- Added a public request-demo route, confirmation screen, and server-side access request submission that preserves the existing access-review workflow and pending approval state.
+- Tightened lawyer OTP issuance so unknown, incomplete, pending, or denied lawyer accounts no longer receive login codes, while client and existing approved lawyer auth remain unchanged.
+- Updated the public landing/auth UI copy to reflect the new request-demo and lawyer-only login experience.
+
+Verification:
+
+- `npm run lint`: passed (`tsc --noEmit`).
+- `npm run build`: passed.
+- Targeted entry-flow regression tests: passed (entry/auth/onboarding and access-gate coverage).
+
 - Added URL-aware SPA navigation for the public landing page, authentication, onboarding, Assistant, Matters, individual Matter workspaces, Firm Library, History, Settings, and the existing token-authenticated Client Portal.
 - Added browser History API navigation, safe protected-route return handling, back/forward support, URL-backed sidebar navigation, direct Matter URLs, and signed-in/signed-out route guards.
 - Added a responsive grayscale Exepts landing page with supported product capabilities and authentication calls to action.

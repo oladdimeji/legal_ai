@@ -2,8 +2,10 @@ import React, { useState } from "react";
 import { Account, ProfessionalRole, WorkspaceType } from "../types";
 
 interface OnboardingViewProps {
-  account: Account;
-  onCompleted: (account: Account) => void;
+  account: Account | null;
+  onCompleted?: (account: Account) => void;
+  publicMode?: boolean;
+  onPublicRequestSubmitted?: (email: string) => void;
 }
 
 const roles: ProfessionalRole[] = [
@@ -26,8 +28,14 @@ const practiceAreaOptions = [
   "Other",
 ];
 
-export default function OnboardingView({ account, onCompleted }: OnboardingViewProps) {
-  const [name, setName] = useState(account.user.name || "");
+export default function OnboardingView({
+  account,
+  onCompleted,
+  publicMode = false,
+  onPublicRequestSubmitted,
+}: OnboardingViewProps) {
+  const [email, setEmail] = useState("");
+  const [name, setName] = useState(account?.user.name || "");
   const [professionalRole, setProfessionalRole] = useState<ProfessionalRole | "">("");
   const [customProfessionalRole, setCustomProfessionalRole] = useState("");
   const [workspaceType, setWorkspaceType] = useState<WorkspaceType | "">("");
@@ -48,6 +56,28 @@ export default function OnboardingView({ account, onCompleted }: OnboardingViewP
     setError("");
     setSubmitting(true);
     try {
+      if (publicMode) {
+        const response = await fetch("/api/access/request", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email,
+            name,
+            professionalRole,
+            customProfessionalRole,
+            workspaceType,
+            invitationCode,
+            practiceAreas,
+            customPracticeArea,
+          }),
+        });
+        const data = (await response.json()) as { error?: string; message?: string };
+        if (!response.ok) {
+          throw new Error(data.error || data.message || "Unable to submit your access request.");
+        }
+        onPublicRequestSubmitted?.(email);
+        return;
+      }
       const response = await fetch("/api/onboarding/complete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -65,7 +95,7 @@ export default function OnboardingView({ account, onCompleted }: OnboardingViewP
       if (!response.ok || !data.account) {
         throw new Error(data.error || "Unable to complete onboarding.");
       }
-      onCompleted(data.account);
+      onCompleted?.(data.account);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to complete onboarding.");
     } finally {
@@ -84,13 +114,34 @@ export default function OnboardingView({ account, onCompleted }: OnboardingViewP
         </div>
         <form onSubmit={submit} className="overflow-hidden rounded-lg border border-zinc-200 bg-white">
           <div className="border-b border-zinc-200 p-7 sm:p-9">
-            <h1 className="text-3xl font-semibold tracking-tight">A few details before you begin</h1>
+            <h1 className="text-3xl font-semibold tracking-tight">
+              {publicMode ? "Request access to Exepts" : "A few details before you begin"}
+            </h1>
             <p className="mt-2 text-sm text-zinc-500">
-              This information helps configure your Exepts workspace.
+              {publicMode
+                ? "Tell us a little about how you plan to use Exepts. We’ll review your request and contact you at the email provided."
+                : "This information helps configure your Exepts workspace."}
             </p>
           </div>
 
           <div className="space-y-8 p-7 sm:p-9">
+            {publicMode && (
+              <label className="block space-y-2">
+                <span className="text-[10px] font-mono font-semibold uppercase text-zinc-500">
+                  Email
+                </span>
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  autoComplete="email"
+                  required
+                  placeholder="you@firm.com"
+                  className="w-full rounded border border-zinc-300 px-3 py-2.5 text-sm outline-none focus:border-zinc-950"
+                />
+              </label>
+            )}
+
             <label className="block space-y-2">
               <span className="text-[10px] font-mono font-semibold uppercase text-zinc-500">
                 Full name
@@ -215,7 +266,7 @@ export default function OnboardingView({ account, onCompleted }: OnboardingViewP
               disabled={submitting}
               className="w-full rounded bg-zinc-950 px-5 py-3 text-xs font-mono font-semibold uppercase text-white hover:bg-zinc-800 disabled:opacity-50"
             >
-              {submitting ? "Submitting access request..." : "Submit access request"}
+              {submitting ? "Submitting access request..." : publicMode ? "Submit access request" : "Submit access request"}
             </button>
           </div>
         </form>

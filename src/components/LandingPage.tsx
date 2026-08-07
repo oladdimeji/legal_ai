@@ -3,6 +3,7 @@ import { ArrowRight, BookOpen, Briefcase, FileText, MessageSquare, Users } from 
 
 interface LandingPageProps {
   onAuthenticate: () => void;
+  onRequestDemo: () => void;
   onClientPortal: () => void;
 }
 
@@ -34,7 +35,7 @@ const capabilities = [
   },
 ];
 
-export default function LandingPage({ onAuthenticate, onClientPortal }: LandingPageProps) {
+export default function LandingPage({ onAuthenticate, onRequestDemo, onClientPortal }: LandingPageProps) {
   return (
     <div className="min-h-screen bg-white text-zinc-950">
       <header className="border-b border-zinc-200">
@@ -58,14 +59,14 @@ export default function LandingPage({ onAuthenticate, onClientPortal }: LandingP
               onClick={onAuthenticate}
               className="px-4 py-2 text-xs font-semibold text-zinc-700 hover:text-zinc-950"
             >
-              Sign In
+              Login
             </button>
             <button
               type="button"
-              onClick={onAuthenticate}
+              onClick={onRequestDemo}
               className="rounded bg-zinc-950 px-4 py-2.5 text-xs font-semibold text-white hover:bg-zinc-800"
             >
-              Get Started
+              Request a Demo
             </button>
           </div>
         </div>
@@ -88,17 +89,17 @@ export default function LandingPage({ onAuthenticate, onClientPortal }: LandingP
               <div className="mt-9 flex flex-wrap gap-3">
                 <button
                   type="button"
-                  onClick={onAuthenticate}
+                  onClick={onRequestDemo}
                   className="inline-flex items-center gap-2 rounded bg-zinc-950 px-5 py-3 text-sm font-semibold text-white hover:bg-zinc-800"
                 >
-                  Get Started <ArrowRight className="h-4 w-4" />
+                  Request a Demo <ArrowRight className="h-4 w-4" />
                 </button>
                 <button
                   type="button"
                   onClick={onAuthenticate}
                   className="rounded border border-zinc-300 px-5 py-3 text-sm font-semibold hover:border-zinc-950"
                 >
-                  Sign In
+                  Login
                 </button>
               </div>
             </div>
@@ -150,10 +151,10 @@ export default function LandingPage({ onAuthenticate, onClientPortal }: LandingP
             </div>
             <button
               type="button"
-              onClick={onAuthenticate}
+              onClick={onRequestDemo}
               className="inline-flex items-center gap-2 rounded bg-white px-5 py-3 text-sm font-semibold text-zinc-950 hover:bg-zinc-200"
             >
-              Get Started <ArrowRight className="h-4 w-4" />
+              Request a Demo <ArrowRight className="h-4 w-4" />
             </button>
           </div>
         </section>

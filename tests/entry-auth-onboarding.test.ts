@@ -3,11 +3,13 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { parseRoute } from "../src/lib/routes.js";
 
-test("route parser covers public, onboarding, product, Matter, and Client Workspace routes", () => {
+test("route parser covers public, onboarding, request-demo, product, Matter, and Client Workspace routes", () => {
   assert.deepEqual(parseRoute("/"), { kind: "landing" });
   assert.deepEqual(parseRoute("/auth"), { kind: "auth" });
   assert.deepEqual(parseRoute("/login"), { kind: "auth" });
   assert.deepEqual(parseRoute("/onboarding"), { kind: "onboarding" });
+  assert.deepEqual(parseRoute("/request-demo"), { kind: "requestDemo" });
+  assert.deepEqual(parseRoute("/access-requested"), { kind: "accessRequested" });
   assert.deepEqual(parseRoute("/assistant"), { kind: "assistant" });
   assert.deepEqual(parseRoute("/matters"), { kind: "matters" });
   assert.deepEqual(parseRoute("/matters/matter_123"), { kind: "matter", matterId: "matter_123" });
@@ -20,13 +22,14 @@ test("route parser covers public, onboarding, product, Matter, and Client Worksp
   assert.deepEqual(parseRoute("/not-a-route"), { kind: "unknown" });
 });
 
-test("password entry is removed and both legacy password endpoints are disabled", async () => {
+test("password entry is removed and lawyer login uses email OTP only", async () => {
   const [authView, server] = await Promise.all([
     readFile("src/components/AuthView.tsx", "utf8"),
     readFile("server.ts", "utf8"),
   ]);
   assert.doesNotMatch(authView, /type="password"|current-password|new-password/);
-  assert.match(authView, /Continue with Google/);
+  assert.doesNotMatch(authView, /Continue with Google/);
+  assert.match(authView, /Enter the email associated with your approved Exepts access/);
   assert.match(authView, /Continue with Email/);
   assert.match(authView, /Verify and Continue/);
   assert.match(server, /app\.post\(\["\/api\/auth\/signup", "\/api\/auth\/login"\]/);
@@ -82,7 +85,8 @@ test("account linking, incomplete accounts, idempotent personal workspace, and f
   assert.match(google, /google_sub = COALESCE\(google_sub/);
   assert.match(google, /onboarding_completed,[\s\S]*FALSE/);
   assert.match(onboarding, /SELECT id, firm_id, onboarding_completed[\s\S]*FOR UPDATE/);
-  assert.match(onboarding, /if \(!user\.onboarding_completed\)/);
+  assert.match(onboarding, /const shouldCreate = !user\.onboarding_completed/);
+  assert.match(onboarding, /if \(shouldCreate\)/);
   assert.match(onboarding, /else if \(!firmId\)/);
   assert.match(onboarding, /'Personal Workspace'/);
   assert.match(onboarding, /UPPER\(BTRIM\(invitation_code\)\) = \$1/);

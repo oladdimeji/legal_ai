@@ -14,6 +14,7 @@ import OnboardingView from "./components/OnboardingView";
 import SiteLockScreen from "./components/SiteLockScreen";
 import AccessGateView from "./components/AccessGateView";
 import AccessReviewView from "./components/AccessReviewView";
+import AccessRequestSubmittedView from "./components/AccessRequestSubmittedView";
 import ClientAccessGateView from "./components/ClientAccessGateView";
 import { Account, AssistantDocumentReference, Case, WorkspacePageContext } from "./types";
 import { parseRoute, routePath, safeReturnTo } from "./lib/routes";
@@ -121,6 +122,7 @@ function AppContent() {
   const [account, setAccount] = useState<Account | null>(null);
   const [siteStatus, setSiteStatus] = useState<PublicSiteStatus | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [requestedEmail, setRequestedEmail] = useState<string | null>(null);
   const [initialDraftId, setInitialDraftId] = useState<string | null>(null);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [newConversationVersion, setNewConversationVersion] = useState(0);
@@ -320,7 +322,7 @@ function AppContent() {
     );
   }
 
-  if (!account && siteStatus.locked && route.kind !== "auth") {
+  if (!account && siteStatus.locked && route.kind !== "auth" && route.kind !== "requestDemo" && route.kind !== "accessRequested") {
     return <SiteLockScreen reopensAt={siteStatus.reopensAt} />;
   }
 
@@ -355,9 +357,30 @@ function AppContent() {
         />
       );
     }
+    if (route.kind === "requestDemo") {
+      return (
+        <OnboardingView
+          account={null}
+          publicMode
+          onPublicRequestSubmitted={(email) => {
+            setRequestedEmail(email);
+            navigate("/access-requested", true);
+          }}
+        />
+      );
+    }
+    if (route.kind === "accessRequested") {
+      return (
+        <AccessRequestSubmittedView
+          submittedEmail={requestedEmail}
+          onReturnHome={() => navigate("/", true)}
+        />
+      );
+    }
     return (
       <LandingPage
         onAuthenticate={() => navigate("/auth")}
+        onRequestDemo={() => navigate("/request-demo")}
         onClientPortal={() =>
           navigate("/auth?mode=client&returnTo=%2Fclient%2Fshared-matters")
         }

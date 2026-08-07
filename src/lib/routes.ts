@@ -2,6 +2,8 @@ export type AppRoute =
   | { kind: "landing" }
   | { kind: "auth" }
   | { kind: "onboarding" }
+  | { kind: "requestDemo" }
+  | { kind: "accessRequested" }
   | { kind: "accessGate" }
   | { kind: "accessReview"; token: string }
   | { kind: "assistant" }
@@ -32,6 +34,8 @@ export function parseRoute(pathname: string): AppRoute {
   if (path === "/") return { kind: "landing" };
   if (path === "/auth" || path === "/login" || path === "/signup") return { kind: "auth" };
   if (path === "/onboarding") return { kind: "onboarding" };
+  if (path === "/request-demo") return { kind: "requestDemo" };
+  if (path === "/access-requested") return { kind: "accessRequested" };
   if (path === "/access") return { kind: "accessGate" };
   if (path === "/assistant") return { kind: "assistant" };
   if (path === "/matters") return { kind: "matters" };
@@ -114,6 +118,8 @@ export function routePath(route: AppRoute): string {
   if (route.kind === "clientHistory") return "/client/history";
   if (route.kind === "clientSettings") return "/client/settings";
   if (route.kind === "landing") return "/";
+  if (route.kind === "requestDemo") return "/request-demo";
+  if (route.kind === "accessRequested") return "/access-requested";
   if (route.kind === "unknown") return "/";
   return `/${route.kind}`;
 }

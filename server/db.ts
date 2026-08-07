@@ -554,6 +554,27 @@ class DatabaseService {
     }
   }
 
+  public async getUserByEmail(email: string): Promise<{
+    id: string;
+    account_type: AccountType;
+    onboarding_completed: boolean;
+    platform_access_status: PlatformAccessStatus;
+  } | null> {
+    await this.ensureSchema();
+    const rows = await this.query(
+      "SELECT id, account_type, onboarding_completed, platform_access_status FROM users WHERE LOWER(BTRIM(email)) = $1",
+      [email]
+    );
+    return rows[0]
+      ? {
+          id: String(rows[0].id),
+          account_type: rows[0].account_type as AccountType,
+          onboarding_completed: Boolean(rows[0].onboarding_completed),
+          platform_access_status: rows[0].platform_access_status as PlatformAccessStatus,
+        }
+      : null;
+  }
+
   public async authenticateEmail(
     email: string,
     requestedAccountType: AccountType
@@ -564,10 +585,13 @@ class DatabaseService {
     try {
       await client.query("BEGIN");
       await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [email]);
-      const existing = await client.query<{ id: string }>(
-        "SELECT id FROM users WHERE LOWER(BTRIM(email)) = $1 FOR UPDATE",
+      const existing = await client.query<{ id: string; account_type: AccountType }>(
+        "SELECT id, account_type FROM users WHERE LOWER(BTRIM(email)) = $1 FOR UPDATE",
         [email]
       );
+      if (requestedAccountType === "lawyer" && (!existing.rows[0] || existing.rows[0].account_type !== "lawyer")) {
+        throw new Error("LAWYER_ACCOUNT_REQUIRED");
+      }
       const isNew = existing.rows.length === 0;
       const userId = existing.rows[0]?.id || `user_${randomUUID()}`;
       if (isNew) {
@@ -681,6 +705,164 @@ class DatabaseService {
     }
   }
 
+  public async submitPublicAccessRequest(input: {
+    email: string;
+    name: string;
+    professionalRole: ProfessionalRole;
+    customProfessionalRole: string | null;
+    workspaceType: WorkspaceType;
+    invitationCode: string | null;
+    practiceAreas: string[];
+    customPracticeArea: string | null;
+  }): Promise<{ account: Account; existing: boolean; status: "pending" | "approved" | "denied" | "client" }> {
+    await this.ensureSchema();
+    const client = await getPool().connect();
+    const now = new Date().toISOString();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [input.email]);
+      const existingResult = await client.query<{
+        id: string;
+        account_type: AccountType;
+        onboarding_completed: boolean;
+        platform_access_status: PlatformAccessStatus;
+        firm_id: string | null;
+      }>(
+        "SELECT id, account_type, onboarding_completed, platform_access_status, firm_id FROM users WHERE LOWER(BTRIM(email)) = $1 FOR UPDATE",
+        [input.email]
+      );
+      const existingUser = existingResult.rows[0];
+      if (existingUser && existingUser.account_type !== "lawyer") {
+        await client.query("COMMIT");
+        return { account: await this.getAccountForUser(existingUser.id, client), existing: true, status: "client" };
+      }
+      if (!existingUser) {
+        let firmId: string | null = null;
+        if (input.workspaceType === "firm") {
+          const firmResult = await client.query<{ id: string }>(
+            `SELECT id FROM firm
+             WHERE invitation_code IS NOT NULL AND UPPER(BTRIM(invitation_code)) = $1`,
+            [input.invitationCode]
+          );
+          if (!firmResult.rows[0]) throw new Error("INVALID_INVITATION_CODE");
+          firmId = firmResult.rows[0].id;
+        } else {
+          firmId = `firm_${randomUUID()}`;
+          await client.query("INSERT INTO firm (id, name) VALUES ($1, 'Personal Workspace')", [firmId]);
+        }
+        const userId = `user_${randomUUID()}`;
+        await client.query(
+          `INSERT INTO users
+            (id, account_type, firm_id, name, email, email_verified_at, onboarding_completed,
+             professional_role, custom_professional_role, workspace_type, practice_areas,
+             custom_practice_area, firm_role, platform_access_status, access_submitted_at,
+             created_at, updated_at)
+           VALUES ($1, 'lawyer', $2, $3, $4, NULL, TRUE, $5, $6, $7, $8::jsonb, $9, $10, 'pending', $11, $11, $11)`,
+          [
+            userId,
+            firmId,
+            input.name,
+            input.email,
+            input.professionalRole,
+            input.customProfessionalRole,
+            input.workspaceType,
+            JSON.stringify(input.practiceAreas),
+            input.customPracticeArea,
+            input.workspaceType === "independent" ? "admin" : "member",
+            now,
+          ]
+        );
+        await client.query("COMMIT");
+        return { account: await this.getAccountForUser(userId, client), existing: false, status: "pending" };
+      }
+      if (!existingUser.onboarding_completed) {
+        let firmId = existingUser.firm_id;
+        if (input.workspaceType === "firm") {
+          const firmResult = await client.query<{ id: string }>(
+            `SELECT id FROM firm
+             WHERE invitation_code IS NOT NULL AND UPPER(BTRIM(invitation_code)) = $1`,
+            [input.invitationCode]
+          );
+          if (!firmResult.rows[0]) throw new Error("INVALID_INVITATION_CODE");
+          firmId = firmResult.rows[0].id;
+        } else if (!firmId) {
+          firmId = `firm_${randomUUID()}`;
+          await client.query("INSERT INTO firm (id, name) VALUES ($1, 'Personal Workspace')", [firmId]);
+        }
+        await client.query(
+          `UPDATE users SET firm_id = $2, name = $3, professional_role = $4,
+             custom_professional_role = $5, workspace_type = $6, practice_areas = $7::jsonb,
+             custom_practice_area = $8, firm_role = $9, onboarding_completed = TRUE,
+             platform_access_status = 'pending',
+             access_submitted_at = COALESCE(access_submitted_at, $10),
+             updated_at = $10
+           WHERE id = $1`,
+          [
+            existingUser.id,
+            firmId,
+            input.name,
+            input.professionalRole,
+            input.customProfessionalRole,
+            input.workspaceType,
+            JSON.stringify(input.practiceAreas),
+            input.customPracticeArea,
+            input.workspaceType === "independent" ? "admin" : "member",
+            now,
+          ]
+        );
+        await client.query("COMMIT");
+        return { account: await this.getAccountForUser(existingUser.id, client), existing: true, status: "pending" };
+      }
+      if (existingUser.platform_access_status === "approved") {
+        await client.query("COMMIT");
+        return { account: await this.getAccountForUser(existingUser.id, client), existing: true, status: "approved" };
+      }
+      if (existingUser.platform_access_status === "denied") {
+        await client.query("COMMIT");
+        return { account: await this.getAccountForUser(existingUser.id, client), existing: true, status: "denied" };
+      }
+      await client.query("COMMIT");
+      return { account: await this.getAccountForUser(existingUser.id, client), existing: true, status: "pending" };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  private async getAccountForUser(userId: string, client?: pg.PoolClient): Promise<Account> {
+    if (client) {
+      const result = await client.query(
+        `SELECT u.*, f.name AS firm_name,
+           EXISTS (
+             SELECT 1 FROM matter_client_access access
+             WHERE access.claimed_by_user_id = u.id
+               AND access.invitation_status = 'Active'
+               AND access.revoked_at IS NULL
+               AND access.token_hash IS NOT NULL
+           ) AS client_access_granted
+         FROM users u LEFT JOIN firm f ON f.id = u.firm_id WHERE u.id = $1`,
+        [userId]
+      );
+      return accountFromRow(result.rows[0]);
+    }
+
+    const rows = await this.query(
+      `SELECT u.*, f.name AS firm_name,
+         EXISTS (
+           SELECT 1 FROM matter_client_access access
+           WHERE access.claimed_by_user_id = u.id
+             AND access.invitation_status = 'Active'
+             AND access.revoked_at IS NULL
+             AND access.token_hash IS NOT NULL
+         ) AS client_access_granted
+       FROM users u LEFT JOIN firm f ON f.id = u.firm_id WHERE u.id = $1`,
+      [userId]
+    );
+    return accountFromRow(rows[0]);
+  }
+
   public async completeOnboarding(input: {
     userId: string;
     name: string;
@@ -709,7 +891,8 @@ class DatabaseService {
       if (!user) throw new Error("USER_NOT_FOUND");
       if (user.account_type !== "lawyer") throw new Error("LAWYER_ACCOUNT_REQUIRED");
       let firmId = user.firm_id;
-      if (!user.onboarding_completed) {
+      const shouldCreate = !user.onboarding_completed;
+      if (shouldCreate) {
         if (input.workspaceType === "firm") {
           const firmResult = await client.query<{ id: string }>(
             `SELECT id FROM firm

@@ -76,15 +76,15 @@ export default function AccessGateView({
     <main className="flex min-h-screen items-center justify-center bg-white px-6 py-12 text-zinc-950">
       <section className="w-full max-w-xl border border-zinc-200 bg-white p-8 shadow-sm">
         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-zinc-500">
-          Controlled testing access
+          Exepts access
         </p>
         <h1 className="mt-4 text-3xl font-semibold tracking-tight">
-          {denied ? "Access not approved" : "Your request is under review"}
+          {denied ? "Access not approved" : "Your access request is under review"}
         </h1>
         <p className="mt-4 text-sm leading-6 text-zinc-600">
           {denied
             ? "We are unable to approve your Exepts access request at this time."
-            : "Your access request has been submitted to the Exepts review team. You may safely close this page and return later. Your onboarding information has been saved. We will email you after your request has been reviewed."}
+            : "Your request has been submitted. We’ll email you once access to Exepts has been approved."}
         </p>
         <div className="mt-6 border border-zinc-200 bg-zinc-50 px-4 py-3">
           <p className="text-xs uppercase tracking-wide text-zinc-500">Authenticated email</p>
