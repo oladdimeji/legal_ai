@@ -89,6 +89,17 @@ export default function MatterCollaboration({
     }
   };
 
+  const copyLink = async () => {
+    if (!data?.access?.id) return;
+    const clientAccessLink = `${window.location.origin}/client/access/${encodeURIComponent(data.access.id)}`;
+    try {
+      await navigator.clipboard.writeText(clientAccessLink);
+      setNotice("Client access link copied.");
+    } catch {
+      alert("Client access link could not be copied.");
+    }
+  };
+
   const revoke = async () => {
     if (!confirm("Revoke client access immediately?")) return;
     setBusy("revoke");
@@ -180,7 +191,26 @@ export default function MatterCollaboration({
         </div>
       </header>
 
-      {collaborationToken && (
+        {data.access.invitation_status === "Active" && (
+          <section className="rounded border border-zinc-300 bg-zinc-50 p-4">
+            <p className="text-[9px] font-mono font-bold uppercase tracking-[0.12em] text-zinc-500">
+              Client access link
+            </p>
+            <div className="mt-2 flex flex-wrap items-center gap-3">
+              <code className="min-w-0 flex-1 break-all rounded bg-white px-3 py-2 text-sm font-semibold tracking-wide">
+                {`${window.location.origin}/client/access/${encodeURIComponent(data.access.id)}`}
+              </code>
+              <button type="button" onClick={() => void copyLink()} className="flex items-center gap-1 rounded border border-zinc-300 bg-white px-3 py-2 text-[10px] font-mono font-bold uppercase hover:border-zinc-950">
+                <Clipboard className="h-3.5 w-3.5" /> Copy link
+              </button>
+            </div>
+            <p className="mt-2 text-xs text-zinc-500">
+              Share this access link and collaboration token with the client. The link identifies this Shared Matter; the token securely activates access.
+            </p>
+          </section>
+        )}
+
+        {collaborationToken && (
         <section className="rounded border border-zinc-300 bg-zinc-50 p-4">
           <p className="text-[9px] font-mono font-bold uppercase tracking-[0.12em] text-zinc-500">
             Collaboration token
