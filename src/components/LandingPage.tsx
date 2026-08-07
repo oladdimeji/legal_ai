@@ -4,7 +4,6 @@ import { ArrowRight, BookOpen, Briefcase, FileText, MessageSquare, Users } from 
 interface LandingPageProps {
   onAuthenticate: () => void;
   onRequestDemo: () => void;
-  onClientPortal: () => void;
 }
 
 const capabilities = [
@@ -35,7 +34,7 @@ const capabilities = [
   },
 ];
 
-export default function LandingPage({ onAuthenticate, onRequestDemo, onClientPortal }: LandingPageProps) {
+export default function LandingPage({ onAuthenticate, onRequestDemo }: LandingPageProps) {
   return (
     <div className="min-h-screen bg-white text-zinc-950">
       <header className="border-b border-zinc-200">
@@ -46,14 +45,7 @@ export default function LandingPage({ onAuthenticate, onRequestDemo, onClientPor
               Legal workspace
             </p>
           </div>
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={onClientPortal}
-              className="px-4 py-2 text-xs font-semibold text-zinc-700 hover:text-zinc-950"
-            >
-              Client Portal
-            </button>
+            <div className="flex items-center gap-3">
             <button
               type="button"
               onClick={onAuthenticate}

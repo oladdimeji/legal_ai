@@ -24,12 +24,11 @@ const navItems = [
   { id: "assistant", label: "Assistant", icon: MessageSquare, path: "/client/assistant" },
   {
     id: "shared",
-    label: "Shared Matters",
+    label: "Shared Matter",
     icon: Briefcase,
     path: "/client/shared-matters",
   },
   { id: "history", label: "History", icon: History, path: "/client/history" },
-  { id: "settings", label: "Settings", icon: Settings, path: "/client/settings" },
 ];
 
 export default function ClientWorkspace({

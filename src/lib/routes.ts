@@ -16,6 +16,7 @@ export type AppRoute =
   | { kind: "clientAssistant" }
   | { kind: "clientSharedMatters" }
   | { kind: "clientSharedMatter"; accessId: string }
+  | { kind: "clientAccess"; accessId: string }
   | { kind: "clientHistory" }
   | { kind: "clientSettings" }
   | { kind: "unknown" };
@@ -59,6 +60,12 @@ export function parseRoute(pathname: string): AppRoute {
   if (sharedMatterMatch) {
     const accessId = decodeSegment(sharedMatterMatch[1]);
     return accessId ? { kind: "clientSharedMatter", accessId } : { kind: "unknown" };
+  }
+
+  const clientAccessMatch = path.match(/^\/client\/access\/([^/]+)$/);
+  if (clientAccessMatch) {
+    const accessId = decodeSegment(clientAccessMatch[1]);
+    return accessId ? { kind: "clientAccess", accessId } : { kind: "unknown" };
   }
 
   const matterMatch = path.match(/^\/matters\/([^/]+)$/);
@@ -115,6 +122,7 @@ export function routePath(route: AppRoute): string {
   if (route.kind === "clientSharedMatter") {
     return `/client/shared-matters/${encodeURIComponent(route.accessId)}`;
   }
+  if (route.kind === "clientAccess") return `/client/access/${encodeURIComponent(route.accessId)}`;
   if (route.kind === "clientHistory") return "/client/history";
   if (route.kind === "clientSettings") return "/client/settings";
   if (route.kind === "landing") return "/";

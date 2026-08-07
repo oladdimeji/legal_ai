@@ -588,9 +588,14 @@ async function startServer() {
     if (!clientId || !clientSecret || !redirectUri) {
       return res.status(503).json({ error: "Google authentication is not configured." });
     }
+    const requestedAccountType = normalizeAccountType(req.query.accountType);
+    if (requestedAccountType === "client") {
+      res.setHeader("Cache-Control", "no-store");
+      return res.status(400).json({ error: "Client access is available only through the collaboration link provided by your lawyer." });
+    }
     const { state, cookieValue } = createOAuthState(
       req.query.returnTo,
-      normalizeAccountType(req.query.accountType)
+      requestedAccountType
     );
     const client = new OAuth2Client(clientId, clientSecret, redirectUri);
     const url = client.generateAuthUrl({
@@ -628,6 +633,9 @@ async function startServer() {
     try {
       if (requestedAccountType === "lawyer") {
         return fail("Google sign-in is not available for Exepts lawyer accounts.");
+      }
+      if (requestedAccountType === "client") {
+        return fail("Client access is available only through the collaboration link provided by your lawyer.");
       }
       const client = new OAuth2Client(clientId, clientSecret, redirectUri);
       const { tokens } = await client.getToken(code);
@@ -766,6 +774,10 @@ async function startServer() {
     if (!isValidEmail(email)) return res.status(400).json({ error: "Enter a valid email address." });
     if (!canAccessPrivateApplication(email, siteLockPolicy)) return denySiteLockAccess(res);
     try {
+      if (accountType === "client") {
+        res.setHeader("Cache-Control", "no-store");
+        return res.status(400).json({ error: "Client access is available only through the collaboration link provided by your lawyer." });
+      }
       if (accountType === "lawyer") {
         const existing = await db.getUserByEmail(email);
         if (!existing || existing.account_type !== "lawyer") {
@@ -831,6 +843,10 @@ async function startServer() {
           attempts_exceeded: "Too many attempts. Request a new code.",
         };
         return res.status(400).json({ error: messages[result.status] });
+      }
+      if (result.accountType === "client") {
+        res.setHeader("Cache-Control", "no-store");
+        return res.status(400).json({ error: "Client access is available only through the collaboration link provided by your lawyer." });
       }
       const { account } = await db.authenticateEmail(email, result.accountType);
       const { token, tokenHash } = createSessionToken();
@@ -1137,35 +1153,60 @@ async function startServer() {
 
   const clientCollaborationError =
     "This collaboration token is invalid, unavailable, or already connected to another account.";
-
+  // Legacy token redemption endpoint is deprecated. Use lawyer-provided access link instead.
   app.post(
     "/api/client/shared-matters/redeem",
     requireAuth,
     requireClientAccount,
-    async (req: AuthenticatedRequest, res) => {
-      const token = parseCollaborationToken(req.body?.token);
-      if (!token) return res.status(400).json({ error: clientCollaborationError });
-      try {
-        const claimed = await db.claimClientCollaboration(
-          hashSessionToken(token),
-          req.auth!.user.id
-        );
-        res.setHeader("Cache-Control", "no-store");
-        return res.status(200).json(claimed);
-      } catch (error) {
-        if (
-          error instanceof Error &&
-          error.message === "CLIENT_COLLABORATION_UNAVAILABLE"
-        ) {
-          return res.status(404).json({ error: clientCollaborationError });
-        }
-        console.error("Collaboration token redemption failed.");
-        return res.status(500).json({
-          error: "The Shared Matter could not be added right now.",
-        });
-      }
+    async (_req: AuthenticatedRequest, res) => {
+      res.setHeader("Cache-Control", "no-store");
+      return res.status(400).json({ error: "Use the Client Access link provided by your lawyer." });
     }
   );
+
+  // Public invitation preview (no authentication required)
+  app.get("/api/client/access/:accessId", async (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    try {
+      const accessId = typeof req.params.accessId === "string" ? req.params.accessId : "";
+      const invitation = await db.getClientAccessInvitation(accessId);
+      if (!invitation) return res.status(404).json({ error: "This invitation is unavailable." });
+      return res.json({
+        id: invitation.id,
+        clientName: invitation.client_name,
+        clientEmail: invitation.client_email,
+        matterName: invitation.matter_name,
+        firmName: invitation.firm_name || null,
+      });
+    } catch (error) {
+      console.error("Invitation preview failed.", error);
+      return res.status(500).json({ error: "The invitation could not be loaded." });
+    }
+  });
+
+  app.post("/api/client/access/:accessId/redeem", async (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    try {
+      const accessId = typeof req.params.accessId === "string" ? req.params.accessId : "";
+      const token = parseCollaborationToken(req.body?.token);
+      if (!token) return res.status(400).json({ error: "Enter a valid collaboration token." });
+      const tokenHash = hashSessionToken(token);
+      const { account, accessId: claimedAccessId } = await db.redeemClientInvitation(accessId, tokenHash);
+      const { token: sessionToken, tokenHash: sessionTokenHash } = createSessionToken();
+      await db.createSession(account.user.id, sessionTokenHash, new Date(Date.now() + SESSION_TTL_MS).toISOString());
+      res.setHeader("Set-Cookie", sessionCookie(sessionToken, isProduction));
+      return res.json({ account, accessId: claimedAccessId, redirectTo: `/client/shared-matters/${encodeURIComponent(claimedAccessId)}` });
+    } catch (error) {
+      if (error instanceof Error && error.message === "CLIENT_ALREADY_HAS_ACTIVE_MATTER") {
+        return res.status(409).json({ error: "This client is already connected to another Shared Matter." });
+      }
+      if (error instanceof Error && (error.message === "CLIENT_INVITATION_INVALID" || error.message === "CLIENT_EMAIL_CONFLICT")) {
+        return res.status(404).json({ error: "This invitation is unavailable or invalid." });
+      }
+      console.error("Invitation redemption failed.", error);
+      return res.status(500).json({ error: "Unable to redeem the invitation." });
+    }
+  });
 
   app.get(
     "/api/client/shared-matters",

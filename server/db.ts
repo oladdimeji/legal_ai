@@ -1826,6 +1826,113 @@ class DatabaseService {
     return rows[0] || null;
   }
 
+  public async getClientAccessInvitation(accessId: string): Promise<any | null> {
+    const rows = await this.query(
+      `SELECT ca.id, ca.client_name, ca.client_email, c.name AS matter_name, f.name AS firm_name
+       FROM matter_client_access ca
+       JOIN cases c ON c.id = ca.case_id
+       LEFT JOIN firm f ON f.id = c.firm_id
+       WHERE ca.id = $1
+         AND ca.invitation_status = 'Active'
+         AND ca.revoked_at IS NULL
+         AND ca.token_hash IS NOT NULL
+       LIMIT 1`,
+      [accessId]
+    );
+    return rows[0] || null;
+  }
+
+  public async redeemClientInvitation(
+    accessId: string,
+    tokenHash: string
+  ): Promise<{ account: Account; accessId: string }>
+  {
+    await this.ensureSchema();
+    const client = await getPool().connect();
+    const now = new Date().toISOString();
+    try {
+      await client.query("BEGIN");
+      // Lock the access row matching both id and token_hash
+      const accessResult = await client.query(
+        `SELECT id, case_id, client_name, client_email, claimed_by_user_id
+         FROM matter_client_access
+         WHERE id = $1
+           AND token_hash = $2
+           AND invitation_status = 'Active'
+           AND revoked_at IS NULL
+         FOR UPDATE`,
+        [accessId, tokenHash]
+      );
+      const access = accessResult.rows[0];
+      if (!access) throw new Error("CLIENT_INVITATION_INVALID");
+
+      let clientUserId = access.claimed_by_user_id;
+
+      if (!clientUserId) {
+        // find or create user by email
+        const email = (access.client_email || "").toLowerCase().trim();
+        if (!email) throw new Error("CLIENT_INVITATION_INVALID");
+        await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [email]);
+        const existing = await client.query(`SELECT id, account_type FROM users WHERE LOWER(BTRIM(email)) = $1 FOR UPDATE`, [email]);
+        if (existing.rows[0] && existing.rows[0].account_type === 'lawyer') {
+          throw new Error("CLIENT_EMAIL_CONFLICT");
+        }
+        if (!existing.rows[0]) {
+          clientUserId = `user_${randomUUID()}`;
+          await client.query(
+            `INSERT INTO users (id, account_type, firm_id, name, email, email_verified_at, onboarding_completed, platform_access_status, created_at, updated_at)
+             VALUES ($1, 'client', NULL, $2, $3, NULL, TRUE, 'approved', $4, $4)`,
+            [clientUserId, access.client_name || null, email, now]
+          );
+        } else {
+          clientUserId = existing.rows[0].id;
+        }
+      }
+
+      // Enforce one-client-one-matter: ensure this user does not already claim another active access
+      const conflict = await client.query(
+        `SELECT 1 FROM matter_client_access ca
+         WHERE ca.claimed_by_user_id = $1
+           AND ca.id <> $2
+           AND ca.invitation_status = 'Active'
+           AND ca.revoked_at IS NULL
+           AND ca.token_hash IS NOT NULL
+         LIMIT 1`,
+        [clientUserId, accessId]
+      );
+      if (conflict.rows[0]) throw new Error("CLIENT_ALREADY_HAS_ACTIVE_MATTER");
+
+      // Claim the access if not already claimed
+      await client.query(
+        `UPDATE matter_client_access SET claimed_by_user_id = $1 WHERE id = $2 AND (claimed_by_user_id IS NULL OR claimed_by_user_id = $1)`,
+        [clientUserId, accessId]
+      );
+
+      // Ensure client user platform status
+      await client.query(
+        `UPDATE users SET platform_access_status = 'approved', updated_at = $2 WHERE id = $1 AND account_type = 'client'`,
+        [clientUserId, now]
+      );
+
+      const accountResult = await client.query(
+        `SELECT u.*, f.name AS firm_name,
+           EXISTS (
+             SELECT 1 FROM matter_client_access access WHERE access.claimed_by_user_id = u.id AND access.invitation_status = 'Active' AND access.revoked_at IS NULL AND access.token_hash IS NOT NULL
+           ) AS client_access_granted
+         FROM users u LEFT JOIN firm f ON f.id = u.firm_id WHERE u.id = $1`,
+        [clientUserId]
+      );
+
+      await client.query("COMMIT");
+      return { account: accountFromRow(accountResult.rows[0]), accessId };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   public async claimClientCollaboration(
     tokenHash: string,
     clientUserId: string

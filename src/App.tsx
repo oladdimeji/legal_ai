@@ -16,6 +16,7 @@ import AccessGateView from "./components/AccessGateView";
 import AccessReviewView from "./components/AccessReviewView";
 import AccessRequestSubmittedView from "./components/AccessRequestSubmittedView";
 import ClientAccessGateView from "./components/ClientAccessGateView";
+import ClientInviteAccessView from "./components/ClientInviteAccessView";
 import { Account, AssistantDocumentReference, Case, WorkspacePageContext } from "./types";
 import { parseRoute, routePath, safeReturnTo } from "./lib/routes";
 import {
@@ -201,8 +202,11 @@ function AppContent() {
         return;
       }
       if (protectedRouteKinds.has(route.kind)) {
-        const mode = clientRouteKinds.has(route.kind) ? "&mode=client" : "";
-        navigate(`/auth?returnTo=${encodeURIComponent(routePath(route))}${mode}`, true);
+        if (clientRouteKinds.has(route.kind)) {
+          navigate("/", true);
+        } else {
+          navigate(`/auth?returnTo=${encodeURIComponent(routePath(route))}`, true);
+        }
       } else if (route.kind === "onboarding") {
         navigate("/auth", true);
       } else if (route.kind === "unknown") {
@@ -329,14 +333,11 @@ function AppContent() {
   if (!account) {
     if (route.kind === "auth") {
       const params = new URLSearchParams(window.location.search);
-      const accountMode = params.get("mode") === "client" ? "client" : "lawyer";
+      const accountMode = "lawyer";
       return (
         <AuthView
           accountMode={accountMode}
-          returnTo={safeReturnTo(
-            params.get("returnTo"),
-            accountMode === "client" ? "/client/shared-matters" : "/matters"
-          )}
+          returnTo={safeReturnTo(params.get("returnTo"), "/matters")}
           initialError={params.get("authError") || ""}
           onAuthenticated={(nextAccount, redirectTo) => {
             setAccount(nextAccount);
@@ -369,6 +370,18 @@ function AppContent() {
         />
       );
     }
+    if (route.kind === "clientAccess") {
+      return (
+        <ClientInviteAccessView
+          accessId={route.accessId}
+          onRedeemed={(nextAccount, redirectTo) => {
+            if (nextAccount) setAccount(nextAccount);
+            navigate(redirectTo || "/client/shared-matters", true);
+          }}
+          onCancel={() => navigate("/", true)}
+        />
+      );
+    }
     if (route.kind === "accessRequested") {
       return (
         <AccessRequestSubmittedView
@@ -381,9 +394,6 @@ function AppContent() {
       <LandingPage
         onAuthenticate={() => navigate("/auth")}
         onRequestDemo={() => navigate("/request-demo")}
-        onClientPortal={() =>
-          navigate("/auth?mode=client&returnTo=%2Fclient%2Fshared-matters")
-        }
       />
     );
   }
