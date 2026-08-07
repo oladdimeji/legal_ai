@@ -714,7 +714,12 @@ class DatabaseService {
     invitationCode: string | null;
     practiceAreas: string[];
     customPracticeArea: string | null;
-  }): Promise<{ account: Account; existing: boolean; status: "pending" | "approved" | "denied" | "client" }> {
+  }): Promise<{
+    account: Account;
+    existing: boolean;
+    status: "pending" | "approved" | "denied" | "client";
+    submissionKind: "new" | "existing_pending" | "approved" | "denied" | "client";
+  }> {
     await this.ensureSchema();
     const client = await getPool().connect();
     const now = new Date().toISOString();
@@ -734,7 +739,12 @@ class DatabaseService {
       const existingUser = existingResult.rows[0];
       if (existingUser && existingUser.account_type !== "lawyer") {
         await client.query("COMMIT");
-        return { account: await this.getAccountForUser(existingUser.id, client), existing: true, status: "client" };
+        return {
+          account: await this.getAccountForUser(existingUser.id, client),
+          existing: true,
+          status: "client",
+          submissionKind: "client",
+        };
       }
       if (!existingUser) {
         let firmId: string | null = null;
@@ -773,7 +783,12 @@ class DatabaseService {
           ]
         );
         await client.query("COMMIT");
-        return { account: await this.getAccountForUser(userId, client), existing: false, status: "pending" };
+        return {
+          account: await this.getAccountForUser(userId, client),
+          existing: false,
+          status: "pending",
+          submissionKind: "new",
+        };
       }
       if (!existingUser.onboarding_completed) {
         let firmId = existingUser.firm_id;
@@ -811,18 +826,38 @@ class DatabaseService {
           ]
         );
         await client.query("COMMIT");
-        return { account: await this.getAccountForUser(existingUser.id, client), existing: true, status: "pending" };
+        return {
+          account: await this.getAccountForUser(existingUser.id, client),
+          existing: true,
+          status: "pending",
+          submissionKind: "new",
+        };
       }
       if (existingUser.platform_access_status === "approved") {
         await client.query("COMMIT");
-        return { account: await this.getAccountForUser(existingUser.id, client), existing: true, status: "approved" };
+        return {
+          account: await this.getAccountForUser(existingUser.id, client),
+          existing: true,
+          status: "approved",
+          submissionKind: "approved",
+        };
       }
       if (existingUser.platform_access_status === "denied") {
         await client.query("COMMIT");
-        return { account: await this.getAccountForUser(existingUser.id, client), existing: true, status: "denied" };
+        return {
+          account: await this.getAccountForUser(existingUser.id, client),
+          existing: true,
+          status: "denied",
+          submissionKind: "denied",
+        };
       }
       await client.query("COMMIT");
-      return { account: await this.getAccountForUser(existingUser.id, client), existing: true, status: "pending" };
+      return {
+        account: await this.getAccountForUser(existingUser.id, client),
+        existing: true,
+        status: "pending",
+        submissionKind: "existing_pending",
+      };
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;

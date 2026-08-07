@@ -314,6 +314,30 @@ async function sendAccessReviewAdminEmail(
   });
 }
 
+async function sendAccessRequestSubmittedEmail(name: string | null, email: string): Promise<void> {
+  const greeting = name ? `Hello ${name},` : "Hello,";
+  await sendBrevoEmail({
+    to: [email],
+    subject: "Your Exepts access request has been submitted",
+    textContent: `${greeting}\n\nYour access request has been submitted\n\nThank you for your interest in Exepts. We’ve received your access request and will review it. We’ll email you once a decision has been made.`,
+    htmlContent: `<p>${escapeEmailHtml(greeting)}</p><p><strong>Your access request has been submitted</strong></p><p>Thank you for your interest in Exepts. We’ve received your access request and will review it. We’ll email you once a decision has been made.</p>`,
+  });
+}
+
+async function sendExistingApprovedAccessEmail(name: string | null, email: string): Promise<void> {
+  const greeting = name ? `Hello ${name},` : "Hello,";
+  const appUrl = process.env.APP_URL?.trim();
+  const loginUrl = appUrl
+    ? new URL("/auth?returnTo=%2Fmatters", appUrl).toString()
+    : "/auth?returnTo=%2Fmatters";
+  await sendBrevoEmail({
+    to: [email],
+    subject: "Your Exepts access is already approved",
+    textContent: `${greeting}\n\nYour Exepts access is already approved.\n\nYou already have access to Exepts with this email address. There’s no need to submit another access request.\n\nSimply log in using this email address and we’ll send you a one-time code.\n\nLog in: ${loginUrl}`,
+    htmlContent: `<p>${escapeEmailHtml(greeting)}</p><p><strong>Your Exepts access is already approved</strong></p><p>You already have access to Exepts with this email address. There’s no need to submit another access request.</p><p>Simply log in using this email address and we’ll send you a one-time code.</p><p><a href="${escapeEmailHtml(loginUrl)}">Log in to Exepts</a></p>`,
+  });
+}
+
 async function sendAccessDecisionEmail(
   email: string,
   name: string | null,
@@ -697,12 +721,19 @@ async function startServer() {
         practiceAreas,
         customPracticeArea: practiceAreas.includes("Other") ? customPracticeArea : null,
       });
-      if (result.status !== "pending") {
-        const messages = {
-          approved: "Access has already been approved for this email. Please log in.",
-          denied: "Access has not been approved for this email.",
-        } as const;
-        return res.status(200).json({ message: messages[result.status] });
+      if (result.status === "approved") {
+        try {
+          await sendExistingApprovedAccessEmail(result.account.user.name, result.account.user.email);
+        } catch {
+          console.error("Approved access reminder email failed after public access request.");
+        }
+        return res.status(200).json({ message: "Access has already been approved for this email. Please log in." });
+      }
+      if (result.status === "denied") {
+        return res.status(200).json({ message: "Access has not been approved for this email." });
+      }
+      if (result.status === "client") {
+        return res.status(200).json({ message: "Access has already been approved for this email. Please log in." });
       }
       let reviewNotificationSent = false;
       try {
@@ -710,6 +741,13 @@ async function startServer() {
         reviewNotificationSent = review.allowed && review.notificationSent === true;
       } catch {
         console.error("Access review notification setup failed after public access request.");
+      }
+      if (result.submissionKind === "new") {
+        try {
+          await sendAccessRequestSubmittedEmail(result.account.user.name, result.account.user.email);
+        } catch {
+          console.error("Applicant access request confirmation email failed after public access request.");
+        }
       }
       res.setHeader("Cache-Control", "no-store");
       return res.status(201).json({ success: true, reviewNotificationSent });

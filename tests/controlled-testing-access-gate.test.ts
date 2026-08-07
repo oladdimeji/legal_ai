@@ -58,6 +58,16 @@ test("review GET is read-only and only decision POST invokes the transactional m
   assert.match(postRoute, /Cache-Control", "no-store/);
 });
 
+test("public access request sends only the intended applicant emails", async () => {
+  const server = await readFile("server.ts", "utf8");
+  assert.match(server, /sendAccessRequestSubmittedEmail/);
+  assert.match(server, /sendExistingApprovedAccessEmail/);
+  assert.match(server, /result\.submissionKind === "new"/);
+  assert.match(server, /result\.status === "approved"/);
+  assert.match(server, /Applicant access request confirmation email failed/);
+  assert.match(server, /Approved access reminder email failed/);
+});
+
 test("review issuance and decisions are locked, expiring, rate-limited, and idempotent", async () => {
   const database = await readFile("server/db.ts", "utf8");
   const issue = database.slice(
