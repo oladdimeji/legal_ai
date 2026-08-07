@@ -1730,3 +1730,13 @@ Status: Implementation complete; focused verification recorded below.
 - Added an authenticated get-or-create message endpoint and an idempotent, workspace/Matter-scoped database method using `INSERT ... ON CONFLICT DO NOTHING`. Existing saved edits are never overwritten on repeated Open or Download requests.
 - Focused test passed (9/9), `npm run lint` passed, and `npm run build` passed outside the managed filesystem sandbox after the initial Vite config read was denied. The existing non-fatal large-chunk warning remains.
 - No schema migration, dependency, model call, prompt, retrieval, citation, conversation, Client Assistant, generated-document, editor, DOCX implementation, or routing architecture change was made.
+
+### Context-appropriate attachment completeness
+
+Status: Implementation complete; focused-phase verification recorded below.
+
+- Added one Lawyer Assistant drafting rule requiring exhibits, schedules, annexes, and appendices only when the document type, instruction, drafting convention, context, or internal cross-references call for them.
+- The rule directs the Assistant to complete appropriate attachment references in conventional order without inventing Matter facts or evidentiary material; unavailable required facts must be marked for lawyer completion.
+- Attachments are explicitly not automatic and must not be added where inappropriate or unhelpful.
+- Added one focused prompt-level regression test. No DOCX, parser, editor, persistence, database, UI, dependency, model setting, or Assistant architecture changed.
+- Verification passed: focused autonomous-document test (10/10), `npm run lint`, and `npm run build`. The build required execution outside the managed filesystem sandbox after its initial Vite config read was denied; the existing non-fatal large-chunk warning remains.

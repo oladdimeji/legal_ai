@@ -35,6 +35,27 @@ test("autonomous drafting accepts arbitrary standalone document types", () => {
   assert.equal(titleForAssistantDraft("# Mutual Non-Disclosure Agreement\n\nTerms", "Draft an NDA", "New"), "Mutual Non-Disclosure Agreement");
 });
 
+test("autonomous drafting completes appropriate attachments without forcing or fabricating them", () => {
+  const prompt = buildAssistantDraftPrompt({
+    instruction: "Draft a services agreement",
+    pageContext: generalContext,
+    conversationContext: "",
+    authorizedEvidence: "",
+    accountMetadata: "Firm name: Example LLP",
+    currentDate: "August 7, 2026",
+    publicWebResearch: "",
+    webResearchPerformed: false,
+    depth: "standard",
+  });
+
+  assert.match(prompt, /Exhibits, schedules, annexes, and appendices/);
+  assert.match(prompt, /Do not add attachments automatically to every draft/);
+  assert.match(prompt, /avoid unresolved attachment references/);
+  assert.match(prompt, /never invent Matter facts or evidentiary material/);
+  assert.match(prompt, /mark it for lawyer completion rather than fabricating it/);
+  assert.match(prompt, /Do not add attachments where they are not appropriate or useful/);
+});
+
 test("unified composer removes Draft controls and renders autonomous document cards", async () => {
   const assistant = await readFile("src/components/AssistantView.tsx", "utf8");
   assert.doesNotMatch(assistant, /draft-mode-toggle|draftMode|responseMode|Create Draft/);

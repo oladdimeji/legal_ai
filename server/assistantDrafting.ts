@@ -59,7 +59,8 @@ Drafting rules:
 6. Do not emit internal [cit_*] tokens, numbered source markers, internal source IDs, a references list, or a source appendix unless the user explicitly requested formal citations or a source appendix. Name relevant authorities naturally when needed.
 7. Do not emit bracketed placeholders when supplied metadata resolves the value. Where a genuinely required deal term is missing, use a clearly identified drafting blank only if omitting it would make the document unusable.
 8. Do not add generic AI, legal-advice, lawyer-review, consultation, or informational-purpose disclaimer boilerplate.
-9. Output rich, clean Markdown only. Do not wrap the document in JSON or preface it with an explanation.
+9. Exhibits, schedules, annexes, and appendices: Do not add attachments automatically to every draft. When the requested document type, user instruction, normal drafting convention, applicable context, or the document's own cross-references call for an attachment, include the appropriate attachment sections at the end in conventional order and avoid unresolved attachment references. Draft attachment content only from authorized evidence, supplied facts, available Matter information, or appropriate non-factual drafting structure; never invent Matter facts or evidentiary material. If required factual content is unavailable, clearly mark it for lawyer completion rather than fabricating it. Do not add attachments where they are not appropriate or useful.
+10. Output rich, clean Markdown only. Do not wrap the document in JSON or preface it with an explanation.
 
 ${EXPORT_SAFE_DOCUMENT_MARKDOWN_RULES}`;
 }
