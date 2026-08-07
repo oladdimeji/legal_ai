@@ -18,19 +18,19 @@ test("lawyer token UI displays and copies only the generated opaque token", asyn
   assert.match(view, />\s*Collaboration token\s*</);
   assert.match(view, /navigator\.clipboard\.writeText\(collaborationToken\)/);
   assert.match(view, /> Copy token/);
-  assert.doesNotMatch(view, /location\.origin|Copy Invite Link|Collaboration link/);
+  assert.match(view, /window\.location\.origin[^\n]*\/client\/access/);
+  assert.match(view, /Copy link/);
+  assert.doesNotMatch(view, /Copy Invite Link|Collaboration link/);
 });
 
-test("client redemption is token-only, trim-safe, immediate, and never navigates", async () => {
-  const view = await readFile("src/components/ClientSharedMattersView.tsx", "utf8");
-  const claim = view.slice(view.indexOf("const claim ="), view.indexOf("return ("));
-  assert.match(claim, /const submittedToken = token\.trim\(\)/);
-  assert.match(claim, /"\/api\/client\/shared-matters\/redeem"/);
-  assert.match(claim, /JSON\.stringify\(\{ token: submittedToken \}\)/);
-  assert.match(claim, /setMatters\(\(current\) =>/);
-  assert.match(claim, /setAdding\(false\)/);
-  assert.doesNotMatch(claim, /window\.location|new URL|onOpenMatter/);
-  assert.match(view, /disabled=\{!token\.trim\(\) \|\| claiming\}/);
+test("client redemption is token-only, trim-safe, immediate, and uses the access-link redemption flow", async () => {
+  const view = await readFile("src/components/ClientInviteAccessView.tsx", "utf8");
+  assert.match(view, /const candidate = token\.trim\(\)/);
+  assert.match(view, /\/api\/client\/access\/\$\{encodeURIComponent\(accessId\)\}\/redeem/);
+  assert.match(view, /JSON\.stringify\(\{ token: candidate \}\)/);
+  assert.match(view, /disabled=\{submitting\}/);
+  assert.match(view, /Collaboration token/);
+  assert.match(view, /Join Matter/);
 });
 
 test("redemption transaction locks the invitation, derives the client, and cannot copy Matter data", async () => {
@@ -50,10 +50,10 @@ test("redemption transaction locks the invitation, derives the client, and canno
   assert.match(claim, /await client\.query\("COMMIT"\)/);
   assert.doesNotMatch(claim, /clientEmail|authenticatedEmail|ca\.client_email/);
   assert.doesNotMatch(claim, /INSERT INTO cases|INSERT INTO drafts|INSERT INTO documents/);
-  assert.match(
-    server,
-    /claimClientCollaboration\(\s*hashSessionToken\(token\),\s*req\.auth!\.user\.id\s*\)/
-  );
+  assert.match(server, /\/api\/client\/access\/:accessId\/redeem/);
+  assert.match(server, /parseCollaborationToken\(req\.body\?\.token\)/);
+  assert.match(server, /db\.redeemClientInvitation\(accessId, tokenHash\)/);
+
 });
 
 test("explicit revocation detaches the client while active token rotation preserves the claim", async () => {

@@ -556,7 +556,9 @@ test("Phase 13 token generation rotates the hash and copies only plaintext token
   assert.doesNotMatch(database, /RETURNING[\s\S]{0,100}\btoken\b(?!_hash)/);
   assert.match(view, /Older tokens are now invalid/);
   assert.match(view, /navigator\.clipboard\.writeText\(collaborationToken\)/);
-  assert.doesNotMatch(view, /location\.origin|invitePath/);
+  assert.match(view, /window\.location\.origin[^\n]*\/client\/access/);
+  assert.match(view, /navigator\.clipboard\.writeText\(clientAccessLink\)/);
+  assert.doesNotMatch(view, /collaborationToken\}\/client\/access|tokenHash|invitePath/);
 });
 
 test("Phase 13 lawyer request instruction is optional and document selection remains required", async () => {

@@ -88,7 +88,10 @@ test("client workspace keeps its existing independent navigation shell", async (
   ]);
   assert.match(app, /account\.user\.account_type === "client"[\s\S]*<ClientWorkspace/);
   assert.match(clientWorkspace, /label: "Assistant"/);
-  assert.match(clientWorkspace, /label: "Settings"/);
+  assert.match(clientWorkspace, /label: "Shared Matter"/);
+  assert.match(clientWorkspace, /label: "History"/);
+  assert.doesNotMatch(clientWorkspace, /label: "Settings"/);
+  assert.match(clientWorkspace, /navItems/);
   await assert.rejects(readFile("src/components/Sidebar.tsx", "utf8"));
 });
 

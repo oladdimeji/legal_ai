@@ -155,21 +155,20 @@ test("App uses the small account branch and clients bypass lawyer onboarding and
 test("Client Workspace navigation is limited and ordered for secondary users", async () => {
   const workspace = await readFile("src/components/ClientWorkspace.tsx", "utf8");
   const assistant = workspace.indexOf('label: "Assistant"');
-  const shared = workspace.indexOf('label: "Shared Matters"');
+  const shared = workspace.indexOf('label: "Shared Matter"');
   const history = workspace.indexOf('label: "History"');
   const settings = workspace.indexOf('label: "Settings"');
-  assert.ok(assistant < shared && shared < history && history < settings);
+  assert.ok(assistant < shared && shared < history && settings === -1);
   assert.doesNotMatch(
     workspace,
     /Firm Library|Matter Intelligence|Work Products|Client Portal administration/
   );
 });
 
-test("Shared Matters has add, card/list, safe metadata, two detail tabs, preview, download, and requests", async () => {
+test("Shared Matter view exposes the current detail experience without the old add/list shell", async () => {
   const view = await readFile("src/components/ClientSharedMattersView.tsx", "utf8");
-  assert.match(view, /Add Shared Matter/);
-  assert.match(view, /Card view/);
-  assert.match(view, /List view/);
+  assert.doesNotMatch(view, /Add Shared Matter/);
+  assert.match(view, /Shared Matter/);
   assert.match(view, /"Shared Documents" \| "Requests"/);
   assert.match(view, /<WorkProductDocument title=\{openDraft\.title\} content=\{openDraft\.content\}/);
   assert.match(view, /\/download/);
@@ -269,6 +268,6 @@ test("Client Settings and landing entry expose only the narrow client account su
   assert.match(settings, /\["Account type", "Client"\]/);
   assert.match(settings, /Log out/);
   assert.doesNotMatch(settings, /Firm invitation|Firm member|Billing|Notifications/);
-  assert.match(landing, />\s*Client Portal\s*</);
+  assert.doesNotMatch(landing, /Client Portal/);
   assert.match(auth, /accountType: accountMode/);
 });
