@@ -6,15 +6,20 @@ async function assistantSource() {
   return readFile(new URL("../src/components/AssistantView.tsx", import.meta.url), "utf8");
 }
 
-test("composer exposes only Research sources and Send controls", async () => {
+test("composer exposes Sources, accessible icon-only Send, and Voice Mode controls", async () => {
   const source = await assistantSource();
   const composer = source.slice(source.indexOf("const renderComposer"), source.indexOf("// Persistent Citation Metadata Panel helper"));
-  assert.match(composer, />Research sources<\/span>/);
+  assert.match(composer, />Sources<\/span>/);
   assert.match(composer, /id="btn-submit-send"/);
   assert.match(composer, /disabled=\{!inputValue\.trim\(\) \|\| loading \|\| fileExtracting \|\| cloudFilesBusy\}/);
-  assert.match(composer, />\s*Send\s*<Send className="h-3 w-3" \/>/);
+  assert.match(composer, /aria-label="Send message"/);
+  assert.match(composer, /<Send className="h-3\.5 w-3\.5" aria-hidden="true" \/>/);
+  assert.doesNotMatch(composer, />\s*Send\s*</);
+  assert.match(composer, /id="btn-voice-mode"/);
+  assert.match(composer, />Voice Mode<\/span>/);
+  assert.match(composer, /aria-pressed=\{voiceMode\.active\}/);
   assert.doesNotMatch(composer, /Sending|animate-spin/);
-  assert.doesNotMatch(composer, /Draft|Create Draft|Web Search|Google Grounding|Legal Data Grounding|btn-submit-ask|>Ask<|aria-pressed/);
+  assert.doesNotMatch(composer, /Draft|Create Draft|Web Search|Google Grounding|Legal Data Grounding|btn-submit-ask|>Ask</);
 });
 
 test("composer submits only content, page context, and extracted research-source files", async () => {

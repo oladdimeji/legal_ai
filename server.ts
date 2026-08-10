@@ -59,6 +59,11 @@ import { resolveAssistantClarification } from "./server/assistant/assistantClari
 import { adaptiveAssistantThinkingLevel, buildAssistantTaskPrompt } from "./server/assistant/assistantPrompts.js";
 import { normalizeFollowUpSuggestions } from "./server/assistant/followUpSuggestions.js";
 import {
+  boundedVoiceHistory,
+  createVoiceModeCredential,
+  voiceMessageId,
+} from "./server/voiceMode.js";
+import {
   conversationContextWithMemory,
   refreshAssistantMemory,
   shouldRefreshThreadMemory,
@@ -2447,6 +2452,57 @@ ${sourceText}`;
     const thread = await db.getThreadById(req.params.id, ownership(req));
     if (!thread) return res.status(404).json({ error: "Thread not found" });
     return res.json(publicAssistantMessages(await db.getMessages(req.params.id, ownership(req))));
+  });
+
+  app.post("/api/threads/:id/voice/token", async (req, res) => {
+    try {
+      const requestOwnership = ownership(req);
+      const thread = await db.getThreadById(req.params.id, requestOwnership);
+      if (!thread) return res.status(404).json({ error: "Thread not found" });
+      const [credential, recentMessages] = await Promise.all([
+        createVoiceModeCredential(),
+        db.getRecentMessages(thread.id, requestOwnership, 12),
+      ]);
+      res.setHeader("Cache-Control", "no-store");
+      return res.json({
+        ...credential,
+        history: boundedVoiceHistory(recentMessages),
+      });
+    } catch (error) {
+      console.error("Unable to create Gemini Live credential.");
+      return res.status(502).json({ error: "Voice Mode could not connect. Please try again." });
+    }
+  });
+
+  app.post("/api/threads/:id/voice/messages", async (req, res) => {
+    const role = req.body.role === "assistant" ? "assistant" : req.body.role === "user" ? "user" : null;
+    const content = typeof req.body.content === "string" ? req.body.content.trim() : "";
+    const sessionId = typeof req.body.sessionId === "string" ? req.body.sessionId.trim() : "";
+    const eventId = typeof req.body.eventId === "string" ? req.body.eventId.trim() : "";
+    if (!role || !content || !/^[A-Za-z0-9_-]{8,100}$/.test(sessionId) || !/^[A-Za-z0-9_-]{1,100}$/.test(eventId)) {
+      return res.status(400).json({ error: "A finalized Voice Mode transcript is required." });
+    }
+    if (content.length > 12000) {
+      return res.status(413).json({ error: "Voice transcript is too long." });
+    }
+    try {
+      const requestOwnership = ownership(req);
+      const thread = await db.getThreadById(req.params.id, requestOwnership);
+      if (!thread) return res.status(404).json({ error: "Thread not found" });
+      const id = voiceMessageId({ threadId: thread.id, sessionId, eventId, role });
+      const message = await db.addVoiceMessage(
+        id,
+        thread.id,
+        role,
+        content,
+        requestOwnership,
+        { interactionMode: "voice", voiceSessionId: sessionId, voiceEventId: eventId }
+      );
+      return res.status(201).json(publicAssistantMessage(message));
+    } catch (error) {
+      console.error("Voice transcript persistence failed.");
+      return res.status(500).json({ error: "This Voice Mode transcript could not be saved." });
+    }
   });
 
   // Core Legal Search (semantic + keyword search fallback)

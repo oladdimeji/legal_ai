@@ -266,10 +266,12 @@ test("product help, general conversation, and workspace analysis share the unifi
   assert.match(prompts, /General knowledge may be used normally/);
 });
 
-test("composer keeps research sources and Send while removing manual modes", async () => {
+test("composer keeps Sources and accessible sending while adding Voice Mode without manual modes", async () => {
   const assistant = await readFile("src/components/AssistantView.tsx", "utf8");
-  assert.match(assistant, />Research sources</);
+  assert.match(assistant, />Sources</);
   assert.match(assistant, /id="btn-submit-send"/);
+  assert.match(assistant, /aria-label="Send message"/);
+  assert.match(assistant, /id="btn-voice-mode"/);
   assert.match(assistant, /FileSourcePicker/);
   assert.doesNotMatch(assistant, /draftMode|Create Draft|Web Search|Google Grounding|handleImprovePrompt|btn-improve-query|forceDeepResearch|deepResearchEnabled|setDeepResearchEnabled/);
 });

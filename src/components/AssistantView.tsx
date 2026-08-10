@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { 
-  MessageSquare, Send, AlertCircle,
+  MessageSquare, Send, AlertCircle, AudioLines,
   ChevronDown, ChevronUp, FileText, Check, Paperclip, RefreshCw, 
   ExternalLink, BookOpen, Copy, Pencil, X, Briefcase, 
   Folder, ThumbsUp, ThumbsDown,
@@ -21,6 +21,7 @@ import {
   visibleAssistantWorkingActivities,
   type WorkingActivity,
 } from "../lib/assistantWorkingActivities";
+import { useVoiceMode } from "../hooks/useVoiceMode";
 
 type TemporaryFile = {
   id: string;
@@ -184,6 +185,14 @@ export default function AssistantView({
   const activeThreadIdRef = useRef(activeThreadId);
   const skipNextMessageLoadThreadRef = useRef<string | null>(null);
   activeThreadIdRef.current = activeThreadId;
+  const voiceMode = useVoiceMode({
+    onTranscript: (message) => {
+      if (activeThreadIdRef.current !== message.thread_id) return;
+      setMessages((current) => current.some((item) => item.id === message.id)
+        ? current
+        : [...current, message]);
+    },
+  });
 
   // New docked side editor state declarations
   const [sideEditorMessageId, setSideEditorMessageId] = useState<string | null>(null);
@@ -262,6 +271,7 @@ export default function AssistantView({
   }, [filesAndSourcesOpen]);
 
   useEffect(() => {
+    voiceMode.stop();
     conversationVersionRef.current = newConversationVersion;
     messageRequestSequenceRef.current += 1;
     submissionSequenceRef.current += 1;
@@ -285,6 +295,10 @@ export default function AssistantView({
     responseStreamResolveRef.current?.();
     responseStreamResolveRef.current = null;
   }, [newConversationVersion]);
+
+  useEffect(() => {
+    voiceMode.stopIfThreadChanged(activeThreadId);
+  }, [activeThreadId, voiceMode.stopIfThreadChanged]);
 
   // Load messages only for an explicitly selected active conversation. Abort stale loads.
   useEffect(() => {
@@ -402,6 +416,18 @@ export default function AssistantView({
     } catch (err) {
       console.error("Error creating thread:", err);
     }
+  };
+
+  const handleVoiceToggle = async () => {
+    if (voiceMode.active) {
+      voiceMode.stop();
+      return;
+    }
+    let threadId = activeThreadIdRef.current;
+    if (!threadId) {
+      threadId = await handleStartNewThread(pageContext, conversationVersionRef.current);
+    }
+    if (threadId) await voiceMode.start(threadId);
   };
 
   const handleSend = async (e?: React.FormEvent, customQuery?: string) => {
@@ -847,7 +873,7 @@ export default function AssistantView({
                   title="Choose permitted research sources"
                 >
                   <Paperclip className="h-3.5 w-3.5 shrink-0" />
-                  <span>Research sources</span>
+                  <span>Sources</span>
                   <ChevronDown className="h-3 w-3 shrink-0" />
                 </button>
                 
@@ -886,16 +912,38 @@ export default function AssistantView({
             {/* Right Side Controls */}
             <div className="flex flex-wrap items-center gap-2">
               <button
+                type="button"
+                onClick={() => void handleVoiceToggle()}
+                id="btn-voice-mode"
+                aria-label={voiceMode.active ? "Turn off Voice Mode" : "Turn on Voice Mode"}
+                aria-pressed={voiceMode.active}
+                title={voiceMode.active ? "Turn off Voice Mode" : "Start Voice Mode"}
+                data-voice-state={voiceMode.state}
+                style={{ "--voice-level": voiceMode.amplitude } as React.CSSProperties}
+                className={`voice-mode-control inline-flex items-center gap-2 px-2.5 py-1.5 text-xs font-mono font-semibold border rounded transition-colors cursor-pointer ${voiceMode.active ? "border-zinc-950 bg-zinc-950 text-white" : voiceMode.state === "error" ? "border-red-300 bg-white text-red-700" : "border-zinc-200 bg-white text-zinc-700 hover:border-zinc-400 hover:text-zinc-950"}`}
+              >
+                <span className="voice-mode-presence" aria-hidden="true">
+                  <span className="voice-mode-ring" />
+                  <AudioLines className="voice-mode-icon h-3.5 w-3.5" />
+                </span>
+                <span>Voice Mode</span>
+                <span className="sr-only">{voiceMode.state}</span>
+              </button>
+              <button
                 type="submit"
                 disabled={!inputValue.trim() || loading || fileExtracting || cloudFilesBusy}
                 id="btn-submit-send"
-                className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-mono uppercase font-bold text-white bg-zinc-950 hover:bg-zinc-900 border border-zinc-950 rounded shadow-xs disabled:opacity-40 transition-all cursor-pointer"
+                aria-label="Send message"
+                title="Send message"
+                className="inline-flex h-8 w-8 items-center justify-center text-white bg-zinc-950 hover:bg-zinc-900 border border-zinc-950 rounded shadow-xs disabled:opacity-40 transition-all cursor-pointer"
               >
-                Send
-                <Send className="h-3 w-3" />
+                <Send className="h-3.5 w-3.5" aria-hidden="true" />
               </button>
             </div>
           </div>
+          {voiceMode.error && (
+            <p className="text-xs text-red-700" role="status">{voiceMode.error}</p>
+          )}
         </div>
       </form>
     );

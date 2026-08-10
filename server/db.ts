@@ -3151,6 +3151,52 @@ class DatabaseService {
     };
   }
 
+  public async addVoiceMessage(
+    id: string,
+    threadId: string,
+    role: "user" | "assistant",
+    content: string,
+    context: OwnershipContext,
+    metadata: Record<string, unknown>
+  ): Promise<Message> {
+    await this.assertThreadMatterAccess(threadId, context);
+    const createdAt = new Date().toISOString();
+    const rows = await this.query(
+      `INSERT INTO messages (id, thread_id, role, content, citations, steps, created_at, metadata)
+       SELECT $1, t.id, $3, $4, '[]'::jsonb, NULL, $5, $8::jsonb
+       FROM threads t
+       WHERE t.id = $2 AND t.user_id = $6 AND t.scope <> 'client'
+         AND (
+           t.case_id IS NULL OR EXISTS (
+             SELECT 1 FROM cases c WHERE c.id = t.case_id AND c.firm_id = $7
+           )
+         )
+       ON CONFLICT (id) DO NOTHING
+       RETURNING *`,
+      [id, threadId, role, content, createdAt, context.userId, context.firmId, JSON.stringify(metadata)]
+    );
+    if (rows[0]) {
+      return { ...rows[0], citations: [], steps: null, metadata };
+    }
+    const existing = await this.query(
+      `SELECT m.* FROM messages m
+       JOIN threads t ON t.id = m.thread_id
+       WHERE m.id = $1 AND m.thread_id = $2 AND t.user_id = $3 AND t.scope <> 'client'
+         AND (t.case_id IS NULL OR EXISTS (
+           SELECT 1 FROM cases c WHERE c.id = t.case_id AND c.firm_id = $4
+         ))`,
+      [id, threadId, context.userId, context.firmId]
+    );
+    if (!existing[0]) throw new Error("Thread not found");
+    const message = existing[0];
+    return {
+      ...message,
+      citations: typeof message.citations === "string" ? JSON.parse(message.citations) : message.citations,
+      steps: typeof message.steps === "string" ? JSON.parse(message.steps) : message.steps,
+      metadata: typeof message.metadata === "string" ? JSON.parse(message.metadata) : message.metadata,
+    };
+  }
+
   public async updateMessage(
     id: string,
     threadId: string,

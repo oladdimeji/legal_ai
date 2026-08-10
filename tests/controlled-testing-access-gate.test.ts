@@ -97,10 +97,11 @@ test("pending lawyers keep auth and onboarding routes but are blocked at the cen
     readFile("server.ts", "utf8"),
     readFile("src/components/AccessGateView.tsx", "utf8"),
   ]);
-  const me = server.indexOf('app.get("/api/auth/me"');
-  const onboarding = server.indexOf('"/api/onboarding/complete"');
-  const resend = server.indexOf('"/api/access/request-review"');
-  const product = server.indexOf("requireApprovedPlatformAccess\n  );");
+  const normalizedServer = server.replaceAll("\r\n", "\n");
+  const me = normalizedServer.indexOf('app.get("/api/auth/me"');
+  const onboarding = normalizedServer.indexOf('"/api/onboarding/complete"');
+  const resend = normalizedServer.indexOf('"/api/access/request-review"');
+  const product = normalizedServer.indexOf("requireApprovedPlatformAccess\n  );");
   assert.ok(me > 0 && onboarding > me && resend > onboarding && product > resend);
   assert.match(server, /code: "ACCESS_REVIEW_PENDING"/);
   assert.match(server, /code: "ACCESS_REVIEW_DENIED"/);
@@ -139,6 +140,7 @@ test("client access is derived from an active claim and centrally gates product 
     readFile("server.ts", "utf8"),
     readFile("src/App.tsx", "utf8"),
   ]);
+  const normalizedServer = server.replaceAll("\r\n", "\n");
   assert.match(database, /claimed_by_user_id = u\.id[\s\S]*invitation_status = 'Active'[\s\S]*revoked_at IS NULL[\s\S]*token_hash IS NOT NULL[\s\S]*client_access_granted/);
   const claim = database.slice(
     database.indexOf("public async claimClientCollaboration"),
@@ -146,10 +148,10 @@ test("client access is derived from an active claim and centrally gates product 
   );
   assert.match(claim, /SET claimed_by_user_id = \$1/);
   assert.match(claim, /platform_access_status = 'approved'/);
-  const redeem = server.indexOf('"/api/client/shared-matters/redeem"');
-  const listing = server.indexOf('"/api/client/shared-matters"', redeem + 1);
-  const gate = server.indexOf("requireClientCollaboration\n  );", listing);
-  const details = server.indexOf('"/api/client/shared-matters/:accessId"');
+  const redeem = normalizedServer.indexOf('"/api/client/shared-matters/redeem"');
+  const listing = normalizedServer.indexOf('"/api/client/shared-matters"', redeem + 1);
+  const gate = normalizedServer.indexOf("requireClientCollaboration\n  );", listing);
+  const details = normalizedServer.indexOf('"/api/client/shared-matters/:accessId"');
   assert.ok(redeem > 0 && listing > redeem && gate > listing && details > gate);
   assert.match(server, /code: "CLIENT_COLLABORATION_REQUIRED"/);
   assert.match(app, /!account\.user\.client_access_granted[\s\S]*ClientAccessGateView/);

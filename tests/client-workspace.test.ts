@@ -61,8 +61,9 @@ test("new auth accounts use requested mode while existing accounts are never ret
 
 test("server has reusable account guards and keeps client APIs outside the lawyer API gate", async () => {
   const server = await readFile("server.ts", "utf8");
-  const clientRoutes = server.indexOf('app.post(\n    "/api/client/shared-matters/redeem"');
-  const lawyerGate = server.indexOf(
+  const normalizedServer = server.replaceAll("\r\n", "\n");
+  const clientRoutes = normalizedServer.indexOf('app.post(\n    "/api/client/shared-matters/redeem"');
+  const lawyerGate = normalizedServer.indexOf(
     "requireApprovedPlatformAccess\n  );"
   );
   assert.match(server, /const requireLawyerAccount/);
