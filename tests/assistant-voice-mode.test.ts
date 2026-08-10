@@ -14,7 +14,10 @@ import {
   downsampleAudio,
   mergeTranscriptChunk,
 } from "../src/lib/voiceAudio.js";
-import { initializeLiveHistory } from "../src/hooks/useVoiceMode.js";
+import {
+  finalizeVoiceTranscripts,
+  initializeLiveHistory,
+} from "../src/hooks/useVoiceMode.js";
 
 function message(id: string, role: "user" | "assistant", content: string): Message {
   return {
@@ -39,7 +42,8 @@ test("Gemini Live configuration is centralized for native audio, transcription, 
   assert.equal(config.realtimeInputConfig.automaticActivityDetection.disabled, false);
   assert.equal(config.realtimeInputConfig.automaticActivityDetection.startOfSpeechSensitivity, "START_SENSITIVITY_LOW");
   assert.equal(config.tools[0].functionDeclarations[0].name, "lookup_workspace");
-  assert.match(String(config.systemInstruction), /standard Assistant/);
+  assert.match(String(config.systemInstruction), /Do not proactively mention or enumerate Voice Mode's capability limitations/);
+  assert.doesNotMatch(String(config.systemInstruction), /Voice Mode is read-only|better handled in the standard Assistant/);
   assert.doesNotMatch(String(config.systemInstruction), /pretend|browser text-to-speech/i);
 });
 
@@ -106,6 +110,68 @@ test("transcript and PCM helpers avoid repeated revisions and preserve live audi
   assert.equal(audioSampleRate("audio/pcm;rate=24000"), 24000);
 });
 
+test("server turn completion finalizes user and assistant separately in conversational order", () => {
+  const result = finalizeVoiceTranscripts({
+    user: " What matters do we currently have? ",
+    assistant: " Here are the current matters. ",
+  }, "turnComplete");
+  assert.deepEqual(result.completed, [
+    { role: "user", content: "What matters do we currently have?" },
+    { role: "assistant", content: "Here are the current matters." },
+  ]);
+  assert.deepEqual(result.remaining, { user: "", assistant: "" });
+});
+
+test("assistant-only greeting completes independently and cannot merge into the next answer", () => {
+  const greeting = finalizeVoiceTranscripts({ user: "", assistant: "How can I help?" }, "turnComplete");
+  const answer = finalizeVoiceTranscripts({
+    ...greeting.remaining,
+    user: mergeTranscriptChunk(greeting.remaining.user, "What matters do we currently have?"),
+    assistant: mergeTranscriptChunk(greeting.remaining.assistant, "Here are the current matters."),
+  }, "turnComplete");
+  assert.deepEqual(greeting.completed, [{ role: "assistant", content: "How can I help?" }]);
+  assert.deepEqual(answer.completed, [
+    { role: "user", content: "What matters do we currently have?" },
+    { role: "assistant", content: "Here are the current matters." },
+  ]);
+});
+
+test("completed turns reset accumulation so follow-up speech creates new messages", () => {
+  const first = finalizeVoiceTranscripts({ user: "First question", assistant: "First answer" }, "turnComplete");
+  const second = finalizeVoiceTranscripts({
+    user: mergeTranscriptChunk(first.remaining.user, "Follow-up question"),
+    assistant: mergeTranscriptChunk(first.remaining.assistant, "Follow-up answer"),
+  }, "turnComplete");
+  assert.deepEqual(first.completed, [
+    { role: "user", content: "First question" },
+    { role: "assistant", content: "First answer" },
+  ]);
+  assert.deepEqual(second.completed, [
+    { role: "user", content: "Follow-up question" },
+    { role: "assistant", content: "Follow-up answer" },
+  ]);
+});
+
+test("interruption finalizes only received assistant output and preserves next user accumulation", () => {
+  const interrupted = finalizeVoiceTranscripts({
+    user: "Next user question",
+    assistant: "Partial received answer",
+  }, "interrupted");
+  assert.deepEqual(interrupted.completed, [
+    { role: "assistant", content: "Partial received answer" },
+  ]);
+  assert.deepEqual(interrupted.remaining, { user: "Next user question", assistant: "" });
+
+  const next = finalizeVoiceTranscripts({
+    user: interrupted.remaining.user,
+    assistant: mergeTranscriptChunk(interrupted.remaining.assistant, "New answer"),
+  }, "turnComplete");
+  assert.deepEqual(next.completed, [
+    { role: "user", content: "Next user question" },
+    { role: "assistant", content: "New answer" },
+  ]);
+});
+
 test("Voice Mode lifecycle is separate from standard send and releases microphone, audio, animation, and socket resources", async () => {
   const [assistant, hook] = await Promise.all([
     readFile(new URL("../src/components/AssistantView.tsx", import.meta.url), "utf8"),
@@ -148,10 +214,11 @@ test("finalized transcripts use a narrow idempotent owned route and never invoke
   assert.match(persistence, /t\.user_id = \$6/);
   assert.match(persistence, /c\.firm_id = \$7/);
   assert.match(persistence, /ON CONFLICT \(id\) DO NOTHING/);
-  assert.match(hook, /inputTranscription\?\.finished/);
-  assert.match(hook, /outputTranscription\?\.finished/);
+  assert.doesNotMatch(hook, /inputTranscription\?\.finished|outputTranscription\?\.finished/);
+  assert.match(hook, /content\.turnComplete[\s\S]*finalizeTranscripts\("turnComplete"\)/);
+  assert.match(hook, /content\.interrupted[\s\S]*finalizeTranscripts\("interrupted"\)/);
   assert.match(hook, /persistQueueRef/);
-  const transcriptPersistence = hook.slice(hook.indexOf("const persistFinalTranscript"), hook.indexOf("const finalizeTranscript"));
+  const transcriptPersistence = hook.slice(hook.indexOf("const persistFinalTranscript"), hook.indexOf("const finalizeTranscripts"));
   assert.doesNotMatch(transcriptPersistence, /pageContext|handleSend/);
 });
 

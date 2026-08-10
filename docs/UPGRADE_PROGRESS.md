@@ -1801,3 +1801,12 @@ Status: Implementation complete; focused-phase verification recorded below.
 - Gemini credential failures now log redacted error name, code/status when supplied, and message server-side while the client retains its generic safe response.
 - Focused Voice tests passed (12/12), including the runtime credential-request object. A real server-side Gemini credential request succeeded, and that ephemeral credential opened a Live connection and accepted initial-history completion before clean close; no permanent key or ephemeral token was printed.
 - No schema, migration, dependency, model, voice, native-audio, transcript persistence, standard Assistant, or unrelated UI change was made.
+
+### Voice Mode transcript turn stabilization
+
+- Replaced unreliable transcription-level `finished` finalization with Gemini Live `serverContent.turnComplete`, persisting each completed user and assistant transcript separately and in conversational order through the existing idempotent `/voice/messages` route.
+- Completed-turn buffers now reset immediately, so assistant-only greetings and later user/assistant exchanges render as independent ordinary thread messages instead of accumulating into one bubble.
+- Gemini interruption remains the playback stop authority. Any received partial assistant transcript is finalized at that boundary and only its assistant accumulator is cleared, preventing leakage into the next response while preserving incoming user transcription.
+- Removed the proactive Voice capability disclaimer instruction while preserving the existing Voice tone, workspace lookup rules, legal caution, model, voice, audio, VAD, retrieval, and persistence architecture.
+- No schema, migration, dependency, AssistantView, server route, database, standard Assistant, or audio behavior change was made.
+- Verification passed: `npm run lint`, the full test suite (404/404), and `npm run build`. The build required execution outside the managed filesystem sandbox after its initial Vite config resolution was denied; the existing non-fatal large-chunk warning remains.

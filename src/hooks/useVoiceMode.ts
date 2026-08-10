@@ -32,6 +32,32 @@ export type LiveVoiceTranscripts = {
   assistant: string;
 };
 
+export type CompletedVoiceTranscript = {
+  role: "user" | "assistant";
+  content: string;
+};
+
+export function finalizeVoiceTranscripts(
+  transcripts: LiveVoiceTranscripts,
+  boundary: "turnComplete" | "interrupted"
+): { completed: CompletedVoiceTranscript[]; remaining: LiveVoiceTranscripts } {
+  const user = transcripts.user.trim();
+  const assistant = transcripts.assistant.trim();
+  if (boundary === "interrupted") {
+    return {
+      completed: assistant ? [{ role: "assistant", content: assistant }] : [],
+      remaining: { user: transcripts.user, assistant: "" },
+    };
+  }
+  return {
+    completed: [
+      ...(user ? [{ role: "user" as const, content: user }] : []),
+      ...(assistant ? [{ role: "assistant" as const, content: assistant }] : []),
+    ],
+    remaining: { user: "", assistant: "" },
+  };
+}
+
 function voiceSessionId(): string {
   if (typeof crypto.randomUUID === "function") return crypto.randomUUID().replaceAll("-", "_");
   return `voice_${Date.now()}_${Math.random().toString(36).slice(2)}`;
@@ -71,8 +97,6 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   const animationFrameRef = useRef<number | null>(null);
   const transcriptRef = useRef({ user: "", assistant: "" });
   const pageContextRef = useRef<WorkspacePageContext | null>(null);
-  const userFinalizedForTurnRef = useRef(false);
-  const pendingAssistantTranscriptRef = useRef("");
   const eventSequenceRef = useRef({ user: 0, assistant: 0 });
   const persistQueueRef = useRef(Promise.resolve());
   const onTranscriptRef = useRef(onTranscript);
@@ -121,8 +145,6 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     sessionThreadRef.current = null;
     transcriptRef.current = { user: "", assistant: "" };
     pageContextRef.current = null;
-    userFinalizedForTurnRef.current = false;
-    pendingAssistantTranscriptRef.current = "";
     setLiveTranscripts({ user: "", assistant: "" });
     setAmplitude(0);
     updateState(finalState);
@@ -157,30 +179,12 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     });
   }, []);
 
-  const finalizeTranscript = useCallback((role: "user" | "assistant") => {
-    const content = transcriptRef.current[role];
-    transcriptRef.current[role] = "";
-    if (role === "user") {
-      if (!content.trim()) return;
-      persistFinalTranscript("user", content);
-      userFinalizedForTurnRef.current = true;
-      if (pendingAssistantTranscriptRef.current) {
-        persistFinalTranscript("assistant", pendingAssistantTranscriptRef.current);
-        pendingAssistantTranscriptRef.current = "";
-        userFinalizedForTurnRef.current = false;
-      }
-      return;
+  const finalizeTranscripts = useCallback((boundary: "turnComplete" | "interrupted") => {
+    const { completed, remaining } = finalizeVoiceTranscripts(transcriptRef.current, boundary);
+    transcriptRef.current = remaining;
+    for (const transcript of completed) {
+      persistFinalTranscript(transcript.role, transcript.content);
     }
-    if (!content.trim()) return;
-    if (!userFinalizedForTurnRef.current) {
-      pendingAssistantTranscriptRef.current = mergeTranscriptChunk(
-        pendingAssistantTranscriptRef.current,
-        content
-      );
-      return;
-    }
-    persistFinalTranscript("assistant", content);
-    userFinalizedForTurnRef.current = false;
   }, [persistFinalTranscript]);
 
   const scheduleAudio = useCallback((data: string, mimeType?: string) => {
@@ -270,12 +274,12 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       );
       setLiveTranscripts((current) => ({ ...current, assistant: transcriptRef.current.assistant }));
     }
-    if (content.inputTranscription?.finished) finalizeTranscript("user");
-    if (content.outputTranscription?.finished) finalizeTranscript("assistant");
+    if (content.interrupted) finalizeTranscripts("interrupted");
     if (content.turnComplete) {
+      finalizeTranscripts("turnComplete");
       if (playbackSourcesRef.current.size === 0) updateState("listening");
     }
-  }, [finalizeTranscript, scheduleAudio, stopPlayback, updateState]);
+  }, [finalizeTranscripts, scheduleAudio, stopPlayback, updateState]);
 
   const beginAmplitudeUpdates = useCallback(() => {
     const microphoneData = new Uint8Array(256);
@@ -302,8 +306,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     pageContextRef.current = pageContext;
     sessionIdRef.current = voiceSessionId();
     eventSequenceRef.current = { user: 0, assistant: 0 };
-    userFinalizedForTurnRef.current = false;
-    pendingAssistantTranscriptRef.current = "";
+    transcriptRef.current = { user: "", assistant: "" };
     setLiveTranscripts({ user: "", assistant: "" });
     try {
       if (!navigator.mediaDevices?.getUserMedia) throw new Error("A microphone is not available in this browser.");
