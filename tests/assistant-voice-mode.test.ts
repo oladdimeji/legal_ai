@@ -36,6 +36,8 @@ test("Gemini Live configuration is centralized for native audio, transcription, 
   assert.deepEqual(config.outputAudioTranscription, {});
   assert.equal(config.historyConfig.initialHistoryInClientContent, true);
   assert.equal(config.realtimeInputConfig.automaticActivityDetection.disabled, false);
+  assert.equal(config.realtimeInputConfig.automaticActivityDetection.startOfSpeechSensitivity, "START_SENSITIVITY_LOW");
+  assert.equal(config.tools[0].functionDeclarations[0].name, "lookup_workspace");
   assert.match(String(config.systemInstruction), /standard Assistant/);
   assert.doesNotMatch(String(config.systemInstruction), /pretend|browser text-to-speech/i);
 });
@@ -96,7 +98,7 @@ test("Voice Mode lifecycle is separate from standard send and releases microphon
   ]);
   const voiceToggle = assistant.slice(assistant.indexOf("const handleVoiceToggle"), assistant.indexOf("const handleSend"));
   assert.doesNotMatch(voiceToggle, /handleSend/);
-  assert.match(voiceToggle, /voiceMode\.start\(threadId\)/);
+  assert.match(voiceToggle, /voiceMode\.start\(threadId, pageContext\)/);
   assert.match(voiceToggle, /voiceMode\.stop\(\)/);
   assert.match(hook, /getUserMedia/);
   assert.match(hook, /sendRealtimeInput/);
@@ -106,6 +108,9 @@ test("Voice Mode lifecycle is separate from standard send and releases microphon
   assert.match(hook, /context\.close\(\)/);
   assert.match(hook, /cancelAnimationFrame/);
   assert.match(hook, /content\.interrupted[\s\S]*stopPlayback\(\)/);
+  const amplitudeLoop = hook.slice(hook.indexOf("const beginAmplitudeUpdates"), hook.indexOf("const start"));
+  assert.doesNotMatch(amplitudeLoop, /stopPlayback|microphoneLevel\s*>/);
+  assert.doesNotMatch(hook, /suppressPlaybackRef/);
   assert.match(assistant, /stopIfThreadChanged\(activeThreadId\)/);
 });
 
@@ -131,7 +136,8 @@ test("finalized transcripts use a narrow idempotent owned route and never invoke
   assert.match(hook, /inputTranscription\?\.finished/);
   assert.match(hook, /outputTranscription\?\.finished/);
   assert.match(hook, /persistQueueRef/);
-  assert.doesNotMatch(hook, /\/messages`,[\s\S]*pageContext|handleSend/);
+  const transcriptPersistence = hook.slice(hook.indexOf("const persistFinalTranscript"), hook.indexOf("const finalizeTranscript"));
+  assert.doesNotMatch(transcriptPersistence, /pageContext|handleSend/);
 });
 
 test("ephemeral credential route is authenticated by the established API gate and never exposes the permanent key", async () => {
@@ -142,10 +148,49 @@ test("ephemeral credential route is authenticated by the established API gate an
   assert.ok(server.indexOf('app.use(\n    "/api",') < server.indexOf('app.post("/api/threads/:id/voice/token"'));
   const tokenRoute = server.slice(server.indexOf('app.post("/api/threads/:id/voice/token"'), server.indexOf('app.post("/api/threads/:id/voice/messages"'));
   assert.match(tokenRoute, /db\.getThreadById/);
+  assert.match(tokenRoute, /validateVoicePageContext\(req\.body\.pageContext, requestOwnership, thread\.case_id\)/);
+  assert.match(tokenRoute, /sessionContextForPrompt/);
+  assert.match(tokenRoute, /selectedEvidence/);
   assert.match(tokenRoute, /Cache-Control", "no-store"/);
   assert.doesNotMatch(tokenRoute, /GEMINI_API_KEY/);
   assert.match(voice, /authTokens\.create/);
   assert.match(voice, /uses: 1/);
   assert.match(voice, /liveConnectConstraints/);
   assert.doesNotMatch(await readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8"), /GEMINI_API_KEY|VITE_.*GEMINI/);
+});
+
+test("Voice workspace lookup is narrow, read-only, and derives scope from validated page context", async () => {
+  const [server, hook] = await Promise.all([
+    readFile(new URL("../server.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8"),
+  ]);
+  const lookupRoute = server.slice(
+    server.indexOf('app.post("/api/threads/:id/voice/lookup"'),
+    server.indexOf('app.post("/api/threads/:id/voice/messages"')
+  );
+  assert.match(lookupRoute, /ownership\(req\)/);
+  assert.match(lookupRoute, /db\.getThreadById/);
+  assert.match(lookupRoute, /validateVoicePageContext\(req\.body\.pageContext, requestOwnership, thread\.case_id\)/);
+  assert.match(lookupRoute, /voiceLookupCalls\(validated\.pageContext, query\)/);
+  assert.match(lookupRoute, /currentMatterId: validated\.currentMatter\?\.id \|\| null/);
+  assert.match(server, /currentMatterId !== threadMatterId/);
+  assert.doesNotMatch(lookupRoute, /req\.body\.(?:matterId|documentId|scope)|needsWeb: true|create|update|delete|share|send|invite/);
+  assert.match(hook, /\/voice\/lookup/);
+  assert.match(hook, /session\.sendToolResponse/);
+});
+
+test("live Voice transcriptions render as temporary messages and yield to saved messages without standard generation", async () => {
+  const [assistant, hook] = await Promise.all([
+    readFile(new URL("../src/components/AssistantView.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(hook, /liveTranscripts/);
+  assert.match(hook, /setLiveTranscripts[\s\S]*inputTranscription/);
+  assert.match(hook, /setLiveTranscripts[\s\S]*outputTranscription/);
+  assert.match(hook, /onTranscriptRef\.current\(data\)[\s\S]*current\[role\]\.trim\(\) === normalized/);
+  assert.match(assistant, /const displayMessages = \[\.\.\.messages, \.\.\.liveTranscriptMessages\]/);
+  assert.match(assistant, /displayMessages\.length > 0/);
+  assert.match(assistant, /displayMessages\.map/);
+  assert.match(assistant, /liveVoiceTranscript/);
+  assert.doesNotMatch(assistant.slice(assistant.indexOf("const liveTranscriptMessages"), assistant.indexOf("// New docked side editor")), /handleSend|\/messages/);
 });

@@ -1783,3 +1783,12 @@ Status: Implementation complete; focused-phase verification recorded below.
 - Preserved the populated-conversation path exactly: existing turns are still sent with `turnComplete: true`.
 - Added behavioral mock-session coverage for empty, missing, malformed, and populated history without contacting Gemini. No audio, animation, transcript, model, authentication, standard Assistant, dependency, or schema behavior changed.
 - Verification passed: focused Voice Mode tests (9/9), `npm run lint`, full test suite (397/397), and `npm run build`; the existing non-fatal large-chunk warning remains.
+
+### Voice Mode stabilization and authorized current context
+
+- Removed microphone amplitude as a playback-interruption authority while preserving microphone/assistant visualization. Gemini Live `content.interrupted` remains the immediate playback stop signal, and automatic VAD now uses LOW start sensitivity with its existing end sensitivity and timing unchanged.
+- Voice startup now posts page context for server sanitization and ownership validation. The validated Matter is bound to the thread's stored Matter, selected Sources and Work Products are confined to that Matter, Firm Library and Assistant documents retain their existing context/ownership rules, and a bounded authorized current-page context seeds the Live session.
+- Added one authenticated read-only `lookup_workspace` Live function and endpoint. Its deterministic server-side plan accepts only a query, derives all entity and Matter scope from revalidated current context, reuses bounded Assistant evidence helpers, performs no web research or write action, and does not alter the standard Assistant generation route.
+- Live input/output transcription now appears progressively as temporary user/assistant messages in the existing conversation stream, including empty threads. Final turns still use the existing idempotent `/voice/messages` persistence route; saved messages replace matching temporary bubbles without invoking standard Assistant generation.
+- No schema migration, dependency, model, voice, native-audio, ephemeral-credential, permanent-key, standard Assistant, or persistence architecture change was made.
+- Verification: focused Voice Mode tests passed (11/11), `npm run lint` passed, the full test suite passed (399/399), and the production build passed after the managed filesystem sandbox initially blocked Vite config resolution. The existing non-fatal large-chunk warning remains.

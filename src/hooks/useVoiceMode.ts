@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { GoogleGenAI } from "@google/genai";
 import type { LiveServerMessage, Session } from "@google/genai";
 import type { Message } from "../types";
+import type { WorkspacePageContext } from "../types";
 import {
   analyserLevel,
   audioSampleRate,
@@ -26,6 +27,11 @@ type UseVoiceModeOptions = {
   onTranscript: (message: Message) => void;
 };
 
+export type LiveVoiceTranscripts = {
+  user: string;
+  assistant: string;
+};
+
 function voiceSessionId(): string {
   if (typeof crypto.randomUUID === "function") return crypto.randomUUID().replaceAll("-", "_");
   return `voice_${Date.now()}_${Math.random().toString(36).slice(2)}`;
@@ -47,6 +53,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   const [state, setState] = useState<VoiceModeState>("off");
   const [error, setError] = useState("");
   const [amplitude, setAmplitude] = useState(0);
+  const [liveTranscripts, setLiveTranscripts] = useState<LiveVoiceTranscripts>({ user: "", assistant: "" });
   const stateRef = useRef<VoiceModeState>("off");
   const lifecycleRef = useRef(0);
   const sessionThreadRef = useRef<string | null>(null);
@@ -63,9 +70,9 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   const playbackAtRef = useRef(0);
   const animationFrameRef = useRef<number | null>(null);
   const transcriptRef = useRef({ user: "", assistant: "" });
+  const pageContextRef = useRef<WorkspacePageContext | null>(null);
   const userFinalizedForTurnRef = useRef(false);
   const pendingAssistantTranscriptRef = useRef("");
-  const suppressPlaybackRef = useRef(false);
   const eventSequenceRef = useRef({ user: 0, assistant: 0 });
   const persistQueueRef = useRef(Promise.resolve());
   const onTranscriptRef = useRef(onTranscript);
@@ -113,9 +120,10 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     if (context && context.state !== "closed") void context.close().catch(() => undefined);
     sessionThreadRef.current = null;
     transcriptRef.current = { user: "", assistant: "" };
+    pageContextRef.current = null;
     userFinalizedForTurnRef.current = false;
     pendingAssistantTranscriptRef.current = "";
-    suppressPlaybackRef.current = false;
+    setLiveTranscripts({ user: "", assistant: "" });
     setAmplitude(0);
     updateState(finalState);
   }, [stopPlayback, updateState]);
@@ -140,6 +148,9 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       const data = await response.json().catch(() => ({})) as Message & { error?: string };
       if (!response.ok) throw new Error(data.error || "This Voice Mode transcript could not be saved.");
       onTranscriptRef.current(data);
+      setLiveTranscripts((current) => current[role].trim() === normalized
+        ? { ...current, [role]: "" }
+        : current);
     }).catch((persistenceError) => {
       console.error("Voice transcript persistence failed.");
       setError(persistenceError instanceof Error ? persistenceError.message : "This Voice Mode transcript could not be saved.");
@@ -198,15 +209,48 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   }, [updateState]);
 
   const handleServerMessage = useCallback((message: LiveServerMessage) => {
+    if (message.toolCall?.functionCalls?.length) {
+      const threadId = sessionThreadRef.current;
+      const pageContext = pageContextRef.current;
+      const session = sessionRef.current;
+      if (threadId && pageContext && session) {
+        void Promise.all(message.toolCall.functionCalls.map(async (call) => {
+          const query = typeof call.args?.query === "string" ? call.args.query.trim() : "";
+          try {
+            const response = await fetch(`/api/threads/${encodeURIComponent(threadId)}/voice/lookup`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ query, pageContext }),
+            });
+            const data = await response.json().catch(() => ({})) as { evidence?: string; error?: string };
+            session.sendToolResponse({
+              functionResponses: {
+                id: call.id,
+                name: call.name || "lookup_workspace",
+                response: response.ok
+                  ? { output: data.evidence || "No authorized workspace evidence was found." }
+                  : { error: data.error || "The authorized workspace lookup failed." },
+              },
+            });
+          } catch {
+            session.sendToolResponse({
+              functionResponses: {
+                id: call.id,
+                name: call.name || "lookup_workspace",
+                response: { error: "The authorized workspace lookup failed." },
+              },
+            });
+          }
+        }));
+      }
+    }
     const content = message.serverContent;
     if (!content) return;
     if (content.interrupted) {
       stopPlayback();
-      suppressPlaybackRef.current = false;
       updateState("listening");
     }
-    if (content.inputTranscription?.text) suppressPlaybackRef.current = false;
-    for (const part of content.interrupted || suppressPlaybackRef.current ? [] : content.modelTurn?.parts || []) {
+    for (const part of content.interrupted ? [] : content.modelTurn?.parts || []) {
       const inlineData = part.inlineData;
       if (inlineData?.data && inlineData.mimeType?.startsWith("audio/")) {
         scheduleAudio(inlineData.data, inlineData.mimeType);
@@ -217,12 +261,14 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
         transcriptRef.current.user,
         content.inputTranscription.text
       );
+      setLiveTranscripts((current) => ({ ...current, user: transcriptRef.current.user }));
     }
     if (content.outputTranscription?.text) {
       transcriptRef.current.assistant = mergeTranscriptChunk(
         transcriptRef.current.assistant,
         content.outputTranscription.text
       );
+      setLiveTranscripts((current) => ({ ...current, assistant: transcriptRef.current.assistant }));
     }
     if (content.inputTranscription?.finished) finalizeTranscript("user");
     if (content.outputTranscription?.finished) finalizeTranscript("assistant");
@@ -238,11 +284,6 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     const frame = (now: number) => {
       const microphoneLevel = analyserLevel(microphoneAnalyserRef.current, microphoneData);
       const assistantLevel = analyserLevel(assistantAnalyserRef.current, assistantData);
-      if (stateRef.current === "speaking" && microphoneLevel > 0.16) {
-        suppressPlaybackRef.current = true;
-        stopPlayback();
-        updateState("listening");
-      }
       if (now - lastUpdate > 50) {
         setAmplitude(stateRef.current === "speaking" ? assistantLevel : microphoneLevel);
         lastUpdate = now;
@@ -250,19 +291,20 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       animationFrameRef.current = requestAnimationFrame(frame);
     };
     animationFrameRef.current = requestAnimationFrame(frame);
-  }, [stopPlayback, updateState]);
+  }, []);
 
-  const start = useCallback(async (threadId: string) => {
+  const start = useCallback(async (threadId: string, pageContext: WorkspacePageContext) => {
     if (stateRef.current === "connecting" || stateRef.current === "listening" || stateRef.current === "speaking") return;
     const lifecycle = ++lifecycleRef.current;
     setError("");
     updateState("connecting");
     sessionThreadRef.current = threadId;
+    pageContextRef.current = pageContext;
     sessionIdRef.current = voiceSessionId();
     eventSequenceRef.current = { user: 0, assistant: 0 };
     userFinalizedForTurnRef.current = false;
     pendingAssistantTranscriptRef.current = "";
-    suppressPlaybackRef.current = false;
+    setLiveTranscripts({ user: "", assistant: "" });
     try {
       if (!navigator.mediaDevices?.getUserMedia) throw new Error("A microphone is not available in this browser.");
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -273,7 +315,11 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
         return;
       }
       streamRef.current = stream;
-      const tokenResponse = await fetch(`/api/threads/${encodeURIComponent(threadId)}/voice/token`, { method: "POST" });
+      const tokenResponse = await fetch(`/api/threads/${encodeURIComponent(threadId)}/voice/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pageContext }),
+      });
       const tokenData = await tokenResponse.json().catch(() => ({})) as VoiceTokenResponse;
       if (!tokenResponse.ok || !tokenData.token) throw new Error(tokenData.error || "Voice Mode could not connect. Please try again.");
       if (lifecycle !== lifecycleRef.current) return;
@@ -356,6 +402,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     state,
     error,
     amplitude,
+    liveTranscripts,
     active: state === "connecting" || state === "listening" || state === "speaking",
     start,
     stop,

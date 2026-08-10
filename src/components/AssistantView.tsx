@@ -193,6 +193,21 @@ export default function AssistantView({
         : [...current, message]);
     },
   });
+  const liveTranscriptMessages: Message[] = (["user", "assistant"] as const).flatMap((role) => {
+    const content = voiceMode.liveTranscripts[role].trim();
+    if (!content) return [];
+    return [{
+      id: `voice-live-${role}`,
+      thread_id: activeThreadIdRef.current || "voice-live",
+      role,
+      content,
+      citations: [],
+      steps: null,
+      created_at: new Date().toISOString(),
+      metadata: { liveVoiceTranscript: true },
+    }];
+  });
+  const displayMessages = [...messages, ...liveTranscriptMessages];
 
   // New docked side editor state declarations
   const [sideEditorMessageId, setSideEditorMessageId] = useState<string | null>(null);
@@ -350,7 +365,7 @@ export default function AssistantView({
   // Scroll to bottom
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, loading, workingStageIndex]);
+  }, [messages, voiceMode.liveTranscripts, loading, workingStageIndex]);
 
   useEffect(() => {
     if (
@@ -427,7 +442,7 @@ export default function AssistantView({
     if (!threadId) {
       threadId = await handleStartNewThread(pageContext, conversationVersionRef.current);
     }
-    if (threadId) await voiceMode.start(threadId);
+    if (threadId) await voiceMode.start(threadId, pageContext);
   };
 
   const handleSend = async (e?: React.FormEvent, customQuery?: string) => {
@@ -1032,7 +1047,7 @@ export default function AssistantView({
       {/* Central Consultation Screen */}
       <div className="flex-1 flex flex-col h-full overflow-hidden relative border-r border-zinc-100">
         
-        {messages.length > 0 ? (
+        {displayMessages.length > 0 ? (
           <>
             {/* Simple Thread Title Header (Only if there are messages) */}
             <div className={`${compact ? "hidden" : "flex"} px-8 py-4.5 bg-zinc-50 border-b border-zinc-100 items-center justify-between z-10 select-none shrink-0`} id="active-thread-header">
@@ -1059,8 +1074,9 @@ export default function AssistantView({
 
             {/* Message Thread History List */}
             <div className={`flex-1 overflow-y-auto space-y-2 ${compact ? "px-4 py-4" : "px-8 py-6"}`} id="chat-messages-scroll-area">
-              {messages.map((m, index) => {
-                const isLastMessage = index === messages.length - 1;
+              {displayMessages.map((m, index) => {
+                const isLastMessage = index === displayMessages.length - 1;
+                const isLiveVoiceMessage = m.metadata?.liveVoiceTranscript === true;
                 const lastAssistantMessageId = [...messages]
                   .reverse()
                   .find((msg) => msg.role === "assistant")?.id;
@@ -1136,7 +1152,7 @@ export default function AssistantView({
                           })()}
 
                           {/* Message Action Items */}
-                          {m.metadata?.error !== true && (
+                          {!isLiveVoiceMessage && m.metadata?.error !== true && (
                             <div className="mt-5 pt-3.5 border-t border-zinc-100 flex items-center justify-between flex-wrap gap-2.5 select-none">
                               <div className="flex items-center gap-3">
                                 {m.citations && m.citations.length > 0 ? (
