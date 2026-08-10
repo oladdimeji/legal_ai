@@ -1692,6 +1692,55 @@ class DatabaseService {
     return rows[0];
   }
 
+  public async getActiveClientCollaborator(
+    caseId: string, context: OwnershipContext
+  ): Promise<any | null> {
+    await this.assertMatterAccess(caseId, context);
+    const rows = await this.query(
+      `SELECT ca.client_name, ca.client_email, c.name AS matter_name
+       FROM matter_client_access ca
+       JOIN cases c ON c.id = ca.case_id
+       WHERE ca.case_id = $1
+         AND c.firm_id = $2
+         AND ca.invitation_status = 'Active'
+         AND ca.revoked_at IS NULL
+       LIMIT 1`,
+      [caseId, context.firmId]
+    );
+    return rows[0] || null;
+  }
+
+  public async getApprovedMatterLawyers(
+    caseId: string, firmId: string
+  ): Promise<Array<{ name: string | null; email: string }>> {
+    return await this.query(
+      `SELECT DISTINCT u.name, u.email
+       FROM matter_user_access access
+       JOIN cases c ON c.id = access.case_id
+       JOIN users u ON u.id = access.user_id AND u.firm_id = c.firm_id
+       WHERE access.case_id = $1
+         AND c.firm_id = $2
+         AND u.account_type = 'lawyer'
+         AND u.platform_access_status = 'approved'
+         AND NULLIF(BTRIM(u.email), '') IS NOT NULL`,
+      [caseId, firmId]
+    );
+  }
+
+  public async getCollaborationRequestType(
+    caseId: string, requestId: string, firmId: string
+  ): Promise<string | null> {
+    const rows = await this.query(
+      `SELECT cr.request_type
+       FROM collaboration_requests cr
+       JOIN cases c ON c.id = cr.case_id
+       WHERE cr.id = $1 AND cr.case_id = $2 AND c.firm_id = $3
+       LIMIT 1`,
+      [requestId, caseId, firmId]
+    );
+    return rows[0]?.request_type || null;
+  }
+
   public async activateClientInvite(
     caseId: string, tokenHash: string, context: OwnershipContext
   ): Promise<any> {

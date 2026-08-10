@@ -1749,3 +1749,13 @@ Status: Implementation complete; focused verification recorded below.
 - After the first successful client-share operation in each Matter, the Work Product view records a Matter-specific browser marker and opens the existing Collaboration tab. Later shares in that Matter stay in Work Product; failed shares and Stop sharing do not set the marker or navigate.
 - No route, API, backend sharing behavior, schema, migration, dependency, styling, authentication, or Collaboration flow changed.
 - Verification passed: focused Work Product presentation tests (9/9), `npm run lint`, and `npm run build`. The build required execution outside the managed filesystem sandbox after its initial Vite config read was denied; the existing non-fatal large-chunk warning remains.
+
+### Best-effort collaboration email notifications
+
+Status: Implementation complete; focused verification recorded below.
+
+- Added short Brevo notifications after successful document sharing, collaboration request creation, active Client Revision creation, and active client request responses.
+- Client notifications use only the Matter's active, non-revoked collaborator with a valid email. Lawyer notifications use distinct approved lawyer users with explicit `matter_user_access` for the Matter and valid emails.
+- Recipient lookup and delivery are detached and caught, so missing recipients or email failures do not change successful collaboration API results. Emails omit document contents, request instructions, response text, filenames, and revision contents.
+- Added no schema migration, dependency, frontend change, legacy-route hook, or response-payload change.
+- Verification passed: focused collaboration tests (47/47), `npm run lint`, the full test suite (388/388), and `npm run build`. The build required execution outside the managed filesystem sandbox after its initial Vite config read was denied; the existing non-fatal large-chunk warning remains.

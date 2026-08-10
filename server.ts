@@ -192,6 +192,66 @@ async function sendBrevoEmail(input: {
   if (!response.ok) throw new Error(`BREVO_DELIVERY_FAILED_${response.status}`);
 }
 
+function runBestEffortEmail(label: string, notification: () => Promise<void>): void {
+  void Promise.resolve()
+    .then(notification)
+    .catch((error) => {
+      console.error(
+        `Best-effort email notification failed (${label}):`,
+        error instanceof Error ? error.message : "Unknown error"
+      );
+    });
+}
+
+async function sendPlainNotification(
+  recipients: string[], subject: string, textContent: string
+): Promise<void> {
+  const to = Array.from(new Set(
+    recipients.map(normalizeEmail).filter((email) => isValidEmail(email))
+  ));
+  if (to.length === 0) return;
+  const htmlContent = textContent
+    .split(/\n+/)
+    .filter(Boolean)
+    .map((paragraph) => `<p>${escapeEmailHtml(paragraph)}</p>`)
+    .join("");
+  await sendBrevoEmail({ to, subject, textContent, htmlContent });
+}
+
+function notifyActiveMatterClient(
+  caseId: string,
+  context: OwnershipContext,
+  label: string,
+  subject: string,
+  message: (matterName: string) => string
+): void {
+  runBestEffortEmail(label, async () => {
+    const client = await db.getActiveClientCollaborator(caseId, context);
+    if (!client || !isValidEmail(normalizeEmail(client.client_email))) return;
+    await sendPlainNotification(
+      [client.client_email],
+      subject,
+      message(client.matter_name || "your Matter")
+    );
+  });
+}
+
+function notifyMatterLawyers(
+  access: { case_id: string; firm_id: string; matter_name?: string; client_name?: string },
+  label: string,
+  subject: string,
+  message: (matterName: string, clientName: string) => string
+): void {
+  runBestEffortEmail(label, async () => {
+    const lawyers = await db.getApprovedMatterLawyers(access.case_id, access.firm_id);
+    await sendPlainNotification(
+      lawyers.map((lawyer) => lawyer.email),
+      subject,
+      message(access.matter_name || "the Matter", access.client_name || "The client")
+    );
+  });
+}
+
 function requestedCaseId(value: unknown): string | null {
   return typeof value === "string" && value !== "null" && value ? value : null;
 }
@@ -1330,13 +1390,20 @@ async function startServer() {
       );
       if (!access) return res.status(404).json({ error: "Shared document not found." });
       try {
-        return res.status(201).json(
-          await db.createPortalClientRevision(
-            access.token_hash,
-            req.params.draftId,
-            content
-          )
+        const revision = await db.createPortalClientRevision(
+          access.token_hash,
+          req.params.draftId,
+          content
         );
+        const documentTitle = revision.title?.replace(/ \(Client Revision\)$/, "") || "Shared document";
+        notifyMatterLawyers(
+          access,
+          "client revision",
+          "A Client Revision was submitted in Exepts",
+          (matterName, clientName) =>
+            `${clientName} submitted a Client Revision for “${documentTitle}” in ${matterName}. Open Exepts to review it.`
+        );
+        return res.status(201).json(revision);
       } catch {
         return res.status(404).json({ error: "Shared document not found." });
       }
@@ -1452,16 +1519,30 @@ async function startServer() {
             error: "Files can only be attached to an Upload files response.",
           });
         }
-        return res.status(201).json(
-          await db.createPortalResponse(
-            access.token_hash,
-            req.params.requestId,
-            type,
-            content || null,
-            uploadedFiles,
-            type === "Shared files" ? draftIds : []
-          )
+        const response = await db.createPortalResponse(
+          access.token_hash,
+          req.params.requestId,
+          type,
+          content || null,
+          uploadedFiles,
+          type === "Shared files" ? draftIds : []
         );
+        runBestEffortEmail("client request response", async () => {
+          const [lawyers, requestType] = await Promise.all([
+            db.getApprovedMatterLawyers(access.case_id, access.firm_id),
+            db.getCollaborationRequestType(
+              access.case_id,
+              req.params.requestId,
+              access.firm_id
+            ),
+          ]);
+          await sendPlainNotification(
+            lawyers.map((lawyer) => lawyer.email),
+            "A client responded to a request in Exepts",
+            `${access.client_name || "The client"} submitted a ${type} response to the ${requestType || "collaboration"} request for ${access.matter_name || "the Matter"}. Open Exepts to review it.`
+          );
+        });
+        return res.status(201).json(response);
       } catch (error) {
         const status = portalResponseErrorStatus(error);
         if (status === 500) console.error("Client response creation failed.");
@@ -2240,9 +2321,19 @@ ${sourceText}`;
       const instruction = typeof req.body.instruction === "string" ? req.body.instruction.trim() : "";
       const draftIds: string[] = Array.isArray(req.body.draftIds)
         ? req.body.draftIds.filter((id: unknown): id is string => typeof id === "string") : [];
-      return res.status(201).json(
-        await db.createCollaborationRequest(req.params.caseId, type, instruction, draftIds, ownership(req))
+      const requestOwnership = ownership(req);
+      const request = await db.createCollaborationRequest(
+        req.params.caseId, type, instruction, draftIds, requestOwnership
       );
+      notifyActiveMatterClient(
+        req.params.caseId,
+        requestOwnership,
+        "collaboration request",
+        "A new request is available in Exepts",
+        (matterName) =>
+          `A new ${type} request is available for ${matterName}. Open Exepts to view and respond.`
+      );
+      return res.status(201).json(request);
     } catch (err: any) {
       const status = /invalid|select at least/i.test(err.message) ? 400 : ownedErrorStatus(err);
       return res.status(status).json({ error: err.message });
@@ -2908,7 +2999,20 @@ ${EXPORT_SAFE_DOCUMENT_MARKDOWN_RULES}`;
       if (!caseId || typeof req.body.shared !== "boolean") {
         return res.status(400).json({ error: "Matter context and sharing state are required" });
       }
-      const draft = await db.setDraftSharing(req.params.id, caseId, req.body.shared, ownership(req));
+      const requestOwnership = ownership(req);
+      const draft = await db.setDraftSharing(
+        req.params.id, caseId, req.body.shared, requestOwnership
+      );
+      if (req.body.shared) {
+        notifyActiveMatterClient(
+          caseId,
+          requestOwnership,
+          "document shared",
+          "A document was shared with you in Exepts",
+          (matterName) =>
+            `“${draft.title || "A document"}” was shared with you for ${matterName}. It is available in Exepts.`
+        );
+      }
       return res.json({ ...draft, content: cleanWorkProductContent(draft.content) });
     } catch (err: any) {
       return res.status(ownedErrorStatus(err)).json({ error: err.message });
