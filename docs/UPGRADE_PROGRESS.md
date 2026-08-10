@@ -1792,3 +1792,12 @@ Status: Implementation complete; focused-phase verification recorded below.
 - Live input/output transcription now appears progressively as temporary user/assistant messages in the existing conversation stream, including empty threads. Final turns still use the existing idempotent `/voice/messages` persistence route; saved messages replace matching temporary bubbles without invoking standard Assistant generation.
 - No schema migration, dependency, model, voice, native-audio, ephemeral-credential, permanent-key, standard Assistant, or persistence architecture change was made.
 - Verification: focused Voice Mode tests passed (11/11), `npm run lint` passed, the full test suite passed (399/399), and the production build passed after the managed filesystem sandbox initially blocked Vite config resolution. The existing non-fatal large-chunk warning remains.
+
+### Voice Mode startup regression repair
+
+- Removed the incompatible empty `lockAdditionalFields` value from the Gemini ephemeral credential request while retaining its one-use lifetime, model and complete constrained Live configuration, including native audio, transcription, LOW start-of-speech sensitivity, and the read-only `lookup_workspace` declaration.
+- Changed both Live workspace-tool success and failure responses to the installed SDK's explicit `functionResponses` array shape.
+- Removed only the Voice-only requirement that the current page Matter equal the conversation's stored `case_id`. Authenticated workspace ownership and all current Matter, selected Source, Work Product, Firm Library, and Assistant-document validation remain enforced.
+- Gemini credential failures now log redacted error name, code/status when supplied, and message server-side while the client retains its generic safe response.
+- Focused Voice tests passed (12/12), including the runtime credential-request object. A real server-side Gemini credential request succeeded, and that ephemeral credential opened a Live connection and accepted initial-history completion before clean close; no permanent key or ephemeral token was printed.
+- No schema, migration, dependency, model, voice, native-audio, transcript persistence, standard Assistant, or unrelated UI change was made.

@@ -6,6 +6,7 @@ import {
   VOICE_MODE_CONFIG,
   boundedVoiceHistory,
   liveConnectConfig,
+  voiceCredentialRequest,
   voiceMessageId,
 } from "../server/voiceMode.js";
 import {
@@ -40,6 +41,20 @@ test("Gemini Live configuration is centralized for native audio, transcription, 
   assert.equal(config.tools[0].functionDeclarations[0].name, "lookup_workspace");
   assert.match(String(config.systemInstruction), /standard Assistant/);
   assert.doesNotMatch(String(config.systemInstruction), /pretend|browser text-to-speech/i);
+});
+
+test("ephemeral credential request preserves constrained Live tools without the incompatible additional-field lock", () => {
+  const { request } = voiceCredentialRequest(Date.UTC(2026, 7, 10));
+  assert.equal(Object.hasOwn(request.config, "lockAdditionalFields"), false);
+  assert.equal(request.config.liveConnectConstraints.model, VOICE_MODE_CONFIG.model);
+  assert.equal(
+    request.config.liveConnectConstraints.config.tools[0].functionDeclarations[0].name,
+    "lookup_workspace"
+  );
+  assert.equal(
+    request.config.liveConnectConstraints.config.realtimeInputConfig.automaticActivityDetection.startOfSpeechSensitivity,
+    "START_SENSITIVITY_LOW"
+  );
 });
 
 test("recent text and voice messages seed Live in role order within the character bound", () => {
@@ -148,7 +163,7 @@ test("ephemeral credential route is authenticated by the established API gate an
   assert.ok(server.indexOf('app.use(\n    "/api",') < server.indexOf('app.post("/api/threads/:id/voice/token"'));
   const tokenRoute = server.slice(server.indexOf('app.post("/api/threads/:id/voice/token"'), server.indexOf('app.post("/api/threads/:id/voice/messages"'));
   assert.match(tokenRoute, /db\.getThreadById/);
-  assert.match(tokenRoute, /validateVoicePageContext\(req\.body\.pageContext, requestOwnership, thread\.case_id\)/);
+  assert.match(tokenRoute, /validateVoicePageContext\(req\.body\.pageContext, requestOwnership\)/);
   assert.match(tokenRoute, /sessionContextForPrompt/);
   assert.match(tokenRoute, /selectedEvidence/);
   assert.match(tokenRoute, /Cache-Control", "no-store"/);
@@ -156,6 +171,7 @@ test("ephemeral credential route is authenticated by the established API gate an
   assert.match(voice, /authTokens\.create/);
   assert.match(voice, /uses: 1/);
   assert.match(voice, /liveConnectConstraints/);
+  assert.doesNotMatch(voice, /lockAdditionalFields/);
   assert.doesNotMatch(await readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8"), /GEMINI_API_KEY|VITE_.*GEMINI/);
 });
 
@@ -170,13 +186,14 @@ test("Voice workspace lookup is narrow, read-only, and derives scope from valida
   );
   assert.match(lookupRoute, /ownership\(req\)/);
   assert.match(lookupRoute, /db\.getThreadById/);
-  assert.match(lookupRoute, /validateVoicePageContext\(req\.body\.pageContext, requestOwnership, thread\.case_id\)/);
+  assert.match(lookupRoute, /validateVoicePageContext\(req\.body\.pageContext, requestOwnership\)/);
   assert.match(lookupRoute, /voiceLookupCalls\(validated\.pageContext, query\)/);
   assert.match(lookupRoute, /currentMatterId: validated\.currentMatter\?\.id \|\| null/);
-  assert.match(server, /currentMatterId !== threadMatterId/);
+  assert.doesNotMatch(server, /currentMatterId !== threadMatterId|Voice page context does not match this conversation/);
   assert.doesNotMatch(lookupRoute, /req\.body\.(?:matterId|documentId|scope)|needsWeb: true|create|update|delete|share|send|invite/);
   assert.match(hook, /\/voice\/lookup/);
   assert.match(hook, /session\.sendToolResponse/);
+  assert.match(hook, /functionResponses:\s*\[\{/);
 });
 
 test("live Voice transcriptions render as temporary messages and yield to saved messages without standard generation", async () => {

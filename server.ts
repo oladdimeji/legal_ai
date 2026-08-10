@@ -139,7 +139,7 @@ class VoicePageContextError extends Error {
   }
 }
 
-async function validateVoicePageContext(value: unknown, requestOwnership: OwnershipContext, threadMatterId: string | null): Promise<{
+async function validateVoicePageContext(value: unknown, requestOwnership: OwnershipContext): Promise<{
   pageContext: WorkspacePageContext;
   currentMatter: Awaited<ReturnType<typeof db.getCaseById>> | null;
   selectedEvidence: AssistantEvidence | null;
@@ -152,9 +152,6 @@ async function validateVoicePageContext(value: unknown, requestOwnership: Owners
     : null;
   if (submittedMatterId && !currentMatter) throw new VoicePageContextError(404, "Matter not found");
   const currentMatterId = currentMatter?.id || null;
-  if (currentMatterId !== threadMatterId) {
-    throw new VoicePageContextError(409, "Voice page context does not match this conversation");
-  }
   if (currentMatter) {
     pageContext = {
       ...pageContext,
@@ -2558,7 +2555,7 @@ ${sourceText}`;
       const requestOwnership = ownership(req);
       const thread = await db.getThreadById(req.params.id, requestOwnership);
       if (!thread) return res.status(404).json({ error: "Thread not found" });
-      const validated = await validateVoicePageContext(req.body.pageContext, requestOwnership, thread.case_id);
+      const validated = await validateVoicePageContext(req.body.pageContext, requestOwnership);
       const account = (req as AuthenticatedRequest).auth!;
       const sessionContext = buildAssistantSessionContext({
         account,
@@ -2599,7 +2596,7 @@ ${sourceText}`;
       const requestOwnership = ownership(req);
       const thread = await db.getThreadById(req.params.id, requestOwnership);
       if (!thread) return res.status(404).json({ error: "Thread not found" });
-      const validated = await validateVoicePageContext(req.body.pageContext, requestOwnership, thread.case_id);
+      const validated = await validateVoicePageContext(req.body.pageContext, requestOwnership);
       const toolCalls = voiceLookupCalls(validated.pageContext, query);
       if (toolCalls.length === 0) {
         return res.json({ evidence: wrapAuthorizedEvidence([]) });

@@ -91,28 +91,61 @@ export function liveConnectConfig() {
   };
 }
 
+export function voiceCredentialRequest(now = Date.now()) {
+  const expiresAt = new Date(now + VOICE_MODE_CONFIG.sessionMinutes * 60_000).toISOString();
+  const newSessionExpireTime = new Date(now + VOICE_MODE_CONFIG.newSessionMinutes * 60_000).toISOString();
+  return {
+    expiresAt,
+    request: {
+      config: {
+        uses: 1,
+        expireTime: expiresAt,
+        newSessionExpireTime,
+        httpOptions: { apiVersion: VOICE_MODE_CONFIG.apiVersion },
+        liveConnectConstraints: {
+          model: VOICE_MODE_CONFIG.model,
+          config: liveConnectConfig(),
+        },
+      },
+    },
+  };
+}
+
+function safeGeminiErrorDetails(error: unknown): {
+  name: string;
+  code?: string | number;
+  status?: string | number;
+  message: string;
+} {
+  const value = error && typeof error === "object" ? error as Record<string, unknown> : {};
+  const redact = (input: unknown) => {
+    let output = typeof input === "string" ? input : String(input ?? "Unknown Gemini error");
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (apiKey) output = output.replaceAll(apiKey, "[REDACTED]");
+    return output.replace(/(api[_ -]?key|authorization|token)(\s*[:=]\s*)([^\s,;}]+)/gi, "$1$2[REDACTED]");
+  };
+  return {
+    name: redact(value.name || (error instanceof Error ? error.name : "GeminiError")),
+    ...(typeof value.code === "string" || typeof value.code === "number" ? { code: value.code } : {}),
+    ...(typeof value.status === "string" || typeof value.status === "number" ? { status: value.status } : {}),
+    message: redact(value.message || (error instanceof Error ? error.message : error)),
+  };
+}
+
 export async function createVoiceModeCredential(): Promise<{
   token: string;
   model: string;
   apiVersion: string;
   expiresAt: string;
 }> {
-  const now = Date.now();
-  const expiresAt = new Date(now + VOICE_MODE_CONFIG.sessionMinutes * 60_000).toISOString();
-  const newSessionExpireTime = new Date(now + VOICE_MODE_CONFIG.newSessionMinutes * 60_000).toISOString();
-  const result = await getAiClient().authTokens.create({
-    config: {
-      uses: 1,
-      expireTime: expiresAt,
-      newSessionExpireTime,
-      httpOptions: { apiVersion: VOICE_MODE_CONFIG.apiVersion },
-      liveConnectConstraints: {
-        model: VOICE_MODE_CONFIG.model,
-        config: liveConnectConfig(),
-      },
-      lockAdditionalFields: [],
-    },
-  });
+  const { expiresAt, request } = voiceCredentialRequest();
+  let result;
+  try {
+    result = await getAiClient().authTokens.create(request);
+  } catch (error) {
+    console.error("Gemini Live credential creation failed.", safeGeminiErrorDetails(error));
+    throw error;
+  }
   if (!result.name) throw new Error("Gemini did not return a Live credential.");
   return {
     token: result.name,

@@ -224,21 +224,21 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
             });
             const data = await response.json().catch(() => ({})) as { evidence?: string; error?: string };
             session.sendToolResponse({
-              functionResponses: {
+              functionResponses: [{
                 id: call.id,
                 name: call.name || "lookup_workspace",
                 response: response.ok
                   ? { output: data.evidence || "No authorized workspace evidence was found." }
                   : { error: data.error || "The authorized workspace lookup failed." },
-              },
+              }],
             });
           } catch {
             session.sendToolResponse({
-              functionResponses: {
+              functionResponses: [{
                 id: call.id,
                 name: call.name || "lookup_workspace",
                 response: { error: "The authorized workspace lookup failed." },
-              },
+              }],
             });
           }
         }));
