@@ -1740,3 +1740,12 @@ Status: Implementation complete; focused-phase verification recorded below.
 - Attachments are explicitly not automatic and must not be added where inappropriate or unhelpful.
 - Added one focused prompt-level regression test. No DOCX, parser, editor, persistence, database, UI, dependency, model setting, or Assistant architecture changed.
 - Verification passed: focused autonomous-document test (10/10), `npm run lint`, and `npm run build`. The build required execution outside the managed filesystem sandbox after its initial Vite config read was denied; the existing non-fatal large-chunk warning remains.
+
+### Landing access label and first-share Collaboration introduction
+
+Status: Implementation complete; focused verification recorded below.
+
+- Changed all three landing-page `Request a Demo` labels to `Request Access` without changing their existing handlers or the `/request-demo` flow.
+- After the first successful client-share operation in each Matter, the Work Product view records a Matter-specific browser marker and opens the existing Collaboration tab. Later shares in that Matter stay in Work Product; failed shares and Stop sharing do not set the marker or navigate.
+- No route, API, backend sharing behavior, schema, migration, dependency, styling, authentication, or Collaboration flow changed.
+- Verification passed: focused Work Product presentation tests (9/9), `npm run lint`, and `npm run build`. The build required execution outside the managed filesystem sandbox after its initial Vite config read was denied; the existing non-fatal large-chunk warning remains.

@@ -72,6 +72,20 @@ test("Work Product edit paths use the repaired rich editor and no Markdown sourc
   assert.doesNotMatch(rich, /useLayoutEffect|innerHTML|contentEditable|document\.execCommand/);
 });
 
+test("first successful client share introduces Matter Collaboration once", async () => {
+  const [editor, workspace, landing] = await Promise.all([
+    readFile("src/components/DraftEditorView.tsx", "utf8"),
+    readFile("src/components/MatterWorkspaceView.tsx", "utf8"),
+    readFile("src/components/LandingPage.tsx", "utf8"),
+  ]);
+  assert.doesNotMatch(landing, /Request a Demo/);
+  assert.equal(landing.match(/Request Access/g)?.length, 3);
+  assert.match(editor, /if \(nextShared\) onShareWithClientSuccess\?\.\(\);/);
+  assert.match(workspace, /exepts:collaboration-introduced:\$\{matter\.id\}/);
+  assert.match(workspace, /if \(window\.localStorage\.getItem\(markerKey\)\) return;/);
+  assert.match(workspace, /window\.localStorage\.setItem\(markerKey, "true"\);\s+setTab\("Collaboration"\);/);
+});
+
 test("Markdown opens as a structured editor document and serializes back to Markdown", () => {
   const document = markdownToEditorDocument("Employment Advice", sampleMarkdown);
   assert.equal(document.type, "doc");

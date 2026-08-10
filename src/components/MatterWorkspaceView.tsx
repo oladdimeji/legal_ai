@@ -129,6 +129,17 @@ export default function MatterWorkspaceView({
     onClearInitialDraftId();
   };
 
+  const introduceCollaborationAfterShare = () => {
+    const markerKey = `exepts:collaboration-introduced:${matter.id}`;
+    try {
+      if (window.localStorage.getItem(markerKey)) return;
+      window.localStorage.setItem(markerKey, "true");
+      setTab("Collaboration");
+    } catch {
+      // Sharing remains successful when browser storage is unavailable.
+    }
+  };
+
   return (
     <div className="flex h-full flex-col bg-white">
       <header className="border-b px-8 py-5">
@@ -160,6 +171,7 @@ export default function MatterWorkspaceView({
             initialDraftId={initialDraftId || collaborationDraftId}
             onClearInitialDraftId={clearDraftNavigation}
             onSelectedItemChange={setSelectedItem}
+            onShareWithClientSuccess={introduceCollaborationAfterShare}
           />
         )}
         {tab === "Collaboration" && (

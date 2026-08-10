@@ -8,9 +8,10 @@ interface DraftEditorViewProps {
   onClearInitialDraftId: () => void;
   caseId: string | null;
   onSelectedItemChange?: (item: WorkspacePageContext["selectedItem"]) => void;
+  onShareWithClientSuccess?: () => void;
 }
 
-export default function DraftEditorView({ initialDraftId, onClearInitialDraftId, caseId, onSelectedItemChange }: DraftEditorViewProps) {
+export default function DraftEditorView({ initialDraftId, onClearInitialDraftId, caseId, onSelectedItemChange, onShareWithClientSuccess }: DraftEditorViewProps) {
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [activeDraft, setActiveDraft] = useState<Draft | null>(null);
   const [title, setTitle] = useState("");
@@ -121,6 +122,7 @@ export default function DraftEditorView({ initialDraftId, onClearInitialDraftId,
       setActiveDraft(data);
       setContent(data.content);
       setDrafts((current) => current.map((draft) => draft.id === data.id ? data : draft));
+      if (nextShared) onShareWithClientSuccess?.();
     } catch (error) {
       alert(error instanceof Error ? error.message : "Sharing could not be updated");
     } finally {
