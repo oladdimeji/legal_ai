@@ -13,6 +13,7 @@ import {
   downsampleAudio,
   mergeTranscriptChunk,
 } from "../src/lib/voiceAudio.js";
+import { initializeLiveHistory } from "../src/hooks/useVoiceMode.js";
 
 function message(id: string, role: "user" | "assistant", content: string): Message {
   return {
@@ -48,6 +49,29 @@ test("recent text and voice messages seed Live in role order within the characte
   assert.deepEqual(history.map((turn) => turn.role), ["user", "model", "user"]);
   assert.match(history[0].parts[0].text, /clause seven/);
   assert.ok(history.reduce((total, turn) => total + turn.parts[0].text.length, 0) <= VOICE_MODE_CONFIG.historyCharacterLimit);
+});
+
+test("empty or malformed Live history completes initialization without sending empty turns", () => {
+  for (const history of [[], undefined, null, { turns: [] }]) {
+    const calls: unknown[] = [];
+    initializeLiveHistory({
+      sendClientContent: (params) => { calls.push(params); },
+    }, history);
+    assert.deepEqual(calls, [{ turnComplete: true }]);
+    assert.equal(Object.hasOwn(calls[0] as object, "turns"), false);
+  }
+});
+
+test("populated Live history is still supplied with turnComplete", () => {
+  const history = [
+    { role: "user" as const, parts: [{ text: "Explain clause seven." }] },
+    { role: "model" as const, parts: [{ text: "It limits liability." }] },
+  ];
+  const calls: unknown[] = [];
+  initializeLiveHistory({
+    sendClientContent: (params) => { calls.push(params); },
+  }, history);
+  assert.deepEqual(calls, [{ turns: history, turnComplete: true }]);
 });
 
 test("voice transcript identifiers are deterministic per owned thread, session, role, and final event", () => {

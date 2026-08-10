@@ -18,7 +18,7 @@ type VoiceTokenResponse = {
   model: string;
   apiVersion: string;
   expiresAt: string;
-  history: Array<{ role: "user" | "model"; parts: Array<{ text: string }> }>;
+  history?: unknown;
   error?: string;
 };
 
@@ -29,6 +29,18 @@ type UseVoiceModeOptions = {
 function voiceSessionId(): string {
   if (typeof crypto.randomUUID === "function") return crypto.randomUUID().replaceAll("-", "_");
   return `voice_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+}
+
+export function initializeLiveHistory(
+  session: Pick<Session, "sendClientContent">,
+  history: unknown
+): void {
+  const turns = Array.isArray(history) ? history : [];
+  if (turns.length > 0) {
+    session.sendClientContent({ turns, turnComplete: true });
+    return;
+  }
+  session.sendClientContent({ turnComplete: true });
 }
 
 export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
@@ -311,7 +323,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
         return;
       }
       sessionRef.current = session;
-      session.sendClientContent({ turns: tokenData.history || [], turnComplete: true });
+      initializeLiveHistory(session, tokenData.history);
       processor.onaudioprocess = (event) => {
         if (sessionRef.current !== session) return;
         const samples = downsampleAudio(event.inputBuffer.getChannelData(0), context.sampleRate);

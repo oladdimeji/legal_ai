@@ -1776,3 +1776,10 @@ Status: Implementation complete; focused-phase verification recorded below.
 - No database migration, dependency change, permanent browser credential, browser speech synthesis pipeline, parallel history store, Client Assistant change, or standard Assistant model/prompt/generation change was made.
 - Verification passed: `npm run lint`; focused tests (29/29 and affected-regression tests 37/37); full suite (395/395); and `npm run build`. The build required execution outside the managed filesystem sandbox after Vite config resolution was denied; the existing non-fatal large-chunk warning remains.
 - Preview considerations: Gemini Live ephemeral credentials and `gemini-3.1-flash-live-preview` remain Preview APIs. A live authenticated microphone/Gemini session was not available in this environment, so real provider audio quality, browser permission UX, and the provider's 30-minute token/session expiry behavior are not claimed as manually exercised.
+
+### Voice Mode empty-history corrective patch
+
+- Fixed fresh-conversation Live initialization so an empty or malformed history value completes the initial-history phase with `{ turnComplete: true }` and never sends the SDK-invalid `turns: []` payload.
+- Preserved the populated-conversation path exactly: existing turns are still sent with `turnComplete: true`.
+- Added behavioral mock-session coverage for empty, missing, malformed, and populated history without contacting Gemini. No audio, animation, transcript, model, authentication, standard Assistant, dependency, or schema behavior changed.
+- Verification passed: focused Voice Mode tests (9/9), `npm run lint`, full test suite (397/397), and `npm run build`; the existing non-fatal large-chunk warning remains.
