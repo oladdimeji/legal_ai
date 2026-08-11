@@ -43,6 +43,8 @@ test("Gemini Live configuration is centralized for native audio, transcription, 
   assert.equal(config.realtimeInputConfig.automaticActivityDetection.startOfSpeechSensitivity, "START_SENSITIVITY_LOW");
   assert.equal(config.tools[0].functionDeclarations[0].name, "lookup_workspace");
   assert.match(String(config.systemInstruction), /Do not proactively mention or enumerate Voice Mode's capability limitations/);
+  assert.match(String(config.systemInstruction), /use lookup_workspace before saying the information is unavailable/);
+  assert.match(String(config.systemInstruction), /cannot access an authenticated Exepts page before attempting that lookup/);
   assert.doesNotMatch(String(config.systemInstruction), /Voice Mode is read-only|better handled in the standard Assistant/);
   assert.doesNotMatch(String(config.systemInstruction), /pretend|browser text-to-speech/i);
 });
@@ -195,6 +197,18 @@ test("Voice Mode lifecycle is separate from standard send and releases microphon
   assert.match(assistant, /stopIfThreadChanged\(activeThreadId\)/);
 });
 
+test("active Voice sessions receive current navigation context without reconnecting", async () => {
+  const [assistant, hook] = await Promise.all([
+    readFile(new URL("../src/components/AssistantView.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(hook, /const updatePageContext = useCallback\(\(pageContext: WorkspacePageContext\) => \{\s*pageContextRef\.current = pageContext;\s*\}, \[\]\)/);
+  assert.match(assistant, /useEffect\(\(\) => \{\s*voiceMode\.updatePageContext\(pageContext\);\s*\}, \[pageContext, voiceMode\.updatePageContext\]\)/);
+  const update = hook.slice(hook.indexOf("const updatePageContext"), hook.indexOf("return {", hook.indexOf("const updatePageContext")));
+  assert.doesNotMatch(update, /connect|token|transcript|playback|releaseResources|sessionRef/);
+  assert.match(hook, /body: JSON\.stringify\(\{ query, pageContext \}\)/);
+});
+
 test("finalized transcripts use a narrow idempotent owned route and never invoke standard generation", async () => {
   const [server, database, hook] = await Promise.all([
     readFile(new URL("../server.ts", import.meta.url), "utf8"),
@@ -256,11 +270,42 @@ test("Voice workspace lookup is narrow, read-only, and derives scope from valida
   assert.match(lookupRoute, /validateVoicePageContext\(req\.body\.pageContext, requestOwnership\)/);
   assert.match(lookupRoute, /voiceLookupCalls\(validated\.pageContext, query\)/);
   assert.match(lookupRoute, /currentMatterId: validated\.currentMatter\?\.id \|\| null/);
+  assert.match(lookupRoute, /CURRENT AUTHORIZED PAGE:/);
+  assert.match(lookupRoute, /pageContextForPrompt\(validated\.pageContext\)/);
+  assert.match(lookupRoute, /db\.getHistoryThreads\(requestOwnership\)/);
   assert.doesNotMatch(server, /currentMatterId !== threadMatterId|Voice page context does not match this conversation/);
-  assert.doesNotMatch(lookupRoute, /req\.body\.(?:matterId|documentId|scope)|needsWeb: true|create|update|delete|share|send|invite/);
+  assert.doesNotMatch(lookupRoute, /req\.body\.(?:matterId|documentId|scope)|needsWeb: true|\b(?:create|update|delete|share|send|invite)\w*\(/);
   assert.match(hook, /\/voice\/lookup/);
   assert.match(hook, /session\.sendToolResponse/);
   assert.match(hook, /functionResponses:\s*\[\{/);
+});
+
+test("Voice workspace lookup is page-first across authenticated workspace sections", async () => {
+  const server = await readFile(new URL("../server.ts", import.meta.url), "utf8");
+  const calls = server.slice(server.indexOf("function voiceLookupCalls"), server.indexOf("const PROFESSIONAL_ROLES"));
+  assert.match(calls, /routeKind === "matters"\) add\(\{ name: "list_matters"/);
+  assert.match(calls, /section === "overview"\) add\(\{ name: "get_matter_overview"/);
+  assert.match(calls, /section === "sources"\) add\(\{ name: "list_matter_sources"/);
+  assert.match(calls, /section === "matter intelligence"\) add\(\{ name: "get_matter_intelligence"/);
+  assert.match(calls, /section === "work product"\) add\(\{ name: "list_matter_work_products"/);
+  assert.match(calls, /section === "collaboration"\) add\(\{ name: "get_matter_collaboration_summary"/);
+  assert.match(calls, /routeKind === "library"[\s\S]*list_firm_library_documents/);
+  assert.match(calls, /kind === "source"[\s\S]*get_matter_source[\s\S]*documentId: selected\.id, query/);
+  assert.match(calls, /kind === "workProduct"[\s\S]*get_work_product[\s\S]*workProductId: selected\.id, query/);
+  assert.match(calls, /kind === "libraryDocument"[\s\S]*get_firm_library_document/);
+  assert.match(calls, /kind === "assistantDocument"[\s\S]*get_assistant_document/);
+  assert.ok(calls.indexOf("// An explicitly open item") < calls.indexOf("// The validated current route"));
+  assert.ok(calls.indexOf("// The validated current route") < calls.indexOf("// Query terms may add evidence"));
+});
+
+test("selected Work Product lookup keeps bounded query-relevant access beyond its initial context prefix", async () => {
+  const executor = await readFile(new URL("../server/assistant/assistantToolExecutor.ts", import.meta.url), "utf8");
+  const relevant = executor.slice(executor.indexOf("function boundedRelevantContent"), executor.indexOf("function conservativeMatterMatches"));
+  assert.match(relevant, /content\.slice\(start, start \+ 3_000\)/);
+  assert.match(relevant, /lexicalOverlap\(query, text\)/);
+  assert.match(relevant, /slice\(0, 4\)/);
+  const workProduct = executor.slice(executor.indexOf('case "get_work_product"'), executor.indexOf('case "get_matter_collaboration_summary"'));
+  assert.match(workProduct, /boundedRelevantContent\(draft\.content, stringArgument\(call, "query", 4_000\)\)/);
 });
 
 test("live Voice transcriptions render as temporary messages and yield to saved messages without standard generation", async () => {

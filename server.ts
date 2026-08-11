@@ -204,27 +204,62 @@ async function validateVoicePageContext(value: unknown, requestOwnership: Owners
 function voiceLookupCalls(pageContext: WorkspacePageContext, query: string): AssistantToolCall[] {
   const selected = pageContext.selectedItem;
   const currentMatterId = currentMatterIdForAssistant(pageContext);
+  const calls: AssistantToolCall[] = [];
+  const add = (call: AssistantToolCall) => {
+    const key = `${call.name}:${JSON.stringify(call.arguments)}`;
+    if (!calls.some((existing) => `${existing.name}:${JSON.stringify(existing.arguments)}` === key)) calls.push(call);
+  };
+
+  // An explicitly open item is the most precise current-page evidence.
   if (selected?.id) {
-    if (selected.kind === "source" && currentMatterId) return [{ name: "get_matter_source", arguments: { matterId: currentMatterId, documentId: selected.id } }];
-    if (selected.kind === "workProduct" && currentMatterId) return [{ name: "get_work_product", arguments: { matterId: currentMatterId, workProductId: selected.id } }];
-    if (selected.kind === "libraryDocument" && pageContext.routeKind === "library") return [{ name: "get_firm_library_document", arguments: { documentId: selected.id } }];
-    if (selected.kind === "assistantDocument" && pageContext.routeKind === "assistantDocument") return [{ name: "get_assistant_document", arguments: { documentId: selected.id } }];
+    if (selected.kind === "source" && currentMatterId) {
+      add({ name: "get_matter_source", arguments: { matterId: currentMatterId, documentId: selected.id } });
+      add({ name: "search_matter_documents", arguments: { matterId: currentMatterId, documentId: selected.id, query } });
+    }
+    if (selected.kind === "workProduct" && currentMatterId) add({ name: "get_work_product", arguments: { matterId: currentMatterId, workProductId: selected.id, query } });
+    if (selected.kind === "libraryDocument" && pageContext.routeKind === "library") {
+      add({ name: "get_firm_library_document", arguments: { documentId: selected.id } });
+      add({ name: "search_firm_library_documents", arguments: { documentId: selected.id, query } });
+    }
+    if (selected.kind === "assistantDocument" && pageContext.routeKind === "assistantDocument") add({ name: "get_assistant_document", arguments: { documentId: selected.id } });
   }
+
+  // The validated current route and section establish the minimum evidence.
+  if (pageContext.routeKind === "matters") add({ name: "list_matters", arguments: {} });
   if (currentMatterId) {
-    const calls: AssistantToolCall[] = [
-      { name: "get_matter_overview", arguments: { matterId: currentMatterId } },
-      { name: "search_matter_documents", arguments: { matterId: currentMatterId, query } },
-    ];
-    if (/intelligence|risk|issue|fact|position/i.test(query)) calls.push({ name: "get_matter_intelligence", arguments: { matterId: currentMatterId } });
-    if (/work product|draft|document we (?:made|created)|deliverable/i.test(query)) calls.push({ name: "list_matter_work_products", arguments: { matterId: currentMatterId } });
-    if (/collaborat|client response|shared|request/i.test(query)) calls.push({ name: "get_matter_collaboration_summary", arguments: { matterId: currentMatterId } });
-    return calls;
+    const section = (pageContext.activeSection || "").toLocaleLowerCase();
+    if (section === "overview") add({ name: "get_matter_overview", arguments: { matterId: currentMatterId } });
+    if (section === "sources") add({ name: "list_matter_sources", arguments: { matterId: currentMatterId } });
+    if (section === "matter intelligence") add({ name: "get_matter_intelligence", arguments: { matterId: currentMatterId } });
+    if (section === "work product") add({ name: "list_matter_work_products", arguments: { matterId: currentMatterId } });
+    if (section === "collaboration") add({ name: "get_matter_collaboration_summary", arguments: { matterId: currentMatterId } });
+
+    // Query terms may add evidence, but never replace the current-section baseline.
+    if (section === "sources" && !selected?.id && !/^(?:what|which) (?:is|are|do we have)(?: on)? (?:this page|here)\??$/i.test(query)) {
+      add({ name: "search_matter_documents", arguments: { matterId: currentMatterId, query } });
+    }
+    if (/intelligence|risk|issue|fact|position/i.test(query)) add({ name: "get_matter_intelligence", arguments: { matterId: currentMatterId } });
+    if (/work product|draft|document we (?:made|created)|deliverable/i.test(query)) add({ name: "list_matter_work_products", arguments: { matterId: currentMatterId } });
+    if (/collaborat|client response|shared|request|waiting on/i.test(query)) add({ name: "get_matter_collaboration_summary", arguments: { matterId: currentMatterId } });
   }
-  if (pageContext.routeKind === "library") return [{ name: "search_firm_library_documents", arguments: { query } }];
-  if (pageContext.routeKind === "settings" || pageContext.routeKind === "matters") {
-    return [{ name: "get_account_profile", arguments: {} }, { name: "get_firm_summary", arguments: { includeMembers: false } }];
+  if (pageContext.routeKind === "library") {
+    if (!selected?.id) add({ name: "list_firm_library_documents", arguments: {} });
+    if (/search|find|about|mention|contain|say|clause|term|question/i.test(query)) {
+      add({ name: "search_firm_library_documents", arguments: { query } });
+    }
   }
-  return [];
+  if (pageContext.routeKind === "settings") {
+    add({ name: "get_account_profile", arguments: {} });
+    add({ name: "get_firm_summary", arguments: { includeMembers: true } });
+  }
+  if (pageContext.routeKind === "matters" && /account|firm|profile|member|logged in/i.test(query)) {
+    add({ name: "get_account_profile", arguments: {} });
+    add({ name: "get_firm_summary", arguments: { includeMembers: true } });
+  }
+  if (pageContext.routeKind === "history" && /search|find|about|conversation|thread|discussed|said/i.test(query)) {
+    add({ name: "search_conversation_history", arguments: { query } });
+  }
+  return calls;
 }
 
 const PROFESSIONAL_ROLES: ProfessionalRole[] = [
@@ -2598,30 +2633,55 @@ ${sourceText}`;
       if (!thread) return res.status(404).json({ error: "Thread not found" });
       const validated = await validateVoicePageContext(req.body.pageContext, requestOwnership);
       const toolCalls = voiceLookupCalls(validated.pageContext, query);
-      if (toolCalls.length === 0) {
-        return res.json({ evidence: wrapAuthorizedEvidence([]) });
+      const evidence: AssistantEvidence[] = [];
+      if (validated.pageContext.routeKind === "history") {
+        const threads = (await db.getHistoryThreads(requestOwnership)).slice(0, 50);
+        evidence.push({
+          id: "voice_history",
+          sourceType: "conversation",
+          title: "Authorized conversation History",
+          sourceName: "Assistant History",
+          text: JSON.stringify(threads.map((historyThread) => ({
+            id: historyThread.id,
+            title: historyThread.title,
+            matterId: historyThread.case_id,
+            createdAt: historyThread.created_at,
+            lastActivityAt: historyThread.last_activity_at || historyThread.created_at,
+          }))),
+        });
       }
-      const plan: AssistantPlan = {
-        intent: "workspace_lookup",
-        depth: "brief",
-        needsWorkspace: true,
-        needsCurrentPage: true,
-        needsWeb: false,
-        needsClarification: false,
-        deliverable: { kind: "message" },
-        referencedArtifactIds: [],
-        referencedResearchSourceIds: [],
-        toolCalls,
-      };
-      const result = await executeAssistantToolPlan({
-        plan,
-        account: (req as AuthenticatedRequest).auth!,
-        ownership: requestOwnership,
-        currentMatterId: validated.currentMatter?.id || null,
-        authorizedMatterIds: validated.currentMatter ? [validated.currentMatter.id] : [],
-        request: query,
+      if (toolCalls.length > 0) {
+        const plan: AssistantPlan = {
+          intent: "workspace_lookup",
+          depth: "brief",
+          needsWorkspace: true,
+          needsCurrentPage: true,
+          needsWeb: false,
+          needsClarification: false,
+          deliverable: { kind: "message" },
+          referencedArtifactIds: [],
+          referencedResearchSourceIds: [],
+          toolCalls,
+        };
+        const result = await executeAssistantToolPlan({
+          plan,
+          account: (req as AuthenticatedRequest).auth!,
+          ownership: requestOwnership,
+          currentMatterId: validated.currentMatter?.id || null,
+          authorizedMatterIds: validated.currentMatter ? [validated.currentMatter.id] : [],
+          request: query,
+        });
+        evidence.push(...result.evidence);
+      }
+      return res.json({
+        evidence: [
+          "CURRENT AUTHORIZED PAGE:",
+          pageContextForPrompt(validated.pageContext),
+          "",
+          "AUTHORIZED WORKSPACE EVIDENCE:",
+          wrapAuthorizedEvidence(boundEvidence(evidence, 18_000)),
+        ].join("\n"),
       });
-      return res.json({ evidence: wrapAuthorizedEvidence(boundEvidence(result.evidence, 18_000)) });
     } catch (error) {
       if (error instanceof VoicePageContextError) {
         return res.status(error.status).json({ error: error.message });
@@ -2646,6 +2706,9 @@ ${sourceText}`;
       const requestOwnership = ownership(req);
       const thread = await db.getThreadById(req.params.id, requestOwnership);
       if (!thread) return res.status(404).json({ error: "Thread not found" });
+      const priorHistory = role === "user"
+        ? await db.getRecentMessages(thread.id, requestOwnership, 32)
+        : [];
       const id = voiceMessageId({ threadId: thread.id, sessionId, eventId, role });
       const message = await db.addVoiceMessage(
         id,
@@ -2655,6 +2718,19 @@ ${sourceText}`;
         requestOwnership,
         { interactionMode: "voice", voiceSessionId: sessionId, voiceEventId: eventId }
       );
+      const isFirstUserMessage = role === "user" && !priorHistory.some((priorMessage) => priorMessage.role === "user");
+      if (isFirstUserMessage) {
+        void tryGenerateConversationTitle(
+          content,
+          (generatedTitle) => db.updateThreadTitleForFirstMessage(
+            thread.id,
+            message.id,
+            thread.title,
+            generatedTitle,
+            requestOwnership
+          )
+        );
+      }
       return res.status(201).json(publicAssistantMessage(message));
     } catch (error) {
       console.error("Voice transcript persistence failed.");

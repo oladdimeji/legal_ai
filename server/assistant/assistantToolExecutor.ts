@@ -17,7 +17,7 @@ import {
   mapSafeCollaboration,
   mapWorkProductMetadata,
 } from "./assistantTools.js";
-import { retrieveAssistantPassages } from "./assistantRetrieval.js";
+import { lexicalOverlap, retrieveAssistantPassages } from "./assistantRetrieval.js";
 
 export const ASSISTANT_TOOL_LIMITS = {
   planningRounds: 2,
@@ -67,6 +67,22 @@ function evidence(
     text: sanitizeEvidenceText(JSON.stringify(value, null, 2)),
     ...ids,
   };
+}
+
+function boundedRelevantContent(content: string, query: string | null, maxChars = 12_000): string {
+  if (!query || content.length <= maxChars) return sanitizeEvidenceText(content, maxChars);
+  const chunks: Array<{ index: number; text: string; score: number }> = [];
+  for (let start = 0, index = 0; start < content.length; start += 2_700, index += 1) {
+    const text = content.slice(start, start + 3_000);
+    chunks.push({ index, text, score: lexicalOverlap(query, text) });
+  }
+  const selected = chunks
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .slice(0, 4)
+    .sort((left, right) => left.index - right.index)
+    .map((chunk) => chunk.text)
+    .join("\n\n[Relevant excerpt continues]\n\n");
+  return sanitizeEvidenceText(selected, maxChars);
 }
 
 function conservativeMatterMatches(matters: Awaited<ReturnType<Database["getCases"]>>, query: string) {
@@ -232,7 +248,8 @@ export async function executeAssistantToolPlan(input: {
           if (!draft) throw new Error("Work Product not found");
           result.checkedLocations.push(`Work Product: ${draft.title}`);
           result.evidence.push(evidence(index, "workProduct", draft.title, "Matter Work Product", {
-            ...mapWorkProductMetadata(draft), content: sanitizeEvidenceText(draft.content),
+            ...mapWorkProductMetadata(draft),
+            content: boundedRelevantContent(draft.content, stringArgument(call, "query", 4_000)),
           }, { entityId: draft.id, matterId: matter.id }));
           break;
         }

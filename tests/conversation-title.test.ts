@@ -91,6 +91,22 @@ test("message flow starts one non-blocking title task only for the first user me
   assert.match(database, /NOT EXISTS \([\s\S]*other_user_message\.role = 'user'[\s\S]*other_user_message\.id <> \$6/);
 });
 
+test("Voice persistence names only a brand-new thread from its first user transcript", async () => {
+  const server = await readFile("server.ts", "utf8");
+  const route = server.slice(
+    server.indexOf('app.post("/api/threads/:id/voice/messages"'),
+    server.indexOf("// Core Legal Search")
+  );
+  assert.match(route, /const priorHistory = role === "user"\s*\? await db\.getRecentMessages\(thread\.id, requestOwnership, 32\)\s*: \[\]/);
+  assert.match(route, /const message = await db\.addVoiceMessage/);
+  assert.match(route, /const isFirstUserMessage = role === "user" && !priorHistory\.some\(\(priorMessage\) => priorMessage\.role === "user"\)/);
+  assert.match(route, /if \(isFirstUserMessage\) \{\s*void tryGenerateConversationTitle\(\s*content,/);
+  assert.match(route, /db\.updateThreadTitleForFirstMessage\(\s*thread\.id,\s*message\.id,\s*thread\.title,/);
+  assert.ok(route.indexOf("return res.status(201)") > route.indexOf("void tryGenerateConversationTitle"));
+  assert.doesNotMatch(route, /await tryGenerateConversationTitle/);
+  assert.doesNotMatch(route, /planAssistantRequest|orchestrateAssistantRetrieval|completeAssistantResponse/);
+});
+
 test("History remains a stored-title reader with unchanged grouping, open, and delete behavior", async () => {
   const [history, assistant, migrations] = await Promise.all([
     readFile("src/components/HistoryView.tsx", "utf8"),

@@ -193,6 +193,9 @@ export default function AssistantView({
         : [...current, message]);
     },
   });
+  useEffect(() => {
+    voiceMode.updatePageContext(pageContext);
+  }, [pageContext, voiceMode.updatePageContext]);
   const liveTranscriptMessages: Message[] = (["user", "assistant"] as const).flatMap((role) => {
     const content = voiceMode.liveTranscripts[role].trim();
     if (!content) return [];

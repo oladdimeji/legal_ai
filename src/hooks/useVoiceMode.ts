@@ -401,6 +401,10 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     if (sessionThreadRef.current && sessionThreadRef.current !== threadId) stop();
   }, [stop]);
 
+  const updatePageContext = useCallback((pageContext: WorkspacePageContext) => {
+    pageContextRef.current = pageContext;
+  }, []);
+
   return {
     state,
     error,
@@ -410,5 +414,6 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     start,
     stop,
     stopIfThreadChanged,
+    updatePageContext,
   };
 }
