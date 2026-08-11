@@ -1,4 +1,4 @@
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, Type, type GroundingMetadata } from "@google/genai";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -17,6 +17,7 @@ export const MODEL_CONFIGS = {
 } as const;
 
 export type ModelTaskType = keyof typeof MODEL_CONFIGS;
+export type GenerationModelTaskType = Exclude<ModelTaskType, "embedding">;
 export type ModelThinkingLevel =
   | "minimal"
   | "low"
@@ -34,7 +35,7 @@ export const MODEL_THINKING_LEVELS = {
   "summarize-subquestion": "low",
 } as const satisfies Partial<Record<ModelTaskType, ModelThinkingLevel>>;
 
-type CallModelOptions = {
+export type CallModelOptions = {
   provider?: Provider;
   systemInstruction?: string;
   thinkingLevel?: ModelThinkingLevel;
@@ -44,8 +45,19 @@ type CallModelOptions = {
   textToEmbed?: string; // used when taskType is 'embedding'
 };
 
+export type ModelGenerationResult = {
+  text: string;
+  groundingMetadata: GroundingMetadata | null;
+};
+
+export type GenerationModelCall = (
+  taskType: GenerationModelTaskType,
+  messages: any[],
+  options?: CallModelOptions
+) => Promise<ModelGenerationResult>;
+
 export function buildGenerationConfig(
-  taskType: Exclude<ModelTaskType, "embedding">,
+  taskType: GenerationModelTaskType,
   options: CallModelOptions
 ): any {
   const config: any = {};
@@ -316,11 +328,21 @@ export async function runWithTransientModelRetries<T>(
  * Call model through a unified calling layer.
  * A new provider would just be a new branch in the switch statement below.
  */
+export function callModel(
+  taskType: "embedding",
+  messages: any[],
+  options?: CallModelOptions
+): Promise<number[]>;
+export function callModel(
+  taskType: GenerationModelTaskType,
+  messages: any[],
+  options?: CallModelOptions
+): Promise<ModelGenerationResult>;
 export async function callModel(
   taskType: ModelTaskType,
   messages: any[],
   options: CallModelOptions = {}
-) {
+): Promise<number[] | ModelGenerationResult> {
   const provider = options.provider || "gemini";
 
   switch (provider) {

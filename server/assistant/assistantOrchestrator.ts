@@ -1,5 +1,5 @@
 import type { Account, Message } from "../../src/types.js";
-import { callModel } from "../model.js";
+import { callModel, type GenerationModelCall } from "../model.js";
 import type { OwnershipContext } from "../db.js";
 import {
   attachmentNamesForMessage,
@@ -18,7 +18,7 @@ import { performAssistantWebResearch, type AssistantWebResearchResult } from "./
 import { LAWYER_ASSISTANT_CHARTER } from "./assistantCharter.js";
 
 type Database = Parameters<typeof executeAssistantToolPlan>[0]["database"];
-type Model = typeof callModel;
+type Model = GenerationModelCall;
 
 export type AssistantOrchestrationState = {
   planningRounds: number;

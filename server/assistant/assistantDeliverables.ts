@@ -7,7 +7,7 @@ import type {
 } from "../../src/types.js";
 import { buildAssistantDraftPrompt, titleForAssistantDraft } from "../assistantDrafting.js";
 import { cleanGeneratedWorkProductContent } from "../generatedContentCleanup.js";
-import { callModel } from "../model.js";
+import { callModel, type GenerationModelCall } from "../model.js";
 import { db } from "../db.js";
 import type { OwnershipContext } from "../db.js";
 import { LAWYER_ASSISTANT_CHARTER } from "./assistantCharter.js";
@@ -20,7 +20,7 @@ import type { AssistantEvidence, AssistantPlan } from "./assistantTypes.js";
 import type { AssistantWebResearchResult } from "./assistantWebResearch.js";
 
 type Database = typeof db;
-type Model = typeof callModel;
+type Model = GenerationModelCall;
 
 export type AssistantDeliverableResult = {
   document: AssistantDocumentReference;

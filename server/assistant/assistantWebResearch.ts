@@ -1,6 +1,6 @@
 import type { Citation } from "../../src/types.js";
 import { rewriteGoogleGroundingCitations } from "../../src/lib/assistantCitations.js";
-import { callModel } from "../model.js";
+import { callModel, type GenerationModelCall } from "../model.js";
 import { LAWYER_ASSISTANT_CHARTER } from "./assistantCharter.js";
 import { sanitizeEvidenceText } from "./assistantEvidence.js";
 import type { AssistantPlan, AssistantSessionContext } from "./assistantTypes.js";
@@ -12,7 +12,7 @@ export type AssistantWebResearchResult = {
   questions: string[];
 };
 
-type Model = typeof callModel;
+type Model = GenerationModelCall;
 
 const EMPTY_WEB_RESEARCH: AssistantWebResearchResult = {
   performed: false,

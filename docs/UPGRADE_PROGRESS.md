@@ -1857,3 +1857,9 @@ Status: Implementation complete; focused-phase verification recorded below.
 - Added a ref-counted Voice function-call `working` state and a small existing-ring animation/accessibility status. Concurrent calls cannot clear it prematurely, and interruption, stop, failure, cleanup, or completion clears it without changing microphone, PCM, VAD, playback, barge-in, or Live connection behavior.
 - Added focused model, batching, title-resolution, fast-path, tool-boundary, working-state, and regression coverage. No schema migration or dependency change was required.
 - Focused model/indexing/Voice/persistent-upload verification passed (51/51). Full lint, test, and build results are recorded after the final phase gate below.
+
+### Verify TypeScript model-contract correction
+
+- Added task-sensitive `callModel` overloads so embedding calls return `number[]` and all generation tasks return a precise `{ text, groundingMetadata }` result using the SDK `GroundingMetadata` type.
+- Replaced generation-only `typeof callModel` dependency aliases with one reusable narrow `GenerationModelCall` type. No runtime implementation, model selection, retry, grounding, embedding, retrieval, schema, dependency, or application behavior changed.
+- Verification passed: `npm run lint`, all 421 tests, `npm run build`, and final `npm run verify`. The build required execution outside the managed filesystem sandbox after its initial Vite config read was denied; the existing non-fatal large-chunk warning remains.

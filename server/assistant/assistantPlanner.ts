@@ -1,4 +1,4 @@
-import { callModel } from "../model.js";
+import { callModel, type GenerationModelCall } from "../model.js";
 import { LAWYER_ASSISTANT_CHARTER } from "./assistantCharter.js";
 import {
   resolveConversationResearchSourceReference,
@@ -54,7 +54,7 @@ const PLAN_KEYS = new Set([
 ]);
 const DELIVERABLE_KEYS = new Set(["kind", "documentAction", "sourceArtifactId"]);
 
-type PlannerModel = typeof callModel;
+type PlannerModel = GenerationModelCall;
 
 const toolCallSchema = {
   type: "OBJECT",

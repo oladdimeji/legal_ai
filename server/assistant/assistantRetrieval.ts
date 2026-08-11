@@ -1,4 +1,4 @@
-import { callModel } from "../model.js";
+import { callModel, type GenerationModelCall } from "../model.js";
 import { db } from "../db.js";
 import type { OwnershipContext } from "../db.js";
 import { LAWYER_ASSISTANT_CHARTER } from "./assistantCharter.js";
@@ -21,7 +21,7 @@ export type AssistantRetrievalPassage = AssistantRetrievalCandidate & {
 };
 
 type Database = typeof db;
-type RetrievalModel = typeof callModel;
+type RetrievalModel = GenerationModelCall;
 
 const STOP_WORDS = new Set([
   "the", "and", "for", "with", "that", "this", "from", "what", "which", "matter",

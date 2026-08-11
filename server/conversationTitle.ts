@@ -1,4 +1,4 @@
-import { callModel } from "./model.js";
+import { callModel, type GenerationModelCall } from "./model.js";
 
 const MAX_TITLE_LENGTH = 60;
 const INVALID_TITLE_PREFIXES = [
@@ -9,7 +9,7 @@ const INVALID_TITLE_PREFIXES = [
   "request to",
 ];
 
-type TitleModelCall = typeof callModel;
+type TitleModelCall = GenerationModelCall;
 
 export function buildConversationTitlePrompt(userRequest: string): string {
   return `Create a short title that summarizes the main topic or task in the user's request.

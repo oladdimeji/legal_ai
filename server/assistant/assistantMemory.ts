@@ -1,5 +1,5 @@
 import type { Message, Thread } from "../../src/types.js";
-import { callModel } from "../model.js";
+import { callModel, type GenerationModelCall } from "../model.js";
 import { LAWYER_ASSISTANT_CHARTER } from "./assistantCharter.js";
 import { sanitizeEvidenceText } from "./assistantEvidence.js";
 import { conversationMessageForPrompt } from "../assistantRouting.js";
@@ -12,7 +12,7 @@ export const ASSISTANT_MEMORY_POLICY = {
   maxInputCharacters: 20_000,
 } as const;
 
-type MemoryModel = typeof callModel;
+type MemoryModel = GenerationModelCall;
 
 export function shouldRefreshThreadMemory(input: {
   messageCount: number;
