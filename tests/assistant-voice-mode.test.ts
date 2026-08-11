@@ -41,10 +41,15 @@ test("Gemini Live configuration is centralized for native audio, transcription, 
   assert.equal(config.historyConfig.initialHistoryInClientContent, true);
   assert.equal(config.realtimeInputConfig.automaticActivityDetection.disabled, false);
   assert.equal(config.realtimeInputConfig.automaticActivityDetection.startOfSpeechSensitivity, "START_SENSITIVITY_LOW");
-  assert.equal(config.tools[0].functionDeclarations[0].name, "lookup_workspace");
+  assert.deepEqual(
+    config.tools[0].functionDeclarations.map((declaration) => declaration.name),
+    ["lookup_workspace", "use_assistant_capabilities"]
+  );
   assert.match(String(config.systemInstruction), /Do not proactively mention or enumerate Voice Mode's capability limitations/);
-  assert.match(String(config.systemInstruction), /use lookup_workspace before saying the information is unavailable/);
-  assert.match(String(config.systemInstruction), /cannot access an authenticated Exepts page before attempting that lookup/);
+  assert.match(String(config.systemInstruction), /Use lookup_workspace for quick, read-only questions/);
+  assert.match(String(config.systemInstruction), /Use use_assistant_capabilities when the request needs the fuller Exepts Assistant system/);
+  assert.match(String(config.systemInstruction), /Firm Library document that is not open/);
+  assert.match(String(config.systemInstruction), /Before saying authenticated workspace information is unavailable, use the appropriate function/);
   assert.doesNotMatch(String(config.systemInstruction), /Voice Mode is read-only|better handled in the standard Assistant/);
   assert.doesNotMatch(String(config.systemInstruction), /pretend|browser text-to-speech/i);
 });
@@ -53,9 +58,9 @@ test("ephemeral credential request preserves constrained Live tools without the 
   const { request } = voiceCredentialRequest(Date.UTC(2026, 7, 10));
   assert.equal(Object.hasOwn(request.config, "lockAdditionalFields"), false);
   assert.equal(request.config.liveConnectConstraints.model, VOICE_MODE_CONFIG.model);
-  assert.equal(
-    request.config.liveConnectConstraints.config.tools[0].functionDeclarations[0].name,
-    "lookup_workspace"
+  assert.deepEqual(
+    request.config.liveConnectConstraints.config.tools[0].functionDeclarations.map((declaration) => declaration.name),
+    ["lookup_workspace", "use_assistant_capabilities"]
   );
   assert.equal(
     request.config.liveConnectConstraints.config.realtimeInputConfig.automaticActivityDetection.startOfSpeechSensitivity,
@@ -206,7 +211,7 @@ test("active Voice sessions receive current navigation context without reconnect
   assert.match(assistant, /useEffect\(\(\) => \{\s*voiceMode\.updatePageContext\(pageContext\);\s*\}, \[pageContext, voiceMode\.updatePageContext\]\)/);
   const update = hook.slice(hook.indexOf("const updatePageContext"), hook.indexOf("return {", hook.indexOf("const updatePageContext")));
   assert.doesNotMatch(update, /connect|token|transcript|playback|releaseResources|sessionRef/);
-  assert.match(hook, /body: JSON\.stringify\(\{ query, pageContext \}\)/);
+  assert.match(hook, /\{ query: request, pageContext \}/);
 });
 
 test("finalized transcripts use a narrow idempotent owned route and never invoke standard generation", async () => {
@@ -263,7 +268,7 @@ test("Voice workspace lookup is narrow, read-only, and derives scope from valida
   ]);
   const lookupRoute = server.slice(
     server.indexOf('app.post("/api/threads/:id/voice/lookup"'),
-    server.indexOf('app.post("/api/threads/:id/voice/messages"')
+    server.indexOf('app.post("/api/threads/:id/voice/assistant"')
   );
   assert.match(lookupRoute, /ownership\(req\)/);
   assert.match(lookupRoute, /db\.getThreadById/);
@@ -275,9 +280,92 @@ test("Voice workspace lookup is narrow, read-only, and derives scope from valida
   assert.match(lookupRoute, /db\.getHistoryThreads\(requestOwnership\)/);
   assert.doesNotMatch(server, /currentMatterId !== threadMatterId|Voice page context does not match this conversation/);
   assert.doesNotMatch(lookupRoute, /req\.body\.(?:matterId|documentId|scope)|needsWeb: true|\b(?:create|update|delete|share|send|invite)\w*\(/);
-  assert.match(hook, /\/voice\/lookup/);
+  assert.match(hook, /isAssistantCapability \? "assistant" : "lookup"/);
   assert.match(hook, /session\.sendToolResponse/);
   assert.match(hook, /functionResponses:\s*\[\{/);
+});
+
+test("Voice Assistant capability routing reuses the owned Assistant pipeline without reconnecting or duplicating chat messages", async () => {
+  const [server, hook] = await Promise.all([
+    readFile(new URL("../server.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8"),
+  ]);
+  const route = server.slice(
+    server.indexOf('app.post("/api/threads/:id/voice/assistant"'),
+    server.indexOf('app.post("/api/threads/:id/voice/messages"')
+  );
+  assert.match(route, /ownership\(req\)/);
+  assert.match(route, /db\.getThreadById/);
+  assert.match(route, /validateVoicePageContext\(req\.body\.pageContext, requestOwnership\)/);
+  assert.match(route, /buildAssistantConversationState/);
+  assert.match(route, /buildAssistantSessionContext/);
+  assert.match(route, /planAssistantRequest/);
+  assert.match(route, /orchestrateAssistantRetrieval/);
+  assert.match(route, /resolveAssistantClarification/);
+  assert.match(route, /completeAssistantResponse/);
+  assert.match(route, /syntheticUserMessage/);
+  assert.match(route, /const conversationMessages = \[\.\.\.priorHistory, syntheticUserMessage\]/);
+  assert.doesNotMatch(route, /db\.addMessage|db\.addVoiceMessage|\/api\/threads\/.*\/messages|GEMINI_API_KEY/);
+  assert.doesNotMatch(route, /req\.body\.(?:matterId|documentId|userId|workspaceId|scope)/);
+
+  const toolHandler = hook.slice(hook.indexOf("const handleServerMessage"), hook.indexOf("const beginAmplitudeUpdates"));
+  assert.match(toolHandler, /call\.name === "use_assistant_capabilities"/);
+  assert.match(toolHandler, /isAssistantCapability \? "assistant" : "lookup"/);
+  assert.match(toolHandler, /session\.sendToolResponse/);
+  assert.doesNotMatch(toolHandler, /session\.close|live\.connect|releaseResources/);
+  assert.doesNotMatch(hook, /fetch\([^\n]*\/api\/threads\/[^\n]*\/messages[^\n]*\)[\s\S]*use_assistant_capabilities/);
+});
+
+test("full Voice Assistant delegation retains Firm Library discovery, deliverables, and artifact continuity", async () => {
+  const [server, tools, conversationState] = await Promise.all([
+    readFile(new URL("../server.ts", import.meta.url), "utf8"),
+    readFile(new URL("../server/assistant/assistantTools.ts", import.meta.url), "utf8"),
+    readFile(new URL("../server/assistant/assistantConversationState.ts", import.meta.url), "utf8"),
+  ]);
+  const route = server.slice(
+    server.indexOf('app.post("/api/threads/:id/voice/assistant"'),
+    server.indexOf('app.post("/api/threads/:id/voice/messages"')
+  );
+  assert.match(tools, /list_firm_library_documents/);
+  assert.match(tools, /get_firm_library_document/);
+  assert.match(tools, /search_firm_library_documents/);
+  assert.match(route, /orchestrateAssistantRetrieval/);
+  assert.doesNotMatch(route, /selectedItem\?\.kind === "libraryDocument"|must be open|already selected/i);
+  assert.match(route, /completeAssistantResponse/);
+  assert.match(route, /completion\.document \? \{ document: completion\.document \}/);
+  assert.match(route, /completion\.sourceDocument \? \{ sourceDocument: completion\.sourceDocument \}/);
+  assert.match(conversationState, /message\.metadata\?\.document/);
+  assert.match(route, /messages: conversationMessages/);
+});
+
+test("Voice deliverable metadata is turn-scoped and ownership-validated on finalized assistant persistence", async () => {
+  const [server, hook] = await Promise.all([
+    readFile(new URL("../server.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8"),
+  ]);
+  const validation = server.slice(
+    server.indexOf("async function validatedVoiceDocumentReference"),
+    server.indexOf("function voiceLookupCalls")
+  );
+  assert.match(validation, /db\.getDraftById\(id, matterId, requestOwnership\)/);
+  assert.match(validation, /db\.getAssistantDocumentById\(id, requestOwnership\)/);
+  assert.match(validation, /document|sourceDocument|assistantIntent|deliverableKind/);
+
+  const messagesRoute = server.slice(
+    server.indexOf('app.post("/api/threads/:id/voice/messages"'),
+    server.indexOf("// Core Legal Search")
+  );
+  assert.match(messagesRoute, /validatedVoiceCapabilityMetadata/);
+  assert.match(messagesRoute, /interactionMode: "voice"[\s\S]*\.\.\.capabilityMetadata/);
+  assert.match(messagesRoute, /role === "user" && req\.body\.capabilityMetadata/);
+  assert.doesNotMatch(messagesRoute, /planAssistantRequest|orchestrateAssistantRetrieval|completeAssistantResponse|callModel/);
+
+  assert.match(hook, /pendingCapabilityMetadataRef/);
+  assert.match(hook, /boundary === "turnComplete" \? pendingCapabilityMetadataRef\.current : null/);
+  assert.match(hook, /pendingCapabilityMetadataRef\.current = null/);
+  assert.match(hook, /transcript\.role === "assistant" && capabilityMetadata/);
+  assert.match(hook, /turnBoundary === turnBoundaryRef\.current/);
+  assert.match(hook, /turnBoundaryRef\.current \+= 1/);
 });
 
 test("Voice workspace lookup is page-first across authenticated workspace sections", async () => {

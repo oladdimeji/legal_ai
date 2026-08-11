@@ -27,6 +27,9 @@ type UseVoiceModeOptions = {
   onTranscript: (message: Message) => void;
 };
 
+type VoiceCapabilityMetadata = Pick<NonNullable<Message["metadata"]>,
+  "document" | "sourceDocument" | "assistantIntent" | "deliverableKind">;
+
 export type LiveVoiceTranscripts = {
   user: string;
   assistant: string;
@@ -99,6 +102,8 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   const pageContextRef = useRef<WorkspacePageContext | null>(null);
   const eventSequenceRef = useRef({ user: 0, assistant: 0 });
   const persistQueueRef = useRef(Promise.resolve());
+  const pendingCapabilityMetadataRef = useRef<VoiceCapabilityMetadata | null>(null);
+  const turnBoundaryRef = useRef(0);
   const onTranscriptRef = useRef(onTranscript);
   onTranscriptRef.current = onTranscript;
 
@@ -145,6 +150,8 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     sessionThreadRef.current = null;
     transcriptRef.current = { user: "", assistant: "" };
     pageContextRef.current = null;
+    pendingCapabilityMetadataRef.current = null;
+    turnBoundaryRef.current += 1;
     setLiveTranscripts({ user: "", assistant: "" });
     setAmplitude(0);
     updateState(finalState);
@@ -155,7 +162,11 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     releaseResources("error");
   }, [releaseResources]);
 
-  const persistFinalTranscript = useCallback((role: "user" | "assistant", content: string) => {
+  const persistFinalTranscript = useCallback((
+    role: "user" | "assistant",
+    content: string,
+    capabilityMetadata?: VoiceCapabilityMetadata
+  ) => {
     const threadId = sessionThreadRef.current;
     const sessionId = sessionIdRef.current;
     const normalized = content.trim();
@@ -165,7 +176,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       const response = await fetch(`/api/threads/${encodeURIComponent(threadId)}/voice/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ role, content: normalized, sessionId, eventId }),
+        body: JSON.stringify({ role, content: normalized, sessionId, eventId, ...(capabilityMetadata ? { capabilityMetadata } : {}) }),
       });
       const data = await response.json().catch(() => ({})) as Message & { error?: string };
       if (!response.ok) throw new Error(data.error || "This Voice Mode transcript could not be saved.");
@@ -182,8 +193,15 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   const finalizeTranscripts = useCallback((boundary: "turnComplete" | "interrupted") => {
     const { completed, remaining } = finalizeVoiceTranscripts(transcriptRef.current, boundary);
     transcriptRef.current = remaining;
+    const capabilityMetadata = boundary === "turnComplete" ? pendingCapabilityMetadataRef.current : null;
+    pendingCapabilityMetadataRef.current = null;
+    turnBoundaryRef.current += 1;
     for (const transcript of completed) {
-      persistFinalTranscript(transcript.role, transcript.content);
+      persistFinalTranscript(
+        transcript.role,
+        transcript.content,
+        transcript.role === "assistant" && capabilityMetadata ? capabilityMetadata : undefined
+      );
     }
   }, [persistFinalTranscript]);
 
@@ -219,29 +237,44 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       const session = sessionRef.current;
       if (threadId && pageContext && session) {
         void Promise.all(message.toolCall.functionCalls.map(async (call) => {
-          const query = typeof call.args?.query === "string" ? call.args.query.trim() : "";
+          const isAssistantCapability = call.name === "use_assistant_capabilities";
+          const request = isAssistantCapability
+            ? (typeof call.args?.request === "string" ? call.args.request.trim() : "")
+            : (typeof call.args?.query === "string" ? call.args.query.trim() : "");
+          const turnBoundary = turnBoundaryRef.current;
           try {
-            const response = await fetch(`/api/threads/${encodeURIComponent(threadId)}/voice/lookup`, {
+            const response = await fetch(`/api/threads/${encodeURIComponent(threadId)}/voice/${isAssistantCapability ? "assistant" : "lookup"}`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ query, pageContext }),
+              body: JSON.stringify(isAssistantCapability ? { request, pageContext } : { query: request, pageContext }),
             });
-            const data = await response.json().catch(() => ({})) as { evidence?: string; error?: string };
+            const data = await response.json().catch(() => ({})) as {
+              evidence?: string;
+              result?: string;
+              capabilityMetadata?: VoiceCapabilityMetadata;
+              error?: string;
+            };
+            if (isAssistantCapability && response.ok && turnBoundary === turnBoundaryRef.current) {
+              pendingCapabilityMetadataRef.current = data.capabilityMetadata || null;
+            }
             session.sendToolResponse({
               functionResponses: [{
                 id: call.id,
                 name: call.name || "lookup_workspace",
                 response: response.ok
-                  ? { output: data.evidence || "No authorized workspace evidence was found." }
-                  : { error: data.error || "The authorized workspace lookup failed." },
+                  ? { output: (isAssistantCapability ? data.result : data.evidence) || "No authorized result was found." }
+                  : { error: data.error || (isAssistantCapability ? "The Assistant capability request failed." : "The authorized workspace lookup failed.") },
               }],
             });
           } catch {
+            if (isAssistantCapability && turnBoundary === turnBoundaryRef.current) {
+              pendingCapabilityMetadataRef.current = null;
+            }
             session.sendToolResponse({
               functionResponses: [{
                 id: call.id,
                 name: call.name || "lookup_workspace",
-                response: { error: "The authorized workspace lookup failed." },
+                response: { error: isAssistantCapability ? "The Assistant capability request failed." : "The authorized workspace lookup failed." },
               }],
             });
           }

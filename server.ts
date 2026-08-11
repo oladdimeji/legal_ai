@@ -9,6 +9,7 @@ import type { AccessReviewApplicant, OwnershipContext } from "./server/db.js";
 import { callModel, MODEL_CONFIGS } from "./server/model.js";
 import {
   Account,
+  AssistantDocumentReference,
   Document,
   Citation,
   Message,
@@ -199,6 +200,52 @@ async function validateVoicePageContext(value: unknown, requestOwnership: Owners
     }
   }
   return { pageContext, currentMatter, selectedEvidence };
+}
+
+async function validatedVoiceDocumentReference(
+  value: unknown,
+  requestOwnership: OwnershipContext
+): Promise<AssistantDocumentReference | null> {
+  if (!value || typeof value !== "object") return null;
+  const reference = value as Record<string, unknown>;
+  const id = typeof reference.id === "string" ? reference.id.trim() : "";
+  if (!id) return null;
+  if (reference.kind === "matterWorkProduct") {
+    const matterId = typeof reference.matterId === "string" ? reference.matterId.trim() : "";
+    if (!matterId) return null;
+    const draft = await db.getDraftById(id, matterId, requestOwnership);
+    return draft ? { id: draft.id, kind: "matterWorkProduct", title: draft.title, matterId } : null;
+  }
+  if (reference.kind === "assistantDocument") {
+    const document = await db.getAssistantDocumentById(id, requestOwnership);
+    return document ? { id: document.id, kind: "assistantDocument", title: document.title } : null;
+  }
+  return null;
+}
+
+async function validatedVoiceCapabilityMetadata(
+  value: unknown,
+  requestOwnership: OwnershipContext
+): Promise<Record<string, unknown>> {
+  if (!value || typeof value !== "object") return {};
+  const submitted = value as Record<string, unknown>;
+  const document = await validatedVoiceDocumentReference(submitted.document, requestOwnership);
+  if (submitted.document && !document) throw new VoicePageContextError(400, "Voice document metadata is invalid");
+  const sourceDocument = await validatedVoiceDocumentReference(submitted.sourceDocument, requestOwnership);
+  if (submitted.sourceDocument && !sourceDocument) throw new VoicePageContextError(400, "Voice source document metadata is invalid");
+  const assistantIntent = typeof submitted.assistantIntent === "string" && [
+    "general_conversation", "product_help", "workspace_lookup", "document_analysis",
+    "legal_analysis", "document_creation", "document_revision",
+  ].includes(submitted.assistantIntent) ? submitted.assistantIntent : undefined;
+  const deliverableKind = typeof submitted.deliverableKind === "string" && [
+    "message", "document", "message_and_document",
+  ].includes(submitted.deliverableKind) ? submitted.deliverableKind : undefined;
+  return {
+    ...(document ? { document } : {}),
+    ...(sourceDocument ? { sourceDocument } : {}),
+    ...(assistantIntent ? { assistantIntent } : {}),
+    ...(deliverableKind ? { deliverableKind } : {}),
+  };
 }
 
 function voiceLookupCalls(pageContext: WorkspacePageContext, query: string): AssistantToolCall[] {
@@ -2691,6 +2738,124 @@ ${sourceText}`;
     }
   });
 
+  app.post("/api/threads/:id/voice/assistant", async (req, res) => {
+    const rawRequest = typeof req.body.request === "string" ? req.body.request.trim() : "";
+    const request = rawRequest.slice(0, 12_000);
+    if (!request) return res.status(400).json({ error: "An Assistant capability request is required." });
+    if (rawRequest.length > 12_000) return res.status(413).json({ error: "Assistant capability request is too long." });
+    try {
+      const requestOwnership = ownership(req);
+      const thread = await db.getThreadById(req.params.id, requestOwnership);
+      if (!thread) return res.status(404).json({ error: "Thread not found" });
+      const validated = await validateVoicePageContext(req.body.pageContext, requestOwnership);
+      const currentMatterId = validated.currentMatter?.id || null;
+      const priorHistory = await db.getRecentMessages(thread.id, requestOwnership, 32);
+      const syntheticUserMessage: Message = {
+        id: `voice_current_${Date.now()}`,
+        thread_id: thread.id,
+        role: "user",
+        content: request,
+        citations: [],
+        steps: null,
+        created_at: new Date().toISOString(),
+        metadata: { pageContext: validated.pageContext },
+      };
+      const conversationMessages = [...priorHistory, syntheticUserMessage];
+      const conversationHistory = boundedConversation(conversationMessages, 12_000);
+      const recentConversationContext = conversationHistory
+        .map(conversationMessageForPrompt)
+        .join("\n\n");
+      const memorySummary = thread.memory_summary || "";
+      const conversationContext = conversationContextWithMemory(memorySummary, recentConversationContext);
+      const conversationState = buildAssistantConversationState({
+        messages: conversationMessages,
+        rollingMemory: memorySummary,
+      });
+      const assistantSession = buildAssistantSessionContext({
+        account: (req as AuthenticatedRequest).auth!,
+        pageContext: validated.pageContext,
+        currentMatter: validated.currentMatter,
+      });
+      const assistantPlan = await planAssistantRequest({
+        content: request,
+        pageContext: validated.pageContext,
+        hasTemporaryFiles: false,
+        temporaryFileNames: [],
+        currentMatterId,
+        conversationState,
+      });
+      const orchestration = await orchestrateAssistantRetrieval({
+        request,
+        plan: assistantPlan,
+        session: assistantSession,
+        account: (req as AuthenticatedRequest).auth!,
+        ownership: requestOwnership,
+        currentMatterId,
+        conversationMessages,
+        artifacts: conversationState.recentArtifacts,
+      });
+      if (validated.selectedEvidence) orchestration.toolRun.evidence.push(validated.selectedEvidence);
+
+      const clarificationQuestion = resolveAssistantClarification({
+        plannerNeedsClarification: assistantPlan.needsClarification,
+        plannerClarificationQuestion: assistantPlan.clarificationQuestion,
+        toolClarificationQuestion: orchestration.toolRun.clarificationQuestion,
+        hasTemporaryFiles: false,
+      });
+      if (clarificationQuestion) {
+        return res.json({
+          result: clarificationQuestion,
+          capabilityMetadata: {
+            assistantIntent: assistantPlan.intent,
+            deliverableKind: "message",
+          },
+        });
+      }
+
+      const completion = await completeAssistantResponse({
+        instruction: request,
+        plan: assistantPlan,
+        session: assistantSession,
+        thread,
+        currentMatter: validated.currentMatter,
+        pageContext: validated.pageContext,
+        conversationState,
+        conversationContext,
+        conversationHistory,
+        toolRun: orchestration.toolRun,
+        webResearch: orchestration.webResearch,
+        planningRounds: orchestration.planningRounds,
+        account: (req as AuthenticatedRequest).auth!,
+        ownership: requestOwnership,
+        generateSuggestions: generateFollowUpSuggestions,
+      });
+      if (completion.clarificationQuestion) {
+        return res.json({
+          result: completion.clarificationQuestion,
+          capabilityMetadata: {
+            assistantIntent: assistantPlan.intent,
+            deliverableKind: "message",
+          },
+        });
+      }
+      return res.json({
+        result: completion.content,
+        capabilityMetadata: {
+          assistantIntent: assistantPlan.intent,
+          deliverableKind: assistantPlan.deliverable.kind,
+          ...(completion.document ? { document: completion.document } : {}),
+          ...(completion.sourceDocument ? { sourceDocument: completion.sourceDocument } : {}),
+        },
+      });
+    } catch (error) {
+      if (error instanceof VoicePageContextError) {
+        return res.status(error.status).json({ error: error.message });
+      }
+      console.error("Voice Assistant capability request failed.");
+      return res.status(500).json({ error: "The Assistant capability request failed." });
+    }
+  });
+
   app.post("/api/threads/:id/voice/messages", async (req, res) => {
     const role = req.body.role === "assistant" ? "assistant" : req.body.role === "user" ? "user" : null;
     const content = typeof req.body.content === "string" ? req.body.content.trim() : "";
@@ -2706,6 +2871,12 @@ ${sourceText}`;
       const requestOwnership = ownership(req);
       const thread = await db.getThreadById(req.params.id, requestOwnership);
       if (!thread) return res.status(404).json({ error: "Thread not found" });
+      if (role === "user" && req.body.capabilityMetadata) {
+        return res.status(400).json({ error: "Voice capability metadata requires an assistant transcript." });
+      }
+      const capabilityMetadata = role === "assistant"
+        ? await validatedVoiceCapabilityMetadata(req.body.capabilityMetadata, requestOwnership)
+        : {};
       const priorHistory = role === "user"
         ? await db.getRecentMessages(thread.id, requestOwnership, 32)
         : [];
@@ -2716,7 +2887,7 @@ ${sourceText}`;
         role,
         content,
         requestOwnership,
-        { interactionMode: "voice", voiceSessionId: sessionId, voiceEventId: eventId }
+        { interactionMode: "voice", voiceSessionId: sessionId, voiceEventId: eventId, ...capabilityMetadata }
       );
       const isFirstUserMessage = role === "user" && !priorHistory.some((priorMessage) => priorMessage.role === "user");
       if (isFirstUserMessage) {
@@ -2733,6 +2904,9 @@ ${sourceText}`;
       }
       return res.status(201).json(publicAssistantMessage(message));
     } catch (error) {
+      if (error instanceof VoicePageContextError) {
+        return res.status(error.status).json({ error: error.message });
+      }
       console.error("Voice transcript persistence failed.");
       return res.status(500).json({ error: "This Voice Mode transcript could not be saved." });
     }
