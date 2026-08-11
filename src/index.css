@@ -37,6 +37,11 @@
   transform: scale(calc(1 + var(--voice-level, 0) * 0.12));
 }
 
+.voice-mode-control[data-voice-working="true"] .voice-mode-ring {
+  border-width: 2px;
+  animation: voice-working 0.9s ease-in-out infinite;
+}
+
 @keyframes voice-connecting {
   0%, 100% { opacity: 0.2; transform: scale(0.86); }
   50% { opacity: 0.7; transform: scale(1.18); }
@@ -45,6 +50,11 @@
 @keyframes voice-listening {
   0%, 100% { transform: scale(calc(0.94 + var(--voice-level, 0) * 0.24)); }
   50% { transform: scale(calc(1.04 + var(--voice-level, 0) * 0.28)); }
+}
+
+@keyframes voice-working {
+  0%, 100% { opacity: 0.35; transform: scale(0.9); }
+  50% { opacity: 0.9; transform: scale(1.2); }
 }
 
 @media (prefers-reduced-motion: reduce) {

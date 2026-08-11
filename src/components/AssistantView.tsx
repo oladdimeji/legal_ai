@@ -937,6 +937,7 @@ export default function AssistantView({
                 aria-pressed={voiceMode.active}
                 title={voiceMode.active ? "Turn off Voice Agent" : "Start Voice Conversation"}
                 data-voice-state={voiceMode.state}
+                data-voice-working={voiceMode.working ? "true" : "false"}
                 style={{ "--voice-level": voiceMode.amplitude } as React.CSSProperties}
                 className={`voice-mode-control inline-flex items-center gap-2 px-2.5 py-1.5 text-xs font-mono font-semibold border rounded transition-colors cursor-pointer ${voiceMode.active ? "border-zinc-950 bg-zinc-950 text-white" : voiceMode.state === "error" ? "border-red-300 bg-white text-red-700" : "border-zinc-200 bg-white text-zinc-700 hover:border-zinc-400 hover:text-zinc-950"}`}
               >
@@ -945,7 +946,7 @@ export default function AssistantView({
                   <AudioLines className="voice-mode-icon h-3.5 w-3.5" />
                 </span>
                 <span>Voice Agent</span>
-                <span className="sr-only">{voiceMode.state}</span>
+                <span className="sr-only" aria-live="polite">{voiceMode.working ? "Voice Agent working" : voiceMode.state}</span>
               </button>
               <button
                 type="submit"

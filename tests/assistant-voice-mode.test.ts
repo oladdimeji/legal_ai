@@ -6,6 +6,7 @@ import {
   VOICE_MODE_CONFIG,
   boundedVoiceHistory,
   liveConnectConfig,
+  resolveFirmLibraryTitle,
   voiceCredentialRequest,
   voiceMessageId,
 } from "../server/voiceMode.js";
@@ -46,12 +47,43 @@ test("Gemini Live configuration is centralized for native audio, transcription, 
     ["lookup_workspace", "use_assistant_capabilities"]
   );
   assert.match(String(config.systemInstruction), /Do not proactively mention or enumerate Voice Mode's capability limitations/);
-  assert.match(String(config.systemInstruction), /Use lookup_workspace for quick, read-only questions/);
-  assert.match(String(config.systemInstruction), /Use use_assistant_capabilities when the request needs the fuller Exepts Assistant system/);
-  assert.match(String(config.systemInstruction), /Firm Library document that is not open/);
+  assert.match(String(config.systemInstruction), /Ordinary authorized read-only retrieval is an internal step and does not require separate permission/);
+  assert.match(String(config.systemInstruction), /Use lookup_workspace as the fast path for straightforward authorized retrieval/);
+  assert.match(String(config.systemInstruction), /Use use_assistant_capabilities only for genuinely heavier Assistant tasks/);
+  assert.match(String(config.systemInstruction), /named Firm Library documents even when they are not currently open/);
   assert.match(String(config.systemInstruction), /Before saying authenticated workspace information is unavailable, use the appropriate function/);
+  assert.match(String(config.systemInstruction), /measured conversational pace/);
+  assert.match(String(config.systemInstruction), /Never fabricate progress/);
   assert.doesNotMatch(String(config.systemInstruction), /Voice Mode is read-only|better handled in the standard Assistant/);
   assert.doesNotMatch(String(config.systemInstruction), /pretend|browser text-to-speech/i);
+});
+
+test("Live tool declarations expose named Firm Library lookup and keep routine reads out of the heavy bridge", () => {
+  const declarations = liveConnectConfig().tools[0].functionDeclarations;
+  const lookup = declarations.find((declaration) => declaration.name === "lookup_workspace")!;
+  const assistant = declarations.find((declaration) => declaration.name === "use_assistant_capabilities")!;
+  assert.ok(Object.hasOwn(lookup.parametersJsonSchema.properties, "firmLibraryDocumentTitle"));
+  assert.match(lookup.description, /even when that document is not currently open/);
+  assert.match(lookup.description, /routine direct document reading/);
+  assert.match(assistant.description, /Do not use it for a routine direct read/);
+});
+
+test("Firm Library title resolution is normalized, deterministic, and refuses ambiguity", () => {
+  const documents = [
+    { id: "one", title: "Settlement Evaluation Matrix.docx" },
+    { id: "two", title: "Employment Handbook.pdf" },
+  ];
+  assert.deepEqual(resolveFirmLibraryTitle("settlement_evaluation_matrix", documents), {
+    status: "resolved",
+    document: documents[0],
+  });
+  assert.equal(resolveFirmLibraryTitle("Settlement Evaluation", documents).status, "resolved");
+  const ambiguous = resolveFirmLibraryTitle("Settlement Evaluation Matrix", [
+    ...documents,
+    { id: "three", title: "Settlement-Evaluation-Matrix.pdf" },
+  ]);
+  assert.equal(ambiguous.status, "ambiguous");
+  if (ambiguous.status === "ambiguous") assert.deepEqual(ambiguous.candidates.map((candidate) => candidate.id), ["one", "three"]);
 });
 
 test("ephemeral credential request preserves constrained Live tools without the incompatible additional-field lock", () => {
@@ -211,7 +243,7 @@ test("active Voice sessions receive current navigation context without reconnect
   assert.match(assistant, /useEffect\(\(\) => \{\s*voiceMode\.updatePageContext\(pageContext\);\s*\}, \[pageContext, voiceMode\.updatePageContext\]\)/);
   const update = hook.slice(hook.indexOf("const updatePageContext"), hook.indexOf("return {", hook.indexOf("const updatePageContext")));
   assert.doesNotMatch(update, /connect|token|transcript|playback|releaseResources|sessionRef/);
-  assert.match(hook, /\{ query: request, pageContext \}/);
+  assert.match(hook, /query: request,\s*pageContext/);
 });
 
 test("finalized transcripts use a narrow idempotent owned route and never invoke standard generation", async () => {
@@ -278,11 +310,35 @@ test("Voice workspace lookup is narrow, read-only, and derives scope from valida
   assert.match(lookupRoute, /CURRENT AUTHORIZED PAGE:/);
   assert.match(lookupRoute, /pageContextForPrompt\(validated\.pageContext\)/);
   assert.match(lookupRoute, /db\.getHistoryThreads\(requestOwnership\)/);
+  assert.match(lookupRoute, /db\.listFirmLibraryDocumentMetadata\(requestOwnership\)/);
+  assert.match(lookupRoute, /resolveFirmLibraryTitle\(firmLibraryDocumentTitle, metadata\)/);
+  assert.match(lookupRoute, /db\.getDocumentById\(titleResolution\.document\.id, requestOwnership, null\)/);
+  assert.match(lookupRoute, /titleResolution\?\.status === "ambiguous"/);
+  assert.doesNotMatch(lookupRoute, /planAssistantRequest|completeAssistantResponse/);
   assert.doesNotMatch(server, /currentMatterId !== threadMatterId|Voice page context does not match this conversation/);
   assert.doesNotMatch(lookupRoute, /req\.body\.(?:matterId|documentId|scope)|needsWeb: true|\b(?:create|update|delete|share|send|invite)\w*\(/);
   assert.match(hook, /isAssistantCapability \? "assistant" : "lookup"/);
   assert.match(hook, /session\.sendToolResponse/);
   assert.match(hook, /functionResponses:\s*\[\{/);
+  assert.match(hook, /firmLibraryDocumentTitle: call\.args\.firmLibraryDocumentTitle\.trim\(\)/);
+});
+
+test("Voice function HTTP work exposes a ref-counted working state without changing audio behavior", async () => {
+  const [assistant, hook, styles] = await Promise.all([
+    readFile(new URL("../src/components/AssistantView.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/index.css", import.meta.url), "utf8"),
+  ]);
+  const toolHandler = hook.slice(hook.indexOf("const handleServerMessage"), hook.indexOf("const beginAmplitudeUpdates"));
+  assert.match(toolHandler, /workingCallIdsRef\.current\.add/);
+  assert.match(toolHandler, /finally[\s\S]*workingCallIdsRef\.current\.delete/);
+  assert.match(toolHandler, /setWorking\(workingCallIdsRef\.current\.size > 0\)/);
+  assert.match(hook, /clearWorking\(\)[\s\S]*releaseResources/);
+  assert.match(toolHandler, /content\.interrupted[\s\S]*clearWorking\(\)/);
+  assert.match(assistant, /data-voice-working=\{voiceMode\.working/);
+  assert.match(assistant, /Voice Agent working/);
+  assert.match(styles, /data-voice-working="true"/);
+  assert.doesNotMatch(toolHandler, /playbackRate|createBuffer|silenceDurationMs|prefixPaddingMs|live\.connect/);
 });
 
 test("Voice Assistant capability routing reuses the owned Assistant pipeline without reconnecting or duplicating chat messages", async () => {

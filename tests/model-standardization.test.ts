@@ -4,6 +4,8 @@ import path from "node:path";
 import test from "node:test";
 import {
   buildGenerationConfig,
+  EMBEDDING_DIMENSIONALITY,
+  embedTextsWithClient,
   MODEL_CONFIGS,
   MODEL_THINKING_LEVELS,
 } from "../server/model.js";
@@ -98,6 +100,45 @@ test("embedding model and output dimensions remain unchanged", async () => {
   assert.equal(MODEL_CONFIGS.embedding, "gemini-embedding-2");
   assert.match(modelSource, /model:\s*MODEL_CONFIGS\.embedding/);
   assert.match(modelSource, /outputDimensionality:\s*768/);
+});
+
+test("multi-text embedding sends independent ordered contents and validates one 768-vector per input", async () => {
+  const inputs = ["first paragraph", "second paragraph", "third paragraph"];
+  let request: any;
+  const vectors = inputs.map((_, index) => Array.from({ length: 768 }, (_value, dimension) => index * 1000 + dimension));
+  const result = await embedTextsWithClient(inputs, {
+    models: {
+      embedContent: async (value) => {
+        request = value;
+        return { embeddings: vectors.map((values) => ({ values })) };
+      },
+    },
+  }, { maxAttempts: 1 });
+  assert.equal(EMBEDDING_DIMENSIONALITY, 768);
+  assert.equal(request.model, "gemini-embedding-2");
+  assert.equal(request.config.outputDimensionality, 768);
+  assert.deepEqual(request.contents, inputs.map((text) => ({ role: "user", parts: [{ text }] })));
+  assert.deepEqual(result, vectors);
+});
+
+test("multi-text embedding rejects mismatched and malformed responses safely", async () => {
+  const vector = Array(768).fill(0.25);
+  await assert.rejects(embedTextsWithClient(["one", "two"], {
+    models: { embedContent: async () => ({ embeddings: [{ values: vector }] }) },
+  }, { maxAttempts: 1 }), /count mismatch/);
+  await assert.rejects(embedTextsWithClient(["one"], {
+    models: { embedContent: async () => ({ embeddings: [{ values: [Number.NaN] }] }) },
+  }, { maxAttempts: 1 }), /unusable vector/);
+});
+
+test("single embedding callers retain the same ordered vector contract", async () => {
+  const vector = Array.from({ length: 768 }, (_value, index) => index / 10);
+  const result = await embedTextsWithClient(["single paragraph"], {
+    models: { embedContent: async () => ({ embedding: { values: vector } }) },
+  }, { maxAttempts: 1 });
+  assert.deepEqual(result, [vector]);
+  const modelSource = await readFile("server/model.ts", "utf8");
+  assert.match(modelSource, /const \[embedding\] = await embedTexts\(\[text\]\)/);
 });
 
 test("production Gemini generation does not configure deprecated sampling", async () => {

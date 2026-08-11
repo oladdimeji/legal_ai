@@ -64,6 +64,7 @@ import { normalizeFollowUpSuggestions } from "./server/assistant/followUpSuggest
 import {
   boundedVoiceHistory,
   createVoiceModeCredential,
+  resolveFirmLibraryTitle,
   voiceMessageId,
 } from "./server/voiceMode.js";
 import {
@@ -307,6 +308,35 @@ function voiceLookupCalls(pageContext: WorkspacePageContext, query: string): Ass
     add({ name: "search_conversation_history", arguments: { query } });
   }
   return calls;
+}
+
+function boundedVoiceFirmLibraryText(text: string, query: string, maxCharacters = 15_000): string {
+  if (text.length <= maxCharacters) return text;
+  const queryTerms = Array.from(new Set(
+    query.toLocaleLowerCase().match(/[a-z0-9]{4,}/g) || []
+  )).filter((term) => !["what", "does", "this", "that", "document", "about", "from", "with"].includes(term));
+  if (queryTerms.length === 0) return text.slice(0, maxCharacters);
+  const paragraphs = text.split(/\n\s*\n/).map((paragraph) => paragraph.trim()).filter(Boolean);
+  const ranked = paragraphs.map((paragraph, index) => {
+    const normalized = paragraph.toLocaleLowerCase();
+    const score = queryTerms.reduce((total, term) => total + (normalized.includes(term) ? 1 : 0), 0);
+    return { index, paragraph, score };
+  }).filter((item) => item.score > 0).sort((left, right) => right.score - left.score || left.index - right.index);
+  if (ranked.length === 0) return text.slice(0, maxCharacters);
+  const selected = new Map<number, string>([[0, paragraphs[0]]]);
+  let characters = paragraphs[0].length;
+  for (const item of ranked) {
+    if (selected.has(item.index)) continue;
+    const remaining = maxCharacters - characters - 2;
+    if (remaining <= 0) break;
+    selected.set(item.index, item.paragraph.slice(0, remaining));
+    characters += Math.min(item.paragraph.length, remaining) + 2;
+  }
+  return Array.from(selected.entries())
+    .sort(([left], [right]) => left - right)
+    .map(([, paragraph]) => paragraph)
+    .join("\n\n")
+    .slice(0, maxCharacters);
 }
 
 const PROFESSIONAL_ROLES: ProfessionalRole[] = [
@@ -2673,14 +2703,51 @@ ${sourceText}`;
 
   app.post("/api/threads/:id/voice/lookup", async (req, res) => {
     const query = typeof req.body.query === "string" ? req.body.query.trim().slice(0, 2_000) : "";
+    const firmLibraryDocumentTitle = typeof req.body.firmLibraryDocumentTitle === "string"
+      ? req.body.firmLibraryDocumentTitle.trim().slice(0, 240)
+      : "";
     if (!query) return res.status(400).json({ error: "A workspace lookup query is required." });
     try {
       const requestOwnership = ownership(req);
       const thread = await db.getThreadById(req.params.id, requestOwnership);
       if (!thread) return res.status(404).json({ error: "Thread not found" });
       const validated = await validateVoicePageContext(req.body.pageContext, requestOwnership);
-      const toolCalls = voiceLookupCalls(validated.pageContext, query);
+      let titleResolution: ReturnType<typeof resolveFirmLibraryTitle> | null = null;
+      if (firmLibraryDocumentTitle) {
+        const metadata = await db.listFirmLibraryDocumentMetadata(requestOwnership);
+        titleResolution = resolveFirmLibraryTitle(firmLibraryDocumentTitle, metadata);
+      }
+      const toolCalls = titleResolution?.status === "resolved" || titleResolution?.status === "ambiguous"
+        ? []
+        : voiceLookupCalls(validated.pageContext, query);
+      if (titleResolution?.status === "not_found") {
+        toolCalls.push(
+          { name: "list_firm_library_documents", arguments: {} },
+          { name: "search_firm_library_documents", arguments: { query: `${firmLibraryDocumentTitle}\n${query}` } }
+        );
+      }
       const evidence: AssistantEvidence[] = [];
+      if (titleResolution?.status === "resolved") {
+        const document = await db.getDocumentById(titleResolution.document.id, requestOwnership, null);
+        if (document) {
+          evidence.push({
+            id: `voice_firm_library_${document.id}`,
+            sourceType: "firmLibrary",
+            title: document.title,
+            sourceName: "Firm Library",
+            entityId: document.id,
+            text: boundedVoiceFirmLibraryText(document.extracted_text, query),
+          });
+        }
+      } else if (titleResolution?.status === "ambiguous") {
+        evidence.push({
+          id: "voice_firm_library_title_candidates",
+          sourceType: "firmLibrary",
+          title: "Possible Firm Library documents",
+          sourceName: "Firm Library",
+          text: JSON.stringify(titleResolution.candidates.slice(0, 8).map((candidate) => candidate.title)),
+        });
+      }
       if (validated.pageContext.routeKind === "history") {
         const threads = (await db.getHistoryThreads(requestOwnership)).slice(0, 50);
         evidence.push({

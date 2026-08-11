@@ -116,6 +116,7 @@ export type RetryDetails = ModelErrorClassification & {
 };
 
 export const MAX_MODEL_ATTEMPTS = 4;
+export const EMBEDDING_DIMENSIONALITY = 768;
 const MODEL_RETRY_DELAYS_MS = [1_500, 3_500, 7_000] as const;
 const MAX_RETRY_JITTER_MS = 500;
 const MIN_RETRY_AFTER_MS = 1_000;
@@ -211,6 +212,71 @@ export function friendlyModelErrorMessage(error: unknown): string {
 
 const delay = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 
+type EmbeddingClient = {
+  models: {
+    embedContent: (input: {
+      model: string;
+      contents: Array<{ role: "user"; parts: Array<{ text: string }> }>;
+      config: { outputDimensionality: number };
+    }) => Promise<unknown>;
+  };
+};
+
+function embeddingVectors(response: unknown, expectedCount: number): number[][] {
+  const record = asRecord(response);
+  const embeddings = Array.isArray(record?.embeddings)
+    ? record.embeddings
+    : expectedCount === 1 && record?.embedding
+      ? [record.embedding]
+      : [];
+  if (embeddings.length !== expectedCount) {
+    throw new Error(`Gemini embedding response count mismatch: expected ${expectedCount}, received ${embeddings.length}`);
+  }
+  return embeddings.map((embedding, index) => {
+    const values = asRecord(embedding)?.values;
+    if (
+      !Array.isArray(values) ||
+      values.length !== EMBEDDING_DIMENSIONALITY ||
+      values.some((value) => typeof value !== "number" || !Number.isFinite(value))
+    ) {
+      throw new Error(`Gemini embedding response contained an unusable vector at index ${index}`);
+    }
+    return values;
+  });
+}
+
+export async function embedTextsWithClient(
+  texts: string[],
+  client: EmbeddingClient,
+  retryOptions: Parameters<typeof runWithTransientModelRetries>[1] = {}
+): Promise<number[][]> {
+  if (texts.length === 0) return [];
+  if (texts.some((text) => typeof text !== "string" || !text.trim())) {
+    throw new Error("No text provided for embedding generation");
+  }
+  return runWithTransientModelRetries(async () => {
+    const response = await client.models.embedContent({
+      model: MODEL_CONFIGS.embedding,
+      contents: texts.map((text) => ({ role: "user", parts: [{ text }] })),
+      config: { outputDimensionality: 768 },
+    });
+    return embeddingVectors(response, texts.length);
+  }, retryOptions);
+}
+
+export async function embedTexts(texts: string[]): Promise<number[][]> {
+  return embedTextsWithClient(texts, getAiClient() as unknown as EmbeddingClient, {
+    onRetry: (details) => {
+      const status = details.statusCode ? ` status=${details.statusCode}` : "";
+      console.warn(
+        `[embedTexts] Transient Gemini failure for embedding/${MODEL_CONFIGS.embedding}. ` +
+        `Retry ${details.retryNumber} of ${details.maxAttempts - 1} in ${details.delayMs}ms. ` +
+        `kind=${details.kind}${status}`
+      );
+    },
+  });
+}
+
 export async function runWithTransientModelRetries<T>(
   operation: (attempt: number) => Promise<T>,
   options: {
@@ -261,29 +327,13 @@ export async function callModel(
     case "gemini": {
       const modelName = MODEL_CONFIGS[taskType];
       try {
+        if (taskType === "embedding") {
+          const text = options.textToEmbed || (messages && messages[0]?.content) || "";
+          const [embedding] = await embedTexts([text]);
+          return embedding;
+        }
         return await runWithTransientModelRetries(async () => {
           const ai = getAiClient();
-
-          if (taskType === "embedding") {
-            const text = options.textToEmbed || (messages && messages[0]?.content) || "";
-            if (!text) {
-              throw new Error("No text provided for embedding generation");
-            }
-            
-            const response = await ai.models.embedContent({
-              model: MODEL_CONFIGS.embedding,
-              contents: text,
-              config: {
-                outputDimensionality: 768,
-              },
-            }) as any;
-
-            const embeddingValues = response.embeddings?.[0]?.values || response.embedding?.values;
-            if (!embeddingValues) {
-              throw new Error("Failed to retrieve embedding values from Gemini API response");
-            }
-            return embeddingValues;
-          }
 
           // Prepare contents for standard text generation
           // Convert standard chat message structures into Gemini parts/contents format

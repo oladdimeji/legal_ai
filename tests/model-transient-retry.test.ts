@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   classifyModelError,
+  embedTextsWithClient,
   friendlyModelErrorMessage,
   runWithTransientModelRetries,
 } from "../server/model.js";
@@ -108,8 +109,27 @@ test("final user messages are friendly and conceal configuration/provider detail
 
 test("retry logging is concise and cannot include prompt content", async () => {
   const source = await readFile("server/model.ts", "utf8");
-  const logging = source.slice(source.indexOf("onRetry: (details)"), source.indexOf("});", source.indexOf("onRetry: (details)")));
+  const loggingStart = source.lastIndexOf("onRetry: (details)");
+  const logging = source.slice(loggingStart, source.indexOf("});", loggingStart));
   assert.match(logging, /taskType.*modelName|modelName.*taskType/);
   assert.match(logging, /retryNumber|delayMs|kind|statusCode/);
   assert.doesNotMatch(logging, /messages|contents|prompt|response/);
+});
+
+test("multi-text embeddings use the established transient retry runner once per request", async () => {
+  let calls = 0;
+  const sleeps: number[] = [];
+  const vector = Array(768).fill(0.5);
+  const result = await embedTextsWithClient(["one", "two"], {
+    models: {
+      embedContent: async () => {
+        calls += 1;
+        if (calls === 1) throw providerError(503, "UNAVAILABLE");
+        return { embeddings: [{ values: vector }, { values: vector }] };
+      },
+    },
+  }, { sleep: async (milliseconds) => { sleeps.push(milliseconds); }, random: () => 0 });
+  assert.equal(calls, 2);
+  assert.deepEqual(sleeps, [1500]);
+  assert.equal(result.length, 2);
 });

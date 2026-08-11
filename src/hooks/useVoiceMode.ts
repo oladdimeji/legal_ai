@@ -82,6 +82,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   const [state, setState] = useState<VoiceModeState>("off");
   const [error, setError] = useState("");
   const [amplitude, setAmplitude] = useState(0);
+  const [working, setWorking] = useState(false);
   const [liveTranscripts, setLiveTranscripts] = useState<LiveVoiceTranscripts>({ user: "", assistant: "" });
   const stateRef = useRef<VoiceModeState>("off");
   const lifecycleRef = useRef(0);
@@ -103,6 +104,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   const eventSequenceRef = useRef({ user: 0, assistant: 0 });
   const persistQueueRef = useRef(Promise.resolve());
   const pendingCapabilityMetadataRef = useRef<VoiceCapabilityMetadata | null>(null);
+  const workingCallIdsRef = useRef(new Set<string>());
   const turnBoundaryRef = useRef(0);
   const onTranscriptRef = useRef(onTranscript);
   onTranscriptRef.current = onTranscript;
@@ -110,6 +112,11 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   const updateState = useCallback((next: VoiceModeState) => {
     stateRef.current = next;
     setState(next);
+  }, []);
+
+  const clearWorking = useCallback(() => {
+    workingCallIdsRef.current.clear();
+    setWorking(false);
   }, []);
 
   const stopPlayback = useCallback(() => {
@@ -151,11 +158,12 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     transcriptRef.current = { user: "", assistant: "" };
     pageContextRef.current = null;
     pendingCapabilityMetadataRef.current = null;
+    clearWorking();
     turnBoundaryRef.current += 1;
     setLiveTranscripts({ user: "", assistant: "" });
     setAmplitude(0);
     updateState(finalState);
-  }, [stopPlayback, updateState]);
+  }, [clearWorking, stopPlayback, updateState]);
 
   const fail = useCallback((message: string) => {
     setError(message);
@@ -236,17 +244,28 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       const pageContext = pageContextRef.current;
       const session = sessionRef.current;
       if (threadId && pageContext && session) {
-        void Promise.all(message.toolCall.functionCalls.map(async (call) => {
+        void Promise.all(message.toolCall.functionCalls.map(async (call, callIndex) => {
           const isAssistantCapability = call.name === "use_assistant_capabilities";
           const request = isAssistantCapability
             ? (typeof call.args?.request === "string" ? call.args.request.trim() : "")
             : (typeof call.args?.query === "string" ? call.args.query.trim() : "");
           const turnBoundary = turnBoundaryRef.current;
+          const workingCallId = call.id || `${call.name || "lookup_workspace"}_${Date.now()}_${callIndex}`;
+          workingCallIdsRef.current.add(workingCallId);
+          setWorking(true);
           try {
             const response = await fetch(`/api/threads/${encodeURIComponent(threadId)}/voice/${isAssistantCapability ? "assistant" : "lookup"}`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(isAssistantCapability ? { request, pageContext } : { query: request, pageContext }),
+              body: JSON.stringify(isAssistantCapability
+                ? { request, pageContext }
+                : {
+                    query: request,
+                    pageContext,
+                    ...(typeof call.args?.firmLibraryDocumentTitle === "string"
+                      ? { firmLibraryDocumentTitle: call.args.firmLibraryDocumentTitle.trim() }
+                      : {}),
+                  }),
             });
             const data = await response.json().catch(() => ({})) as {
               evidence?: string;
@@ -277,6 +296,9 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
                 response: { error: isAssistantCapability ? "The Assistant capability request failed." : "The authorized workspace lookup failed." },
               }],
             });
+          } finally {
+            workingCallIdsRef.current.delete(workingCallId);
+            setWorking(workingCallIdsRef.current.size > 0);
           }
         }));
       }
@@ -284,6 +306,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     const content = message.serverContent;
     if (!content) return;
     if (content.interrupted) {
+      clearWorking();
       stopPlayback();
       updateState("listening");
     }
@@ -312,7 +335,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       finalizeTranscripts("turnComplete");
       if (playbackSourcesRef.current.size === 0) updateState("listening");
     }
-  }, [finalizeTranscripts, scheduleAudio, stopPlayback, updateState]);
+  }, [clearWorking, finalizeTranscripts, scheduleAudio, stopPlayback, updateState]);
 
   const beginAmplitudeUpdates = useCallback(() => {
     const microphoneData = new Uint8Array(256);
@@ -442,6 +465,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     state,
     error,
     amplitude,
+    working,
     liveTranscripts,
     active: state === "connecting" || state === "listening" || state === "speaking",
     start,

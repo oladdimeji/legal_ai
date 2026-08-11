@@ -17,7 +17,7 @@ import {
   ProfessionalRole,
   WorkspaceType,
 } from "../src/types.js";
-import { callModel } from "./model.js";
+import { callModel, embedTexts } from "./model.js";
 import { runMigrations } from "./migrations.js";
 import {
   OTP_MAX_ATTEMPTS,
@@ -38,6 +38,84 @@ const { Pool } = pg;
 export interface OwnershipContext {
   userId: string;
   firmId: string;
+}
+
+const MAX_EMBEDDING_BATCH_TEXTS = 18;
+const MAX_EMBEDDING_BATCH_CHARACTERS = 60_000;
+
+type PreparedDocumentChunk = {
+  index: number;
+  text: string;
+  embedding: number[];
+};
+
+type PreparedDocumentIndex = {
+  chunks: PreparedDocumentChunk[];
+  chunkCount: number;
+  batchCount: number;
+  fallbackToSingleCount: number;
+  embeddingDurationMs: number;
+};
+
+export function splitEmbeddingBatches(texts: string[]): string[][] {
+  const batches: string[][] = [];
+  let current: string[] = [];
+  let characters = 0;
+  for (const text of texts) {
+    if (
+      current.length > 0 &&
+      (current.length >= MAX_EMBEDDING_BATCH_TEXTS || characters + text.length > MAX_EMBEDDING_BATCH_CHARACTERS)
+    ) {
+      batches.push(current);
+      current = [];
+      characters = 0;
+    }
+    current.push(text);
+    characters += text.length;
+  }
+  if (current.length > 0) batches.push(current);
+  return batches;
+}
+
+async function prepareDocumentIndex(text: string, documentId: string): Promise<PreparedDocumentIndex> {
+  const paragraphs = text
+    .split(/\n\s*\n/)
+    .map((paragraph) => paragraph.trim())
+    .filter((paragraph) => paragraph.length > 15);
+  const batches = splitEmbeddingBatches(paragraphs);
+  const chunks: PreparedDocumentChunk[] = [];
+  let offset = 0;
+  let fallbackToSingleCount = 0;
+  const embeddingStartedAt = Date.now();
+
+  for (const batch of batches) {
+    try {
+      const embeddings = await embedTexts(batch);
+      embeddings.forEach((embedding, batchIndex) => {
+        chunks.push({ index: offset + batchIndex, text: batch[batchIndex], embedding });
+      });
+    } catch {
+      fallbackToSingleCount += batch.length;
+      console.warn(`Embedding batch failed for document ${documentId}; falling back to ${batch.length} individual embeddings.`);
+      for (let batchIndex = 0; batchIndex < batch.length; batchIndex += 1) {
+        try {
+          const embedding = await callModel("embedding", [], { textToEmbed: batch[batchIndex] }) as number[];
+          chunks.push({ index: offset + batchIndex, text: batch[batchIndex], embedding });
+        } catch {
+          console.error(`Embedding generation failed for document ${documentId}, chunk ${offset + batchIndex}; chunk left unindexed.`);
+        }
+      }
+    }
+    offset += batch.length;
+  }
+
+  return {
+    chunks,
+    chunkCount: paragraphs.length,
+    batchCount: batches.length,
+    fallbackToSingleCount,
+    embeddingDurationMs: Date.now() - embeddingStartedAt,
+  };
 }
 
 function accountFromRow(row: Record<string, unknown>): Account {
@@ -321,6 +399,7 @@ class DatabaseService {
   ): Promise<Document> {
     const docId = `doc_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const uploadedAt = new Date().toISOString();
+    const indexingStartedAt = Date.now();
 
     await this.query(
       `INSERT INTO documents
@@ -330,28 +409,14 @@ class DatabaseService {
       [docId, firmId, caseId, title, sourceUrl, driveId, text, section, uploadedAt, sourceType, origin]
     );
 
-    // Paragraph splitting
-    const paragraphs = text
-      .split(/\n\s*\n/)
-      .map((p) => p.trim())
-      .filter((p) => p.length > 15);
-
-    console.log(`Generating embeddings for ${paragraphs.length} chunks of "${title}"...`);
-    for (let i = 0; i < paragraphs.length; i++) {
-      const chunkText = paragraphs[i];
-      try {
-        const embedding = await callModel("embedding", [], {
-          textToEmbed: chunkText
-        }) as number[];
-        const vectorStr = `[${embedding.join(",")}]`;
-        await this.query(
-          `INSERT INTO document_chunks (id, document_id, chunk_text, embedding)
-           VALUES ($1, $2, $3, $4)`,
-          [`chunk_${docId}_${i}`, docId, chunkText, vectorStr]
-        );
-      } catch (error) {
-        console.error(`Embedding generation failed for document ${docId}, chunk ${i}; chunk left unindexed.`, error);
-      }
+    const prepared = await prepareDocumentIndex(text, docId);
+    const insertStartedAt = Date.now();
+    for (const chunk of prepared.chunks) {
+      await this.query(
+        `INSERT INTO document_chunks (id, document_id, chunk_text, embedding)
+         VALUES ($1, $2, $3, $4)`,
+        [`chunk_${docId}_${chunk.index}`, docId, chunk.text, `[${chunk.embedding.join(",")}]`]
+      );
     }
     const indexed = await this.query(
       "SELECT COUNT(*)::int AS count FROM document_chunks WHERE document_id = $1",
@@ -359,8 +424,18 @@ class DatabaseService {
     );
     await this.query(
       "UPDATE documents SET processing_state = $1 WHERE id = $2 AND firm_id = $3",
-      [Number(indexed[0]?.count || 0) > 0 || paragraphs.length === 0 ? "Ready" : "Needs Attention", docId, firmId]
+      [Number(indexed[0]?.count || 0) > 0 ? "Ready" : "Needs Attention", docId, firmId]
     );
+    console.info("Document indexing completed.", {
+      documentId: docId,
+      characterCount: text.length,
+      chunkCount: prepared.chunkCount,
+      embeddingBatchCount: prepared.batchCount,
+      embeddingDurationMs: prepared.embeddingDurationMs,
+      indexingDurationMs: Date.now() - insertStartedAt,
+      totalIndexingDurationMs: Date.now() - indexingStartedAt,
+      fallbackToSingleCount: prepared.fallbackToSingleCount,
+    });
 
     return {
       id: docId,
@@ -1509,6 +1584,17 @@ class DatabaseService {
     return rows.length === unique.length;
   }
 
+  public async listFirmLibraryDocumentMetadata(
+    context: OwnershipContext
+  ): Promise<Array<{ id: string; title: string }>> {
+    return await this.query(
+      `SELECT id, title FROM documents
+       WHERE firm_id = $1 AND case_id IS NULL AND is_generated_draft_duplicate = FALSE
+       ORDER BY title ASC, id ASC`,
+      [context.firmId]
+    );
+  }
+
   public async linkLibraryDocument(
     caseId: string, documentId: string, linkOrigin: "Manual" | "Starting Input", context: OwnershipContext
   ): Promise<boolean> {
@@ -2345,6 +2431,7 @@ class DatabaseService {
       const uploadedPairs: Array<{ documentId: string; draftId: string }> = [];
       for (const file of uploadedFiles) {
         const documentId = `doc_${randomUUID()}`;
+        const indexingStartedAt = Date.now();
         await client.query(
           `INSERT INTO documents
             (id, firm_id, case_id, title, source_url, drive_id, extracted_text, section, uploaded_at,
@@ -2353,21 +2440,14 @@ class DatabaseService {
              'Client Submission', 'Client', 'Processing')`,
           [documentId, access.firm_id, access.case_id, file.filename, file.text, now]
         );
-        const paragraphs = file.text
-          .split(/\n\s*\n/)
-          .map((paragraph) => paragraph.trim())
-          .filter((paragraph) => paragraph.length > 15);
-        for (let i = 0; i < paragraphs.length; i++) {
-          try {
-            const embedding = await callModel("embedding", [], { textToEmbed: paragraphs[i] }) as number[];
-            await client.query(
-              `INSERT INTO document_chunks (id, document_id, chunk_text, embedding)
-               VALUES ($1, $2, $3, $4)`,
-              [`chunk_${documentId}_${i}`, documentId, paragraphs[i], `[${embedding.join(",")}]`]
-            );
-          } catch (error) {
-            console.error(`Embedding generation failed for portal response document ${documentId}, chunk ${i}; chunk left unindexed.`, error);
-          }
+        const prepared = await prepareDocumentIndex(file.text, documentId);
+        const insertStartedAt = Date.now();
+        for (const chunk of prepared.chunks) {
+          await client.query(
+            `INSERT INTO document_chunks (id, document_id, chunk_text, embedding)
+             VALUES ($1, $2, $3, $4)`,
+            [`chunk_${documentId}_${chunk.index}`, documentId, chunk.text, `[${chunk.embedding.join(",")}]`]
+          );
         }
         const indexed = await client.query(
           "SELECT COUNT(*)::int AS count FROM document_chunks WHERE document_id = $1",
@@ -2375,8 +2455,18 @@ class DatabaseService {
         );
         await client.query(
           "UPDATE documents SET processing_state = $1 WHERE id = $2 AND firm_id = $3",
-          [Number(indexed.rows[0]?.count || 0) > 0 || paragraphs.length === 0 ? "Ready" : "Needs Attention", documentId, access.firm_id]
+          [Number(indexed.rows[0]?.count || 0) > 0 ? "Ready" : "Needs Attention", documentId, access.firm_id]
         );
+        console.info("Portal response document indexing completed.", {
+          documentId,
+          characterCount: file.text.length,
+          chunkCount: prepared.chunkCount,
+          embeddingBatchCount: prepared.batchCount,
+          embeddingDurationMs: prepared.embeddingDurationMs,
+          indexingDurationMs: Date.now() - insertStartedAt,
+          totalIndexingDurationMs: Date.now() - indexingStartedAt,
+          fallbackToSingleCount: prepared.fallbackToSingleCount,
+        });
 
         const draftId = `draft_${randomUUID()}`;
         await client.query(
