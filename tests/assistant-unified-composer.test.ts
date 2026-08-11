@@ -6,7 +6,7 @@ async function assistantSource() {
   return readFile(new URL("../src/components/AssistantView.tsx", import.meta.url), "utf8");
 }
 
-test("composer exposes Sources, accessible icon-only Send, and Voice Mode controls", async () => {
+test("composer exposes Sources, accessible icon-only Send, and Voice Agent controls", async () => {
   const source = await assistantSource();
   const composer = source.slice(source.indexOf("const renderComposer"), source.indexOf("// Persistent Citation Metadata Panel helper"));
   assert.match(composer, />Sources<\/span>/);
@@ -16,7 +16,9 @@ test("composer exposes Sources, accessible icon-only Send, and Voice Mode contro
   assert.match(composer, /<Send className="h-3\.5 w-3\.5" aria-hidden="true" \/>/);
   assert.doesNotMatch(composer, />\s*Send\s*</);
   assert.match(composer, /id="btn-voice-mode"/);
-  assert.match(composer, />Voice Mode<\/span>/);
+  assert.match(composer, />Voice Agent<\/span>/);
+  assert.match(composer, /aria-label=\{voiceMode\.active \? "Turn off Voice Agent" : "Start Voice Conversation"\}/);
+  assert.match(composer, /title=\{voiceMode\.active \? "Turn off Voice Agent" : "Start Voice Conversation"\}/);
   assert.match(composer, /aria-pressed=\{voiceMode\.active\}/);
   assert.doesNotMatch(composer, /Sending|animate-spin/);
   assert.doesNotMatch(composer, /Draft|Create Draft|Web Search|Google Grounding|Legal Data Grounding|btn-submit-ask|>Ask</);

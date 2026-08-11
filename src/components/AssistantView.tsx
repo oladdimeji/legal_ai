@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { 
   MessageSquare, Send, AlertCircle, AudioLines,
   ChevronDown, ChevronUp, FileText, Check, Paperclip, RefreshCw, 
-  ExternalLink, BookOpen, Copy, Pencil, X, Briefcase, 
+  ExternalLink, BookOpen, Copy, X, Briefcase,
   Folder, ThumbsUp, ThumbsDown,
   Bold, Italic, Underline, Strikethrough, List, ListOrdered,
   AlignLeft, AlignCenter, AlignRight, Scissors,
@@ -933,9 +933,9 @@ export default function AssistantView({
                 type="button"
                 onClick={() => void handleVoiceToggle()}
                 id="btn-voice-mode"
-                aria-label={voiceMode.active ? "Turn off Voice Mode" : "Turn on Voice Mode"}
+                aria-label={voiceMode.active ? "Turn off Voice Agent" : "Start Voice Conversation"}
                 aria-pressed={voiceMode.active}
-                title={voiceMode.active ? "Turn off Voice Mode" : "Start Voice Mode"}
+                title={voiceMode.active ? "Turn off Voice Agent" : "Start Voice Conversation"}
                 data-voice-state={voiceMode.state}
                 style={{ "--voice-level": voiceMode.amplitude } as React.CSSProperties}
                 className={`voice-mode-control inline-flex items-center gap-2 px-2.5 py-1.5 text-xs font-mono font-semibold border rounded transition-colors cursor-pointer ${voiceMode.active ? "border-zinc-950 bg-zinc-950 text-white" : voiceMode.state === "error" ? "border-red-300 bg-white text-red-700" : "border-zinc-200 bg-white text-zinc-700 hover:border-zinc-400 hover:text-zinc-950"}`}
@@ -944,7 +944,7 @@ export default function AssistantView({
                   <span className="voice-mode-ring" />
                   <AudioLines className="voice-mode-icon h-3.5 w-3.5" />
                 </span>
-                <span>Voice Mode</span>
+                <span>Voice Agent</span>
                 <span className="sr-only">{voiceMode.state}</span>
               </button>
               <button
@@ -1080,10 +1080,6 @@ export default function AssistantView({
               {displayMessages.map((m, index) => {
                 const isLastMessage = index === displayMessages.length - 1;
                 const isLiveVoiceMessage = m.metadata?.liveVoiceTranscript === true;
-                const lastAssistantMessageId = [...messages]
-                  .reverse()
-                  .find((msg) => msg.role === "assistant")?.id;
-
                 return (
                   <div key={m.id} className="w-full max-w-3xl mx-auto flex flex-col py-5 animate-fade-in" id={`message-wrapper-${m.id}`}>
                     <div className={`w-full flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
@@ -1218,23 +1214,6 @@ export default function AssistantView({
                                   <Copy className="h-3.5 w-3.5" />
                                   <span>Copy</span>
                                 </button>
-
-                                {/* Rewrite action button - restricted to latest assistant message */}
-                                {m.id === lastAssistantMessageId && (
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setInputValue(`Please rewrite the previous response to make it `);
-                                      textareaRef.current?.focus();
-                                    }}
-                                    id={`action-rewrite-${m.id}`}
-                                    className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-mono font-medium text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 rounded transition-colors animate-fade-in"
-                                    title="Rewrite response"
-                                  >
-                                    <Pencil className="h-3.5 w-3.5" />
-                                    <span>Rewrite</span>
-                                  </button>
-                                )}
 
                                 <button
                                   type="button"

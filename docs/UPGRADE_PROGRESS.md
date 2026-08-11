@@ -1819,3 +1819,10 @@ Status: Implementation complete; focused-phase verification recorded below.
 - The first persisted Voice user transcript now launches the existing non-blocking conversation-title generator and guarded first-message title update. Assistant greetings cannot trigger or block naming, existing threads with any earlier user message remain unchanged, and deterministic Voice message IDs remain intact.
 - Tightened only the workspace-access portion of the Voice instruction so current-page questions trigger `lookup_workspace` before an access denial. No model, voice, native audio, microphone, playback, VAD, interruption, transcription segmentation, persistence queue, token, standard Assistant, schema, migration, or dependency behavior changed.
 - Verification passed: focused Voice/title tests (25/25) and full `npm run verify` (`npm run lint`, all 408 tests, and the production build). The build required execution outside the managed filesystem sandbox after its initial Vite config read was denied; the existing non-fatal large-chunk warning remains.
+
+### Assistant action and Voice Agent label standardization
+
+- Removed the Rewrite action beneath assistant responses while preserving Copy, Open, and Download behavior.
+- Renamed only the visible Assistant composer label from Voice Mode to Voice Agent and updated the toggle title and accessibility label for its on/off states.
+- No voice lifecycle, microphone, connection, assistant-response, schema, dependency, or application-flow behavior changed.
+- Verification passed: focused Assistant composer, Voice Mode, and lawyer-workspace tests (41/41), `npm run lint`, and `npm run build`. The build required execution outside the managed filesystem sandbox after Vite config resolution was denied; the existing non-fatal large-chunk warning remains.
