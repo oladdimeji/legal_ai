@@ -97,6 +97,7 @@
 
 .document-title {
   margin: 0 0 15pt;
+  overflow-wrap: anywhere;
   text-align: center;
   font-family: var(--document-font);
   font-size: 16pt;

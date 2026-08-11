@@ -169,6 +169,24 @@ test("Firm Library preview matches the read-only document presentation", async (
   assert.doesNotMatch(preview, /RichDocumentEditor|Editor|Save|sharing|Export/);
 });
 
+test("Firm Library contains long labels and filenames without changing its column widths", async () => {
+  const [library, styles] = await Promise.all([
+    readFile("src/components/FirmLibraryView.tsx", "utf8"),
+    readFile("src/index.css", "utf8"),
+  ]);
+
+  assert.match(library, /lg:grid-cols-\[220px_minmax\(0,1fr\)_300px\]/);
+  assert.match(library, /<aside className="min-w-0/);
+  assert.match(library, /<section className="min-w-0 space-y-2">/);
+  assert.match(library, /className="min-w-0 flex-1 text-left cursor-pointer"><p className="truncate/);
+  assert.match(library, /sections\.map[\s\S]*?\[overflow-wrap:anywhere\]/);
+  assert.match(library, /<form onSubmit=\{upload\} className="min-w-0/);
+  assert.match(library, /uploadProgress && <p className="\[overflow-wrap:anywhere\]/);
+  assert.match(library, /uploadFailures\.map[\s\S]*?className="\[overflow-wrap:anywhere\]/);
+  assert.match(library, /<div className="min-w-0">\s*<h3 className="truncate font-semibold">/);
+  assert.match(styles, /\.document-title\s*\{[\s\S]*?overflow-wrap: anywhere;/);
+});
+
 test("Firm Library upload keeps multi-file selection and sends one file per request without an optional title", async () => {
   const library = await readFile("src/components/FirmLibraryView.tsx", "utf8");
   assert.doesNotMatch(library, /Optional title for one-file upload only/);

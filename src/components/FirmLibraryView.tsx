@@ -151,16 +151,16 @@ export default function FirmLibraryView() {
           <button className="rounded bg-zinc-950 px-4 py-2 text-[10px] font-mono font-bold uppercase text-white hover:bg-zinc-800 cursor-pointer">Search</button>
         </form>
 
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[220px_1fr_300px]">
-          <aside className="rounded border border-zinc-200 p-4">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[220px_minmax(0,1fr)_300px]">
+          <aside className="min-w-0 rounded border border-zinc-200 p-4">
             <p className="mb-3 text-[10px] font-mono font-bold uppercase text-zinc-500">Sections</p>
             <button onClick={() => setSection(null)} className={`mb-1 flex w-full items-center gap-2 rounded px-2 py-2 text-left text-xs cursor-pointer ${section === null ? "bg-zinc-100 font-semibold" : "hover:bg-zinc-50"}`}><FolderOpen className="h-3.5 w-3.5" />All documents</button>
-            {sections.map((item) => <button key={item} onClick={() => setSection(item)} className={`mb-1 block w-full rounded px-2 py-2 text-left text-xs cursor-pointer ${section === item ? "bg-zinc-100 font-semibold" : "hover:bg-zinc-50"}`}>{item}</button>)}
+            {sections.map((item) => <button key={item} onClick={() => setSection(item)} className={`mb-1 block w-full [overflow-wrap:anywhere] rounded px-2 py-2 text-left text-xs cursor-pointer ${section === item ? "bg-zinc-100 font-semibold" : "hover:bg-zinc-50"}`}>{item}</button>)}
           </aside>
 
-          <section className="space-y-2">
+          <section className="min-w-0 space-y-2">
             {visible.length === 0 ? <div className="rounded border border-dashed border-zinc-300 p-10 text-center text-xs text-zinc-500">No Firm Library documents match this view.</div> : visible.map((document) => (
-              <div key={document.id} className="flex items-start gap-3 rounded border border-zinc-200 p-4 hover:border-zinc-400">
+              <div key={document.id} className="flex min-w-0 items-start gap-3 rounded border border-zinc-200 p-4 hover:border-zinc-400">
                 <FileText className="mt-0.5 h-4 w-4 text-zinc-400" />
                 <button onClick={() => setPreview(document)} className="min-w-0 flex-1 text-left cursor-pointer"><p className="truncate text-xs font-semibold">{document.title}</p><p className="mt-1 text-[10px] font-mono uppercase text-zinc-400">{document.section} · {new Date(document.uploaded_at).toLocaleDateString()}</p></button>
                 <button onClick={() => setPreview(document)} title="Preview" className="rounded p-1 hover:bg-zinc-100 cursor-pointer"><Eye className="h-4 w-4 text-zinc-500" /></button>
@@ -169,7 +169,7 @@ export default function FirmLibraryView() {
             ))}
           </section>
 
-          <form onSubmit={upload} className="h-fit space-y-3 rounded border border-zinc-200 bg-zinc-50 p-4">
+          <form onSubmit={upload} className="min-w-0 h-fit space-y-3 rounded border border-zinc-200 bg-zinc-50 p-4">
             <div className="flex items-center gap-2"><Upload className="h-4 w-4" /><h3 className="text-[10px] font-mono font-bold uppercase">Add Firm Library Document</h3></div>
             <div className="rounded border border-dashed border-zinc-300 bg-white px-3 py-4 text-xs text-zinc-500">
               <span className="block">Choose PDF, DOCX, or TXT</span>
@@ -184,11 +184,11 @@ export default function FirmLibraryView() {
                 onBusyChange={setCloudFilesBusy}
               />
             </div>
-            {fileSelection.fileError && <p className="text-xs text-red-700">{fileSelection.fileError}</p>}
+            {fileSelection.fileError && <p className="[overflow-wrap:anywhere] text-xs text-red-700">{fileSelection.fileError}</p>}
             <SelectedFileList files={fileSelection.files} onRemove={removePendingFile} disabled={uploading} />
-            {uploadProgress && <p className="text-xs text-zinc-600">Uploading and indexing {uploadProgress.current} of {uploadProgress.total}: {uploadProgress.file.name}</p>}
-            {uploadFailures.map((failure) => <p key={failure.identity} className="text-xs text-red-700">{failure.file.name}: {failure.error}</p>)}
-            {uploadError && <p className="text-xs text-red-700">{uploadError}</p>}
+            {uploadProgress && <p className="[overflow-wrap:anywhere] text-xs text-zinc-600">Uploading and indexing {uploadProgress.current} of {uploadProgress.total}: {uploadProgress.file.name}</p>}
+            {uploadFailures.map((failure) => <p key={failure.identity} className="[overflow-wrap:anywhere] text-xs text-red-700">{failure.file.name}: {failure.error}</p>)}
+            {uploadError && <p className="[overflow-wrap:anywhere] text-xs text-red-700">{uploadError}</p>}
             {uploadSummary && <p className="text-xs text-zinc-700">{uploadSummary}</p>}
             <button disabled={uploading || cloudFilesBusy || fileSelection.files.length === 0} className="w-full rounded bg-zinc-950 px-3 py-2 text-[10px] font-mono font-bold uppercase text-white disabled:cursor-not-allowed disabled:opacity-40">{uploading ? "Processing..." : "Upload and index"}</button>
           </form>

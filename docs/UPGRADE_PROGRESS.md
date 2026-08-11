@@ -1826,3 +1826,11 @@ Status: Implementation complete; focused-phase verification recorded below.
 - Renamed only the visible Assistant composer label from Voice Mode to Voice Agent and updated the toggle title and accessibility label for its on/off states.
 - No voice lifecycle, microphone, connection, assistant-response, schema, dependency, or application-flow behavior changed.
 - Verification passed: focused Assistant composer, Voice Mode, and lawyer-workspace tests (41/41), `npm run lint`, and `npm run build`. The build required execution outside the managed filesystem sandbox after Vite config resolution was denied; the existing non-fatal large-chunk warning remains.
+
+### Firm Library long-text containment
+
+- Kept the desktop Firm Library columns at 220px, remaining available width, and 300px while allowing the middle track and its grid children to shrink around long intrinsic text.
+- Long section labels and upload filename-based progress or error text now wrap within their existing panels; document-list titles retain single-line ellipsis and the preview modal header retains its existing truncation.
+- Long underscore-heavy document titles now wrap inside the document paper without removing the preview's intentional internal horizontal scrolling for wide content and tables.
+- Added focused regression coverage. No Firm Library, upload, search, filtering, preview, delete, document-generation, API, database, dependency, or responsive-breakpoint behavior changed.
+- Verification passed: focused document preview and Work Product format tests (18/18), `npm run lint`, and `npm run build`. The build required execution outside the managed filesystem sandbox after Vite config resolution was denied; the existing non-fatal large-chunk warning remains.
