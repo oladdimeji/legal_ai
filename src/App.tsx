@@ -99,7 +99,7 @@ function assistantContextForRoute(
   const routeDefaults: Partial<Record<typeof route.kind, WorkspacePageContext>> = {
     matters: { routeKind: "matters", pageTitle: "Matters", pageDescription: "The Firm's Matter list and Matter creation workspace." },
     library: { routeKind: "library", pageTitle: "Firm Library", pageDescription: "The Firm's reusable document library and search workspace." },
-    history: { routeKind: "history", pageTitle: "History", pageDescription: "Past assistant conversations grouped by their origin." },
+    history: { routeKind: "history", pageTitle: "History", pageDescription: "Past assistant conversations ordered by recent activity and filterable by origin." },
     settings: { routeKind: "settings", pageTitle: "Settings", pageDescription: "Account, Firm, and session settings for the authenticated lawyer." },
   };
   const expected = routeDefaults[route.kind];

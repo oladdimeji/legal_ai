@@ -1,5 +1,13 @@
 # Compact Upgrade Progress
 
+## Unified History conversation collection
+
+- Replaced the separate General Assistant and Matter History sections with one globally activity-ordered responsive card grid.
+- Added a client-side origin filter whose Matter options are limited to Matters represented in loaded History, plus a subtle origin label on every card with a safe unavailable-Matter fallback.
+- Updated History page-context wording without changing thread fetching, stored Matter associations, retrieval scope, deletion, opening, or Work Product preservation behavior.
+- No schema, backend, API, dependency, authentication, workspace-isolation, or Matter-isolation changes were made.
+- Verification: `npm run lint` and `npm run build` passed. The build required execution outside the managed filesystem sandbox after Vite config access was denied; the existing non-fatal large-chunk warning remains.
+
 ## Google Drive folder navigation
 
 - Enabled folder visibility for Google Drive Picker navigation while keeping folders unselectable.
