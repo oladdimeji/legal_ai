@@ -58,13 +58,17 @@ test("Phase 5 Assistant receives the current page context without a manual scope
   assert.doesNotMatch(assistant, />📁 Wide Library<\/option>/);
 });
 
-test("Phase 5 History groups by stored context and recent activity", async () => {
+test("Phase 5 History preserves stored context with unified recent-activity ordering and filtering", async () => {
   const [history, database] = await Promise.all([
     readFile("src/components/HistoryView.tsx", "utf8"),
     readFile("server/db.ts", "utf8"),
   ]);
-  assert.match(history, /title: "General Assistant"/);
-  assert.match(history, /thread\.case_id === matter\.id/);
+  assert.match(history, /originFilter/);
+  assert.match(history, />All Conversations<\/option>/);
+  assert.match(history, /originFilter === "general"/);
+  assert.match(history, /originFilter\.startsWith\("matter:"\)/);
+  assert.match(history, /const orderedThreads = useMemo/);
+  assert.match(history, /last_activity_at \|\| b\.created_at/);
   assert.match(database, /COALESCE\(MAX\(m\.created_at\), t\.created_at\) AS last_activity_at/);
   assert.match(database, /WHERE t\.user_id = \$1/);
 });

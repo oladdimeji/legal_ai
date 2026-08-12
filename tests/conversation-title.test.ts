@@ -107,7 +107,7 @@ test("Voice persistence names only a brand-new thread from its first user transc
   assert.doesNotMatch(route, /planAssistantRequest|orchestrateAssistantRetrieval|completeAssistantResponse/);
 });
 
-test("History remains a stored-title reader with unchanged grouping, open, and delete behavior", async () => {
+test("History remains a stored-title reader with unified ordering, origin filtering, open, and delete behavior", async () => {
   const [history, assistant, migrations] = await Promise.all([
     readFile("src/components/HistoryView.tsx", "utf8"),
     readFile("src/components/AssistantView.tsx", "utf8"),
@@ -117,8 +117,14 @@ test("History remains a stored-title reader with unchanged grouping, open, and d
   assert.match(history, /fetch\("\/api\/threads\?history=true"\)/);
   assert.match(history, /\{thread\.title\}/);
   assert.doesNotMatch(history, /callModel|generateConversationTitle|first user message/i);
-  assert.match(history, /title: "General Assistant"/);
-  assert.match(history, /thread\.case_id === matter\.id/);
+  assert.match(history, /originFilter/);
+  assert.match(history, />All Conversations<\/option>/);
+  assert.match(history, />General Assistant<\/option>/);
+  assert.match(history, /value=\{`matter:\$\{matter\.id\}`\}/);
+  assert.match(history, /const orderedThreads = useMemo/);
+  assert.match(history, /b\.last_activity_at \|\| b\.created_at/);
+  assert.match(history, /a\.last_activity_at \|\| a\.created_at/);
+  assert.match(history, /thread\.case_id === null \? "General Assistant" : `Matter/);
   assert.match(history, /onClick=\{\(\) => onSelectThread\(thread\)\}/);
   assert.match(history, /method: "DELETE"/);
   assert.match(assistant, /caseId: originContext\.routeKind === "matter"/);
