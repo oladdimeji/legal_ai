@@ -1863,3 +1863,10 @@ Status: Implementation complete; focused-phase verification recorded below.
 - Added task-sensitive `callModel` overloads so embedding calls return `number[]` and all generation tasks return a precise `{ text, groundingMetadata }` result using the SDK `GroundingMetadata` type.
 - Replaced generation-only `typeof callModel` dependency aliases with one reusable narrow `GenerationModelCall` type. No runtime implementation, model selection, retry, grounding, embedding, retrieval, schema, dependency, or application behavior changed.
 - Verification passed: `npm run lint`, all 421 tests, `npm run build`, and final `npm run verify`. The build required execution outside the managed filesystem sandbox after its initial Vite config read was denied; the existing non-fatal large-chunk warning remains.
+
+### Create Matter footer overflow fix
+
+- Kept detailed creation, upload, and indexing progress in the footer status area while the primary action now remains `Creating...` for the full saving lifecycle.
+- Allowed long status text and filenames to shrink and wrap safely while keeping the Cancel and primary action buttons at stable sizes within the modal.
+- No Matter creation, upload, indexing, cleanup, success, error, API, backend, schema, dependency, or navigation behavior changed.
+- Verification passed: `npm run lint` and `npm run build`. The build required execution outside the managed filesystem sandbox after its initial Vite config read was denied; the existing non-fatal large-chunk warning remains.
