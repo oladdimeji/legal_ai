@@ -25,6 +25,8 @@ export interface PersistentUploadResult {
 type UploadFile = (file: File) => Promise<void>;
 type ProgressCallback = (progress: PersistentUploadProgress) => void;
 
+const PERSISTENT_UPLOAD_CONCURRENCY = 2;
+
 function uploadErrorMessage(error: unknown): string {
   return error instanceof Error && error.message ? error.message : "Upload failed";
 }
@@ -45,26 +47,37 @@ export async function uploadPersistentFilesSequentially(
   onProgress?: ProgressCallback
 ): Promise<PersistentUploadResult> {
   const orderedFiles = [...files];
-  const successfulFiles: File[] = [];
-  const failedFiles: PersistentUploadFailure[] = [];
+  const successfulFiles: Array<File | undefined> = new Array(orderedFiles.length);
+  const failedFiles: Array<PersistentUploadFailure | undefined> = new Array(orderedFiles.length);
+  let nextIndex = 0;
 
-  for (let index = 0; index < orderedFiles.length; index += 1) {
-    const file = orderedFiles[index];
-    const identity = browserFileIdentity(file);
-    const progress = { file, identity, current: index + 1, total: orderedFiles.length };
-    onProgress?.({ ...progress, phase: "uploading" });
-    try {
-      await uploadFile(file);
-      successfulFiles.push(file);
-      onProgress?.({ ...progress, phase: "succeeded" });
-    } catch (error) {
-      const message = uploadErrorMessage(error);
-      failedFiles.push({ file, identity, error: message });
-      onProgress?.({ ...progress, phase: "failed", error: message });
+  const uploadNext = async (): Promise<void> => {
+    while (nextIndex < orderedFiles.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      const file = orderedFiles[index];
+      const identity = browserFileIdentity(file);
+      const progress = { file, identity, current: index + 1, total: orderedFiles.length };
+      onProgress?.({ ...progress, phase: "uploading" });
+      try {
+        await uploadFile(file);
+        successfulFiles[index] = file;
+        onProgress?.({ ...progress, phase: "succeeded" });
+      } catch (error) {
+        const message = uploadErrorMessage(error);
+        failedFiles[index] = { file, identity, error: message };
+        onProgress?.({ ...progress, phase: "failed", error: message });
+      }
     }
-  }
+  };
 
-  return { successfulFiles, failedFiles };
+  const workerCount = Math.min(PERSISTENT_UPLOAD_CONCURRENCY, orderedFiles.length);
+  await Promise.all(Array.from({ length: workerCount }, () => uploadNext()));
+
+  return {
+    successfulFiles: successfulFiles.filter((file): file is File => file !== undefined),
+    failedFiles: failedFiles.filter((failure): failure is PersistentUploadFailure => failure !== undefined),
+  };
 }
 
 export function persistentUploadSummary(successful: number, failed: number): string {

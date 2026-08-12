@@ -1878,3 +1878,11 @@ Status: Implementation complete; focused-phase verification recorded below.
 - Allowed long status text and filenames to shrink and wrap safely while keeping the Cancel and primary action buttons at stable sizes within the modal.
 - No Matter creation, upload, indexing, cleanup, success, error, API, backend, schema, dependency, or navigation behavior changed.
 - Verification passed: `npm run lint` and `npm run build`. The build required execution outside the managed filesystem sandbox after its initial Vite config read was denied; the existing non-fatal large-chunk warning remains.
+
+### Persistent upload and chunk-insert performance optimization
+
+- Changed the existing shared persistent uploader to use two local workers, keeping one independent request and one independent result per file while starting the next pending file as soon as either active upload finishes.
+- Preserved input ordering in successful and failed result arrays despite out-of-order completion; existing per-file progress callbacks and success-only pending-file removal remain unchanged across Matter Sources, Firm Library, and the larger-file Create Matter path.
+- Replaced sequential per-chunk PostgreSQL inserts with a shared 10-chunk multi-row insert helper for ordinary document indexing and transactional Portal response indexing. Chunk IDs, indices, text, embeddings, document ownership, processing-state checks, synchronous completion, and existing timing instrumentation remain unchanged.
+- No schema migration, dependency, environment variable, process, worker, queue, service, endpoint, response, extraction, chunking, embedding, retrieval, permission, or deployment change was required.
+- Focused upload/indexing tests passed (9/9), `npm run lint` passed, and `npm run build` passed after the managed filesystem sandbox initially blocked Vite config resolution. The full suite has two unchanged History-title assertion failures expecting `General Assistant`; all other 420 tests pass. The existing non-fatal large-chunk warning remains.

@@ -52,7 +52,7 @@ test("cumulative persistent selections still prevent duplicate browser files", (
   assert.equal(result.error, "");
 });
 
-test("persistent uploads run in order, one at a time, and continue after a failure", async () => {
+test("persistent uploads run two at a time, retain input-ordered results, and continue after a failure", async () => {
   const files = [file("first.txt"), file("broken.txt"), file("last.txt")];
   const attempts: string[] = [];
   const formFileCounts: number[] = [];
@@ -70,7 +70,7 @@ test("persistent uploads run in order, one at a time, and continue after a failu
       activeUploads += 1;
       maximumActiveUploads = Math.max(maximumActiveUploads, activeUploads);
       try {
-        await new Promise((resolve) => setTimeout(resolve, 1));
+        await new Promise((resolve) => setTimeout(resolve, currentFile.name === "first.txt" ? 10 : 1));
         if (currentFile.name === "broken.txt") throw new Error("server rejected this document");
       } finally {
         activeUploads -= 1;
@@ -81,20 +81,23 @@ test("persistent uploads run in order, one at a time, and continue after a failu
 
   assert.deepEqual(attempts, ["first.txt", "broken.txt", "last.txt"]);
   assert.deepEqual(formFileCounts, [1, 1, 1]);
-  assert.equal(maximumActiveUploads, 1);
+  assert.equal(maximumActiveUploads, 2);
   assert.deepEqual(result.successfulFiles, [files[0], files[2]]);
   assert.equal(result.failedFiles.length, 1);
   assert.equal(result.failedFiles[0].file, files[1]);
   assert.equal(result.failedFiles[0].identity, browserFileIdentity(files[1]));
   assert.equal(result.failedFiles[0].error, "server rejected this document");
-  assert.deepEqual(progress, [
+  assert.deepEqual(progress.slice(0, 2), ["uploading:1:first.txt", "uploading:2:broken.txt"]);
+  assert.ok(progress.indexOf("uploading:3:last.txt") > progress.indexOf("failed:2:broken.txt"));
+  assert.ok(progress.indexOf("uploading:3:last.txt") < progress.indexOf("succeeded:1:first.txt"));
+  assert.deepEqual(new Set(progress), new Set([
     "uploading:1:first.txt",
     "succeeded:1:first.txt",
     "uploading:2:broken.txt",
     "failed:2:broken.txt",
     "uploading:3:last.txt",
     "succeeded:3:last.txt",
-  ]);
+  ]));
 });
 
 test("server-provided upload errors are preserved without automatic retries", async () => {

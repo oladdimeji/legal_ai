@@ -42,6 +42,7 @@ export interface OwnershipContext {
 
 const MAX_EMBEDDING_BATCH_TEXTS = 18;
 const MAX_EMBEDDING_BATCH_CHARACTERS = 60_000;
+const DOCUMENT_CHUNK_INSERT_BATCH_SIZE = 10;
 
 type PreparedDocumentChunk = {
   index: number;
@@ -56,6 +57,8 @@ type PreparedDocumentIndex = {
   fallbackToSingleCount: number;
   embeddingDurationMs: number;
 };
+
+type ChunkQuery = (text: string, params: any[]) => Promise<unknown>;
 
 export function splitEmbeddingBatches(texts: string[]): string[][] {
   const batches: string[][] = [];
@@ -116,6 +119,31 @@ async function prepareDocumentIndex(text: string, documentId: string): Promise<P
     fallbackToSingleCount,
     embeddingDurationMs: Date.now() - embeddingStartedAt,
   };
+}
+
+async function insertDocumentChunks(
+  documentId: string,
+  chunks: PreparedDocumentChunk[],
+  query: ChunkQuery
+): Promise<void> {
+  for (let offset = 0; offset < chunks.length; offset += DOCUMENT_CHUNK_INSERT_BATCH_SIZE) {
+    const batch = chunks.slice(offset, offset + DOCUMENT_CHUNK_INSERT_BATCH_SIZE);
+    const values = batch.map((_chunk, index) => {
+      const parameter = index * 4;
+      return `($${parameter + 1}, $${parameter + 2}, $${parameter + 3}, $${parameter + 4})`;
+    });
+    const params = batch.flatMap((chunk) => [
+      `chunk_${documentId}_${chunk.index}`,
+      documentId,
+      chunk.text,
+      `[${chunk.embedding.join(",")}]`,
+    ]);
+    await query(
+      `INSERT INTO document_chunks (id, document_id, chunk_text, embedding)
+       VALUES ${values.join(", ")}`,
+      params
+    );
+  }
 }
 
 function accountFromRow(row: Record<string, unknown>): Account {
@@ -411,13 +439,7 @@ class DatabaseService {
 
     const prepared = await prepareDocumentIndex(text, docId);
     const insertStartedAt = Date.now();
-    for (const chunk of prepared.chunks) {
-      await this.query(
-        `INSERT INTO document_chunks (id, document_id, chunk_text, embedding)
-         VALUES ($1, $2, $3, $4)`,
-        [`chunk_${docId}_${chunk.index}`, docId, chunk.text, `[${chunk.embedding.join(",")}]`]
-      );
-    }
+    await insertDocumentChunks(docId, prepared.chunks, (query, params) => this.query(query, params));
     const indexed = await this.query(
       "SELECT COUNT(*)::int AS count FROM document_chunks WHERE document_id = $1",
       [docId]
@@ -2442,13 +2464,7 @@ class DatabaseService {
         );
         const prepared = await prepareDocumentIndex(file.text, documentId);
         const insertStartedAt = Date.now();
-        for (const chunk of prepared.chunks) {
-          await client.query(
-            `INSERT INTO document_chunks (id, document_id, chunk_text, embedding)
-             VALUES ($1, $2, $3, $4)`,
-            [`chunk_${documentId}_${chunk.index}`, documentId, chunk.text, `[${chunk.embedding.join(",")}]`]
-          );
-        }
+        await insertDocumentChunks(documentId, prepared.chunks, (query, params) => client.query(query, params));
         const indexed = await client.query(
           "SELECT COUNT(*)::int AS count FROM document_chunks WHERE document_id = $1",
           [documentId]

@@ -30,3 +30,17 @@ test("both persistent indexing paths share batched preparation and retain per-ch
   assert.doesNotMatch(portal, /for \(let i = 0; i < paragraphs\.length/);
 });
 
+test("both indexing paths use the bounded multi-row chunk insert helper", async () => {
+  const database = await readFile("server/db.ts", "utf8");
+  const helper = database.slice(database.indexOf("async function insertDocumentChunks"), database.indexOf("function accountFromRow"));
+  const ordinary = database.slice(database.indexOf("private async addDocumentInternal"), database.indexOf("public async createSession"));
+  const portal = database.slice(database.indexOf("public async createPortalResponse"), database.indexOf("public async getPortalAssistantSources"));
+
+  assert.match(database, /DOCUMENT_CHUNK_INSERT_BATCH_SIZE = 10/);
+  assert.match(helper, /offset \+= DOCUMENT_CHUNK_INSERT_BATCH_SIZE/);
+  assert.match(helper, /INSERT INTO document_chunks[\s\S]*VALUES \$\{values\.join/);
+  assert.match(ordinary, /insertDocumentChunks\(docId, prepared\.chunks/);
+  assert.match(portal, /insertDocumentChunks\(documentId, prepared\.chunks/);
+  assert.doesNotMatch(ordinary, /for \(const chunk of prepared\.chunks\)/);
+  assert.doesNotMatch(portal, /for \(const chunk of prepared\.chunks\)/);
+});
