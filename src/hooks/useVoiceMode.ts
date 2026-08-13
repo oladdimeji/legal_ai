@@ -23,6 +23,11 @@ type VoiceTokenResponse = {
   error?: string;
 };
 
+type VoiceAcknowledgementAudio = {
+  data: string;
+  mimeType: string;
+};
+
 type UseVoiceModeOptions = {
   onTranscript: (message: Message) => void;
 };
@@ -78,6 +83,14 @@ export function initializeLiveHistory(
   session.sendClientContent({ turnComplete: true });
 }
 
+export function shouldPlayVoiceAcknowledgement(
+  functionName: string | undefined,
+  turnBoundary: number,
+  acknowledgedTurn: number | null
+): boolean {
+  return functionName === "use_assistant_capabilities" && acknowledgedTurn !== turnBoundary;
+}
+
 export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   const [state, setState] = useState<VoiceModeState>("off");
   const [error, setError] = useState("");
@@ -106,6 +119,9 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   const pendingCapabilityMetadataRef = useRef<VoiceCapabilityMetadata | null>(null);
   const workingCallIdsRef = useRef(new Set<string>());
   const turnBoundaryRef = useRef(0);
+  const acknowledgedTurnRef = useRef<number | null>(null);
+  const acknowledgementAudioRef = useRef<VoiceAcknowledgementAudio | null>(null);
+  const acknowledgementRequestRef = useRef<Promise<VoiceAcknowledgementAudio | null> | null>(null);
   const onTranscriptRef = useRef(onTranscript);
   onTranscriptRef.current = onTranscript;
 
@@ -158,6 +174,9 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     transcriptRef.current = { user: "", assistant: "" };
     pageContextRef.current = null;
     pendingCapabilityMetadataRef.current = null;
+    acknowledgedTurnRef.current = null;
+    acknowledgementAudioRef.current = null;
+    acknowledgementRequestRef.current = null;
     clearWorking();
     turnBoundaryRef.current += 1;
     setLiveTranscripts({ user: "", assistant: "" });
@@ -238,6 +257,30 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     source.start(startAt);
   }, [updateState]);
 
+  const prefetchAcknowledgement = useCallback((threadId: string, lifecycle: number) => {
+    if (acknowledgementAudioRef.current) return Promise.resolve(acknowledgementAudioRef.current);
+    if (acknowledgementRequestRef.current) return acknowledgementRequestRef.current;
+    const request = fetch(`/api/threads/${encodeURIComponent(threadId)}/voice/acknowledgement`)
+      .then(async (response) => {
+        if (!response.ok) return null;
+        const audio = await response.json().catch(() => null) as VoiceAcknowledgementAudio | null;
+        return audio?.data && audio.mimeType ? audio : null;
+      })
+      .then((audio) => {
+        if (audio && lifecycle === lifecycleRef.current && sessionThreadRef.current === threadId) {
+          acknowledgementAudioRef.current = audio;
+          return audio;
+        }
+        return null;
+      })
+      .catch(() => null);
+    acknowledgementRequestRef.current = request;
+    void request.finally(() => {
+      if (acknowledgementRequestRef.current === request) acknowledgementRequestRef.current = null;
+    });
+    return request;
+  }, []);
+
   const handleServerMessage = useCallback((message: LiveServerMessage) => {
     if (message.toolCall?.functionCalls?.length) {
       const threadId = sessionThreadRef.current;
@@ -250,6 +293,25 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
             ? (typeof call.args?.request === "string" ? call.args.request.trim() : "")
             : (typeof call.args?.query === "string" ? call.args.query.trim() : "");
           const turnBoundary = turnBoundaryRef.current;
+          if (shouldPlayVoiceAcknowledgement(call.name, turnBoundary, acknowledgedTurnRef.current)) {
+            acknowledgedTurnRef.current = turnBoundary;
+            const acknowledgementAudio = acknowledgementAudioRef.current;
+            if (acknowledgementAudio) {
+              scheduleAudio(acknowledgementAudio.data, acknowledgementAudio.mimeType);
+            } else {
+              const acknowledgementLifecycle = lifecycleRef.current;
+              void prefetchAcknowledgement(threadId, acknowledgementLifecycle).then((audio) => {
+                if (
+                  audio
+                  && acknowledgementLifecycle === lifecycleRef.current
+                  && turnBoundary === turnBoundaryRef.current
+                  && acknowledgedTurnRef.current === turnBoundary
+                ) {
+                  scheduleAudio(audio.data, audio.mimeType);
+                }
+              });
+            }
+          }
           const workingCallId = call.id || `${call.name || "lookup_workspace"}_${Date.now()}_${callIndex}`;
           workingCallIdsRef.current.add(workingCallId);
           setWorking(true);
@@ -335,7 +397,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       finalizeTranscripts("turnComplete");
       if (playbackSourcesRef.current.size === 0) updateState("listening");
     }
-  }, [clearWorking, finalizeTranscripts, scheduleAudio, stopPlayback, updateState]);
+  }, [clearWorking, finalizeTranscripts, prefetchAcknowledgement, scheduleAudio, stopPlayback, updateState]);
 
   const beginAmplitudeUpdates = useCallback(() => {
     const microphoneData = new Uint8Array(256);
@@ -429,6 +491,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       }
       sessionRef.current = session;
       initializeLiveHistory(session, tokenData.history);
+      prefetchAcknowledgement(threadId, lifecycle);
       processor.onaudioprocess = (event) => {
         if (sessionRef.current !== session) return;
         const samples = downsampleAudio(event.inputBuffer.getChannelData(0), context.sampleRate);
@@ -444,7 +507,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
         ? "Microphone access was denied. Allow microphone access to use Voice Mode."
         : startError instanceof Error ? startError.message : "Voice Mode could not start.");
     }
-  }, [beginAmplitudeUpdates, fail, handleServerMessage, updateState]);
+  }, [beginAmplitudeUpdates, fail, handleServerMessage, prefetchAcknowledgement, updateState]);
 
   const stop = useCallback(() => {
     setError("");

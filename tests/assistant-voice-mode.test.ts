@@ -3,11 +3,13 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import type { Message } from "../src/types.js";
 import {
+  VOICE_MODE_ACKNOWLEDGEMENT,
   VOICE_MODE_CONFIG,
   boundedVoiceHistory,
   liveConnectConfig,
   resolveFirmLibraryTitle,
   voiceCredentialRequest,
+  voiceAcknowledgementRequest,
   voiceMessageId,
 } from "../server/voiceMode.js";
 import {
@@ -18,6 +20,7 @@ import {
 import {
   finalizeVoiceTranscripts,
   initializeLiveHistory,
+  shouldPlayVoiceAcknowledgement,
 } from "../src/hooks/useVoiceMode.js";
 
 function message(id: string, role: "user" | "assistant", content: string): Message {
@@ -56,6 +59,65 @@ test("Gemini Live configuration is centralized for native audio, transcription, 
   assert.match(String(config.systemInstruction), /Never fabricate progress/);
   assert.doesNotMatch(String(config.systemInstruction), /Voice Mode is read-only|better handled in the standard Assistant/);
   assert.doesNotMatch(String(config.systemInstruction), /pretend|browser text-to-speech/i);
+  assert.doesNotMatch(String(config.systemInstruction), /you may give one short, natural acknowledgement/i);
+});
+
+test("Voice acknowledgement TTS reuses the configured Voice Agent identity and fixed phrase", () => {
+  const request = voiceAcknowledgementRequest();
+  assert.equal(VOICE_MODE_ACKNOWLEDGEMENT.text, "Okay, I'm on it.");
+  assert.equal(request.model, "gemini-3.1-flash-tts-preview");
+  assert.deepEqual(request.config.responseModalities, ["AUDIO"]);
+  assert.equal(
+    request.config.speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName,
+    VOICE_MODE_CONFIG.voiceName
+  );
+  assert.equal(VOICE_MODE_CONFIG.voiceName, "Kore");
+});
+
+test("Voice acknowledgement eligibility is heavy-call-only and once per existing turn boundary", () => {
+  assert.equal(shouldPlayVoiceAcknowledgement("use_assistant_capabilities", 7, null), true);
+  assert.equal(shouldPlayVoiceAcknowledgement("use_assistant_capabilities", 7, 6), true);
+  assert.equal(shouldPlayVoiceAcknowledgement("use_assistant_capabilities", 7, 7), false);
+  assert.equal(shouldPlayVoiceAcknowledgement("lookup_workspace", 7, null), false);
+  assert.equal(shouldPlayVoiceAcknowledgement(undefined, 7, null), false);
+});
+
+test("Voice acknowledgement is isolated, fail-open, prefetched, and cleaned up with shared playback", async () => {
+  const [server, hook] = await Promise.all([
+    readFile(new URL("../server.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8"),
+  ]);
+  const route = server.slice(
+    server.indexOf('app.get("/api/threads/:id/voice/acknowledgement"'),
+    server.indexOf('app.post("/api/threads/:id/voice/lookup"')
+  );
+  assert.match(route, /db\.getThreadById\(req\.params\.id, ownership\(req\)\)/);
+  assert.match(route, /getVoiceAcknowledgementAudio\(\)/);
+  assert.match(route, /status\(502\)/);
+  assert.doesNotMatch(route, /db\.addMessage|db\.addVoiceMessage|voice\/messages/);
+
+  const prefetch = hook.slice(hook.indexOf("const prefetchAcknowledgement"), hook.indexOf("const handleServerMessage"));
+  assert.match(prefetch, /voice\/acknowledgement/);
+  assert.match(prefetch, /acknowledgementRequestRef\.current/);
+  assert.match(prefetch, /\.catch\(\(\) => null\)/);
+  assert.doesNotMatch(prefetch, /setError|fail\(|transcriptRef|setLiveTranscripts|persistFinalTranscript/);
+
+  const toolHandler = hook.slice(hook.indexOf("const handleServerMessage"), hook.indexOf("const beginAmplitudeUpdates"));
+  assert.match(toolHandler, /shouldPlayVoiceAcknowledgement\(call\.name, turnBoundary, acknowledgedTurnRef\.current\)/);
+  assert.ok(toolHandler.indexOf("scheduleAudio(acknowledgementAudio.data") < toolHandler.indexOf("await fetch("));
+  assert.match(toolHandler, /isAssistantCapability \? "assistant" : "lookup"/);
+  assert.match(toolHandler, /session\.sendToolResponse/);
+  assert.doesNotMatch(toolHandler, /session\.close|live\.connect|persistFinalTranscript|voice\/messages/);
+
+  const start = hook.slice(hook.indexOf("const start"), hook.indexOf("const stop ="));
+  assert.match(start, /sessionRef\.current = session;[\s\S]*prefetchAcknowledgement\(threadId, lifecycle\)/);
+  const cleanup = hook.slice(hook.indexOf("const releaseResources"), hook.indexOf("const fail"));
+  assert.match(cleanup, /stopPlayback\(\)/);
+  assert.match(cleanup, /acknowledgedTurnRef\.current = null/);
+  assert.match(cleanup, /acknowledgementAudioRef\.current = null/);
+  assert.match(cleanup, /acknowledgementRequestRef\.current = null/);
+  assert.doesNotMatch(hook, /speechSynthesis|SpeechSynthesisUtterance|webkitSpeechRecognition|SpeechRecognition/);
+  assert.doesNotMatch(hook, /playbackRate/);
 });
 
 test("Live tool declarations expose named Firm Library lookup and keep routine reads out of the heavy bridge", () => {
