@@ -97,6 +97,11 @@ export default function AuthView({
     setError("");
   };
 
+  const continueWithGoogle = () => {
+    const query = new URLSearchParams({ accountType: "lawyer", returnTo });
+    window.location.assign(`/api/auth/google?${query.toString()}`);
+  };
+
   return (
     <div className="min-h-screen w-full bg-zinc-50 px-6 py-10 text-zinc-950">
       <button
@@ -128,6 +133,22 @@ export default function AuthView({
 
           {step === "email" ? (
             <form onSubmit={submitEmail} className="space-y-4">
+              {isLawyerMode && (
+                <>
+                  <button
+                    type="button"
+                    onClick={continueWithGoogle}
+                    className="w-full rounded border border-zinc-300 bg-white px-4 py-2.5 text-xs font-mono font-semibold uppercase hover:border-zinc-950"
+                  >
+                    Continue with Google
+                  </button>
+                  <div className="flex items-center gap-3" aria-hidden="true">
+                    <span className="h-px flex-1 bg-zinc-200" />
+                    <span className="text-[10px] font-mono uppercase text-zinc-400">or</span>
+                    <span className="h-px flex-1 bg-zinc-200" />
+                  </div>
+                </>
+              )}
               <label className="block space-y-1.5">
                 <span className="text-[10px] font-mono font-semibold uppercase text-zinc-500">
                   Email

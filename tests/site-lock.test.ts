@@ -141,7 +141,7 @@ test("server authentication and session restoration use the centralized policy",
 
   assert.ok(
     googleCallback.indexOf("canAccessPrivateApplication") <
-      googleCallback.indexOf("db.authenticateGoogle")
+      googleCallback.indexOf("db.authenticateApprovedLawyerGoogle")
   );
   assert.ok(
     requestCode.indexOf("canAccessPrivateApplication") < requestCode.indexOf("db.issueEmailOtp")

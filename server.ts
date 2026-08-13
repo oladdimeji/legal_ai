@@ -547,6 +547,24 @@ function accessReviewAdminEmails(): string[] {
   return Array.from(new Set(entries));
 }
 
+function isAccessReviewAdminAccount(account: Account | undefined): boolean {
+  if (
+    account?.user.account_type !== "lawyer" ||
+    !account.user.onboarding_completed ||
+    account.user.platform_access_status !== "approved" ||
+    !account.user.firm_id ||
+    !account.firm ||
+    account.user.firm_id !== account.firm.id
+  ) {
+    return false;
+  }
+  try {
+    return accessReviewAdminEmails().includes(normalizeEmail(account.user.email));
+  } catch {
+    return false;
+  }
+}
+
 function accessReviewUrl(rawToken: string): string {
   const appUrl = process.env.APP_URL?.trim();
   if (!appUrl) throw new Error("ACCESS_REVIEW_NOT_CONFIGURED");
@@ -905,9 +923,6 @@ async function startServer() {
       return fail("Google sign-in could not be completed.");
     }
     try {
-      if (requestedAccountType === "lawyer") {
-        return fail("Google sign-in is not available for Exepts lawyer accounts.");
-      }
       if (requestedAccountType === "client") {
         return fail("Client access is available only through the collaboration link provided by your lawyer.");
       }
@@ -931,11 +946,9 @@ async function startServer() {
       if (!canAccessPrivateApplication(email, siteLockPolicy)) {
         return fail(SITE_LOCK_DENIED_MESSAGE);
       }
-      const { account } = await db.authenticateGoogle({
+      const account = await db.authenticateApprovedLawyerGoogle({
         sub: payload.sub,
         email,
-        name: typeof payload.name === "string" ? payload.name.trim() || null : null,
-        accountType: requestedAccountType,
       });
       const { token, tokenHash } = createSessionToken();
       await db.createSession(
@@ -953,6 +966,25 @@ async function startServer() {
     } catch (error) {
       if (error instanceof Error && error.message === "GOOGLE_ACCOUNT_CONFLICT") {
         return fail("This Google account cannot be linked to the requested Exepts account.");
+      }
+      if (error instanceof Error && error.message === "GOOGLE_LAWYER_NOT_FOUND") {
+        return fail("No approved Exepts account was found for this Google account. Request access first.");
+      }
+      if (error instanceof Error && error.message === "GOOGLE_LAWYER_REQUIRED") {
+        return fail("This Google account is not associated with an Exepts lawyer account.");
+      }
+      if (error instanceof Error && error.message === "GOOGLE_LAWYER_ONBOARDING_INCOMPLETE") {
+        return fail("Complete your Exepts access request before signing in with Google.");
+      }
+      if (error instanceof Error && error.message === "GOOGLE_LAWYER_ACCESS_PENDING") {
+        return fail("Your Exepts access request is still under review.");
+      }
+      if (
+        error instanceof Error &&
+        (error.message === "GOOGLE_LAWYER_ACCESS_DENIED" ||
+          error.message === "GOOGLE_LAWYER_NOT_APPROVED")
+      ) {
+        return fail("Access has not been approved for this email.");
       }
       console.error("Google authentication failed.");
       return fail("Google sign-in could not be completed. Please try again.");
@@ -1229,6 +1261,73 @@ async function startServer() {
     }
     return next();
   };
+
+  const requireAccessReviewAdmin = (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ) => {
+    if (!isAccessReviewAdminAccount(req.auth)) {
+      res.setHeader("Cache-Control", "no-store");
+      return res.status(403).json({ error: "Platform access-review administrator access is required." });
+    }
+    return next();
+  };
+
+  app.get(
+    "/api/access-admin/status",
+    requireAuth,
+    (req: AuthenticatedRequest, res) => {
+      res.setHeader("Cache-Control", "no-store");
+      return res.json({ isAccessReviewAdmin: isAccessReviewAdminAccount(req.auth) });
+    }
+  );
+
+  app.get(
+    "/api/access-admin/requests",
+    requireAuth,
+    requireAccessReviewAdmin,
+    async (_req: AuthenticatedRequest, res) => {
+      res.setHeader("Cache-Control", "no-store");
+      try {
+        return res.json({ requests: await db.listPendingPlatformAccessRequests() });
+      } catch {
+        console.error("Platform access request listing failed.");
+        return res.status(500).json({ error: "Pending access requests could not be loaded." });
+      }
+    }
+  );
+
+  app.post(
+    "/api/access-admin/requests/:userId/decision",
+    requireAuth,
+    requireAccessReviewAdmin,
+    async (req: AuthenticatedRequest, res) => {
+      res.setHeader("Cache-Control", "no-store");
+      const userId = typeof req.params.userId === "string" ? req.params.userId.trim() : "";
+      const decision = req.body?.decision;
+      if (!userId || userId.length > 200 || (decision !== "approved" && decision !== "denied")) {
+        return res.status(400).json({ error: "A valid pending user and access decision are required." });
+      }
+      try {
+        const result = await db.decidePlatformAccessRequest(userId, decision);
+        if (result.changed === false) {
+          return result.reason === "already_decided"
+            ? res.status(409).json({ error: "This access request has already been decided." })
+            : res.status(404).json({ error: "This pending access request is unavailable." });
+        }
+        try {
+          await sendAccessDecisionEmail(result.user.email, result.user.name, decision);
+        } catch {
+          console.error("Access decision applicant email delivery failed.");
+        }
+        return res.json({ success: true, decision: result.decision });
+      } catch {
+        console.error("Platform access review decision failed.");
+        return res.status(500).json({ error: "The access decision could not be saved." });
+      }
+    }
+  );
 
   const requireClientCollaboration = (
     req: AuthenticatedRequest,

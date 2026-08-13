@@ -44,6 +44,20 @@ export interface Account {
   firm: Firm | null;
 }
 
+export interface PlatformAccessRequest {
+  userId: string;
+  fullName: string;
+  email: string;
+  professionalRole: ProfessionalRole;
+  customProfessionalRole: string | null;
+  workspaceType: WorkspaceType;
+  firmName: string | null;
+  practiceAreas: string[];
+  customPracticeArea: string | null;
+  submittedAt: string;
+  status: "pending";
+}
+
 export type WorkspacePageContext = {
   routeKind:
     | "matters"

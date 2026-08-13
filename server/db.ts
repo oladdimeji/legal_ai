@@ -13,6 +13,7 @@ import {
   Citation,
   FirmAdminSettings,
   FirmRole,
+  PlatformAccessRequest,
   PlatformAccessStatus,
   ProfessionalRole,
   WorkspaceType,
@@ -203,6 +204,14 @@ export type AccessReviewDecisionResult =
       state: "completed";
       decision: "approved" | "denied";
       changed: true;
+      user: { email: string; name: string | null };
+    };
+
+export type PlatformAccessDecisionResult =
+  | { changed: false; reason: "unavailable" | "already_decided" }
+  | {
+      changed: true;
+      decision: "approved" | "denied";
       user: { email: string; name: string | null };
     };
 
@@ -802,6 +811,76 @@ class DatabaseService {
     }
   }
 
+  public async authenticateApprovedLawyerGoogle(input: {
+    sub: string;
+    email: string;
+  }): Promise<Account> {
+    await this.ensureSchema();
+    const client = await getPool().connect();
+    const now = new Date().toISOString();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`google:${input.sub}`]);
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [input.email]);
+      const bySub = await client.query<{ id: string }>(
+        "SELECT id FROM users WHERE google_sub = $1 FOR UPDATE",
+        [input.sub]
+      );
+      const byEmail = await client.query<{
+        id: string;
+        google_sub: string | null;
+        account_type: AccountType;
+        onboarding_completed: boolean;
+        platform_access_status: PlatformAccessStatus;
+        firm_id: string | null;
+      }>(
+        `SELECT id, google_sub, account_type, onboarding_completed,
+           platform_access_status, firm_id
+         FROM users WHERE LOWER(BTRIM(email)) = $1 FOR UPDATE`,
+        [input.email]
+      );
+      const target = byEmail.rows[0];
+      if (bySub.rows[0] && (!target || bySub.rows[0].id !== target.id)) {
+        throw new Error("GOOGLE_ACCOUNT_CONFLICT");
+      }
+      if (!target) throw new Error("GOOGLE_LAWYER_NOT_FOUND");
+      if (target.google_sub && target.google_sub !== input.sub) {
+        throw new Error("GOOGLE_ACCOUNT_CONFLICT");
+      }
+      if (target.account_type !== "lawyer") throw new Error("GOOGLE_LAWYER_REQUIRED");
+      if (!target.onboarding_completed || !target.firm_id) {
+        throw new Error("GOOGLE_LAWYER_ONBOARDING_INCOMPLETE");
+      }
+      if (target.platform_access_status === "pending") {
+        throw new Error("GOOGLE_LAWYER_ACCESS_PENDING");
+      }
+      if (target.platform_access_status === "denied") {
+        throw new Error("GOOGLE_LAWYER_ACCESS_DENIED");
+      }
+      if (target.platform_access_status !== "approved") {
+        throw new Error("GOOGLE_LAWYER_NOT_APPROVED");
+      }
+      await client.query(
+        `UPDATE users SET google_sub = COALESCE(google_sub, $2),
+           email_verified_at = COALESCE(email_verified_at, $3), updated_at = $3
+         WHERE id = $1`,
+        [target.id, input.sub, now]
+      );
+      const accountResult = await client.query(
+        `SELECT u.*, f.name AS firm_name, FALSE AS client_access_granted
+         FROM users u JOIN firm f ON f.id = u.firm_id WHERE u.id = $1`,
+        [target.id]
+      );
+      await client.query("COMMIT");
+      return accountFromRow(accountResult.rows[0]);
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   public async submitPublicAccessRequest(input: {
     email: string;
     name: string;
@@ -1313,6 +1392,94 @@ class DatabaseService {
         state: "completed",
         decision,
         changed: true,
+        user: { email: user.email, name: user.name },
+      };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async listPendingPlatformAccessRequests(): Promise<PlatformAccessRequest[]> {
+    const rows = await this.query(
+      `SELECT u.id, u.name, u.email, u.professional_role,
+         u.custom_professional_role, u.workspace_type, u.practice_areas,
+         u.custom_practice_area, u.access_submitted_at, f.name AS firm_name
+       FROM users u
+       JOIN firm f ON f.id = u.firm_id
+       WHERE u.account_type = 'lawyer'
+         AND u.onboarding_completed = TRUE
+         AND u.platform_access_status = 'pending'
+         AND u.access_submitted_at IS NOT NULL
+         AND u.name IS NOT NULL
+         AND u.professional_role IS NOT NULL
+         AND u.workspace_type IS NOT NULL
+       ORDER BY u.access_submitted_at DESC, u.id ASC`
+    );
+    return rows.map((row) => ({
+      userId: String(row.id),
+      fullName: String(row.name),
+      email: String(row.email),
+      professionalRole: row.professional_role as ProfessionalRole,
+      customProfessionalRole: row.custom_professional_role
+        ? String(row.custom_professional_role) : null,
+      workspaceType: row.workspace_type as WorkspaceType,
+      firmName: row.workspace_type === "firm" ? String(row.firm_name) : null,
+      practiceAreas: Array.isArray(row.practice_areas) ? row.practice_areas.map(String) : [],
+      customPracticeArea: row.custom_practice_area ? String(row.custom_practice_area) : null,
+      submittedAt: String(row.access_submitted_at),
+      status: "pending" as const,
+    }));
+  }
+
+  public async decidePlatformAccessRequest(
+    userId: string,
+    decision: "approved" | "denied"
+  ): Promise<PlatformAccessDecisionResult> {
+    await this.ensureSchema();
+    const client = await getPool().connect();
+    const now = new Date().toISOString();
+    try {
+      await client.query("BEGIN");
+      const userResult = await client.query<{
+        id: string;
+        email: string;
+        name: string | null;
+        account_type: AccountType;
+        onboarding_completed: boolean;
+        platform_access_status: PlatformAccessStatus;
+        firm_id: string | null;
+      }>(
+        `SELECT id, email, name, account_type, onboarding_completed,
+           platform_access_status, firm_id
+         FROM users WHERE id = $1 FOR UPDATE`,
+        [userId]
+      );
+      const user = userResult.rows[0];
+      if (!user || user.account_type !== "lawyer" || !user.onboarding_completed || !user.firm_id) {
+        await client.query("COMMIT");
+        return { changed: false, reason: "unavailable" };
+      }
+      if (user.platform_access_status !== "pending") {
+        await client.query("COMMIT");
+        return { changed: false, reason: "already_decided" };
+      }
+      await client.query(
+        `UPDATE users SET platform_access_status = $2, access_reviewed_at = $3,
+           updated_at = $3 WHERE id = $1`,
+        [user.id, decision, now]
+      );
+      await client.query(
+        `UPDATE access_review_requests SET invalidated_at = $2
+         WHERE user_id = $1 AND consumed_at IS NULL AND invalidated_at IS NULL`,
+        [user.id, now]
+      );
+      await client.query("COMMIT");
+      return {
+        changed: true,
+        decision,
         user: { email: user.email, name: user.name },
       };
     } catch (error) {

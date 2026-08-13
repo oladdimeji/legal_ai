@@ -22,13 +22,15 @@ test("route parser covers public, onboarding, request-demo, product, Matter, and
   assert.deepEqual(parseRoute("/not-a-route"), { kind: "unknown" });
 });
 
-test("password entry is removed and lawyer login uses email OTP only", async () => {
+test("password entry is removed and lawyer login offers Google plus email OTP", async () => {
   const [authView, server] = await Promise.all([
     readFile("src/components/AuthView.tsx", "utf8"),
     readFile("server.ts", "utf8"),
   ]);
   assert.doesNotMatch(authView, /type="password"|current-password|new-password/);
-  assert.doesNotMatch(authView, /Continue with Google/);
+  assert.match(authView, /isLawyerMode[\s\S]*Continue with Google/);
+  assert.match(authView, /accountType: "lawyer"/);
+  assert.match(authView, /\/api\/auth\/google/);
   assert.match(authView, /Enter the email associated with your approved Exepts access/);
   assert.match(authView, /Continue with Email/);
   assert.match(authView, /Verify and Continue/);

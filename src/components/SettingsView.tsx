@@ -6,9 +6,15 @@ import {
   RefreshCw,
   Save,
   Settings,
+  ShieldCheck,
   Users,
 } from "lucide-react";
-import { Account, FirmAdminMember, FirmAdminSettings } from "../types";
+import {
+  Account,
+  FirmAdminMember,
+  FirmAdminSettings,
+  PlatformAccessRequest,
+} from "../types";
 import { useWorkspacePageContext } from "../lib/WorkspacePageContextProvider";
 
 interface SettingsViewProps {
@@ -48,6 +54,11 @@ export default function SettingsView({
   const [generatingCode, setGeneratingCode] = useState(false);
   const [codeError, setCodeError] = useState("");
   const [copied, setCopied] = useState(false);
+  const [isAccessReviewAdmin, setIsAccessReviewAdmin] = useState(false);
+  const [accessRequests, setAccessRequests] = useState<PlatformAccessRequest[]>([]);
+  const [accessAdminLoading, setAccessAdminLoading] = useState(false);
+  const [accessAdminError, setAccessAdminError] = useState("");
+  const [decidingUserId, setDecidingUserId] = useState<string | null>(null);
 
   useEffect(() => {
     publishPageContext({
@@ -70,6 +81,11 @@ export default function SettingsView({
           title: "Firm details",
           description: "Shows the shared Firm workspace name. Firm administration controls are available only to administrators.",
         }]),
+        ...(isAccessReviewAdmin ? [{
+          id: "platform-access-administration",
+          title: "Platform access administration",
+          description: "Allows an authorized platform reviewer to approve or deny pending lawyer access requests.",
+        }] : []),
         {
           id: "session",
           title: "Session",
@@ -86,10 +102,14 @@ export default function SettingsView({
           }] : []),
           ...(adminLoaded && invitationCode ? [{ id: "copy-invitation-code", label: "Copy", description: "Copies the currently displayed invitation code without placing its value in assistant page context." }] : []),
         ] : []),
+        ...(isAccessReviewAdmin ? accessRequests.flatMap((request) => [
+          { id: `approve-access-${request.userId}`, label: "Approve", description: `Approves platform access for ${request.fullName}.` },
+          { id: `deny-access-${request.userId}`, label: "Deny", description: `Denies platform access for ${request.fullName}.` },
+        ]) : []),
         { id: "logout-settings", label: "Log out", description: "Ends the current authenticated session." },
       ],
     });
-  }, [adminLoaded, invitationCode, isAdmin, publishPageContext]);
+  }, [accessRequests, adminLoaded, invitationCode, isAccessReviewAdmin, isAdmin, publishPageContext]);
 
   useEffect(() => {
     setFirmName(account.firm?.name || "");
@@ -122,6 +142,72 @@ export default function SettingsView({
   useEffect(() => {
     void loadAdminSettings();
   }, [loadAdminSettings, account.firm?.id]);
+
+  const loadAccessAdministration = useCallback(async () => {
+    setAccessAdminError("");
+    try {
+      const statusResponse = await fetch("/api/access-admin/status");
+      if (!statusResponse.ok) return;
+      const status = (await statusResponse.json()) as { isAccessReviewAdmin: boolean };
+      setIsAccessReviewAdmin(status.isAccessReviewAdmin);
+      if (!status.isAccessReviewAdmin) {
+        setAccessRequests([]);
+        return;
+      }
+      setAccessAdminLoading(true);
+      const requestsResponse = await fetch("/api/access-admin/requests");
+      if (!requestsResponse.ok) {
+        throw new Error(await responseError(requestsResponse, "Unable to load access requests."));
+      }
+      const data = (await requestsResponse.json()) as { requests: PlatformAccessRequest[] };
+      setAccessRequests(data.requests);
+    } catch (caught) {
+      setAccessAdminError(
+        caught instanceof Error ? caught.message : "Unable to load access requests."
+      );
+    } finally {
+      setAccessAdminLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadAccessAdministration();
+  }, [account.user.id, loadAccessAdministration]);
+
+  const decideAccessRequest = async (
+    request: PlatformAccessRequest,
+    decision: "approved" | "denied"
+  ) => {
+    if (decidingUserId) return;
+    if (
+      decision === "denied" &&
+      !window.confirm(`Deny platform access for ${request.fullName}?`)
+    ) {
+      return;
+    }
+    setAccessAdminError("");
+    setDecidingUserId(request.userId);
+    try {
+      const response = await fetch(
+        `/api/access-admin/requests/${encodeURIComponent(request.userId)}/decision`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ decision }),
+        }
+      );
+      if (!response.ok) {
+        throw new Error(await responseError(response, "Unable to save the access decision."));
+      }
+      setAccessRequests((current) => current.filter((item) => item.userId !== request.userId));
+    } catch (caught) {
+      setAccessAdminError(
+        caught instanceof Error ? caught.message : "Unable to save the access decision."
+      );
+    } finally {
+      setDecidingUserId(null);
+    }
+  };
 
   const saveFirmName = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -302,6 +388,95 @@ export default function SettingsView({
             </label>
           )}
         </section>
+
+        {isAccessReviewAdmin && (
+          <section className="space-y-4 rounded border border-zinc-200 p-5 sm:p-6">
+            <div className="flex items-center gap-2">
+              <ShieldCheck className="h-4 w-4" />
+              <div>
+                <h3 className="text-xs font-bold uppercase">Platform access administration</h3>
+                <p className="mt-1 text-xs text-zinc-500">
+                  Review completed lawyer access requests awaiting a platform decision.
+                </p>
+              </div>
+            </div>
+            {accessAdminLoading ? (
+              <p className="text-xs text-zinc-500">Loading pending access requests...</p>
+            ) : accessRequests.length === 0 ? (
+              <p className="rounded border border-zinc-200 bg-zinc-50 px-3 py-4 text-xs text-zinc-500">
+                No pending access requests.
+              </p>
+            ) : (
+              <div className="space-y-3">
+                {accessRequests.map((request) => {
+                  const role = professionalRole(
+                    request.professionalRole,
+                    request.customProfessionalRole
+                  );
+                  const workspace = request.workspaceType === "independent"
+                    ? "Independent workspace"
+                    : request.firmName || "Firm workspace";
+                  const practices = [
+                    ...request.practiceAreas.filter((area) => area !== "Other"),
+                    ...(request.customPracticeArea ? [request.customPracticeArea] : []),
+                  ].join(" / ") || "Practice areas not provided";
+                  const busy = decidingUserId === request.userId;
+                  return (
+                    <article key={request.userId} className="rounded border border-zinc-200 p-4">
+                      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
+                        <div className="min-w-0 space-y-1">
+                          <h4 className="text-sm font-semibold">{request.fullName}</h4>
+                          <a
+                            href={`mailto:${request.email}`}
+                            className="block truncate text-xs text-zinc-600 underline underline-offset-2 hover:text-zinc-950"
+                          >
+                            {request.email}
+                          </a>
+                          <p className="text-xs text-zinc-600">{role} · {workspace}</p>
+                          <p className="text-xs text-zinc-600">{practices}</p>
+                          <p className="pt-1 text-[10px] font-mono uppercase text-zinc-400">
+                            Submitted {new Date(request.submittedAt).toLocaleString()}
+                          </p>
+                        </div>
+                        <div className="flex shrink-0 gap-2">
+                          <button
+                            type="button"
+                            disabled={decidingUserId !== null}
+                            onClick={() => void decideAccessRequest(request, "approved")}
+                            className="rounded bg-zinc-950 px-3 py-2 text-[10px] font-mono font-bold uppercase text-white disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {busy ? "Saving..." : "Approve"}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={decidingUserId !== null}
+                            onClick={() => void decideAccessRequest(request, "denied")}
+                            className="rounded border border-zinc-300 px-3 py-2 text-[10px] font-mono font-bold uppercase hover:border-zinc-950 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            Deny
+                          </button>
+                        </div>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+            {accessAdminError && (
+              <div role="alert" className="flex items-center justify-between gap-4 rounded border border-zinc-300 bg-zinc-50 px-4 py-3 text-xs">
+                <span>{accessAdminError}</span>
+                <button
+                  type="button"
+                  disabled={accessAdminLoading || decidingUserId !== null}
+                  onClick={() => void loadAccessAdministration()}
+                  className="shrink-0 rounded border border-zinc-300 px-3 py-2 text-[9px] font-mono font-bold uppercase hover:border-zinc-900 disabled:opacity-50"
+                >
+                  Retry
+                </button>
+              </div>
+            )}
+          </section>
+        )}
 
         {isAdmin && (
           <>
