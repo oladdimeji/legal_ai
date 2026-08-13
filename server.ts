@@ -2627,7 +2627,8 @@ ${sourceText}`;
   // Threads API
   app.get("/api/threads", async (req, res) => {
     if (req.query.history === "true") {
-      return res.json(await db.getHistoryThreads(ownership(req)));
+      const search = typeof req.query.search === "string" ? req.query.search : undefined;
+      return res.json(await db.getHistoryThreads(ownership(req), search));
     }
     const caseId = requestedCaseId(req.query.caseId);
     return res.json(await db.getThreads(ownership(req), caseId));

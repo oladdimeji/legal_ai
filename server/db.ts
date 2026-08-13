@@ -2882,7 +2882,18 @@ class DatabaseService {
     );
   }
 
-  public async getHistoryThreads(context: OwnershipContext): Promise<Thread[]> {
+  public async getHistoryThreads(context: OwnershipContext, searchQuery?: string): Promise<Thread[]> {
+    const normalizedSearch = searchQuery?.trim().slice(0, 300) || "";
+    const escapedSearch = normalizedSearch.replace(/[\\%_]/g, "\\$&");
+    const searchClause = normalizedSearch
+      ? `AND (
+           t.title ILIKE $3 ESCAPE '\\' OR EXISTS (
+             SELECT 1 FROM messages matching_message
+             WHERE matching_message.thread_id = t.id
+               AND matching_message.content ILIKE $3 ESCAPE '\\'
+           )
+         )`
+      : "";
     return await this.query(
       `SELECT t.*, COALESCE(MAX(m.created_at), t.created_at) AS last_activity_at
        FROM threads t
@@ -2897,9 +2908,12 @@ class DatabaseService {
              WHERE c.id = t.case_id AND c.firm_id = $2
            )
          )
+         ${searchClause}
        GROUP BY t.id
        ORDER BY COALESCE(MAX(m.created_at), t.created_at) DESC`,
-      [context.userId, context.firmId]
+      normalizedSearch
+        ? [context.userId, context.firmId, `%${escapedSearch}%`]
+        : [context.userId, context.firmId]
     );
   }
 

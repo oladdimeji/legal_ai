@@ -1,5 +1,13 @@
 # Compact Upgrade Progress
 
+## History keyword search
+
+- Added a debounced History search field that searches authorized conversation titles and message content while retaining the existing General Assistant and Matter `Show` filter, card layout, opening flow, and deletion behavior.
+- Extended the existing History endpoint with an optional keyword parameter. The query remains scoped to the authenticated user and Firm, excludes client conversations, requires explicit Matter access, and uses a correlated message-match check so latest activity is still calculated from the newest message overall.
+- Empty or whitespace-only input uses the unchanged History request, clearing restores the normal collection immediately, Matter options remain derived from that collection, and aborted/stale responses cannot replace newer results.
+- No schema, migration, dependency, semantic search, Assistant search, Client History, or Work Product lifecycle change was made.
+- Verification passed: `npm run lint`, all 432 tests, and `npm run build`. The build required execution outside the managed filesystem sandbox after its initial Vite config read was denied; the existing non-fatal large-chunk warning remains.
+
 ## Unified History conversation collection
 
 - Replaced the separate General Assistant and Matter History sections with one globally activity-ordered responsive card grid.
