@@ -66,6 +66,7 @@ import {
   boundedVoiceHistory,
   createVoiceModeCredential,
   getVoiceAcknowledgementAudio,
+  getVoiceProgressAcknowledgementAudio,
   resolveFirmLibraryTitle,
   voiceMessageId,
 } from "./server/voiceMode.js";
@@ -2813,6 +2814,19 @@ ${sourceText}`;
     } catch {
       console.error("Voice acknowledgement generation failed.");
       return res.status(502).json({ error: "Voice acknowledgement audio is unavailable." });
+    }
+  });
+
+  app.get("/api/threads/:id/voice/progress-acknowledgement", async (req, res) => {
+    try {
+      const thread = await db.getThreadById(req.params.id, ownership(req));
+      if (!thread) return res.status(404).json({ error: "Thread not found" });
+      const audio = await getVoiceProgressAcknowledgementAudio();
+      res.setHeader("Cache-Control", "no-store");
+      return res.json(audio);
+    } catch {
+      console.error("Voice progress acknowledgement generation failed.");
+      return res.status(502).json({ error: "Voice progress acknowledgement audio is unavailable." });
     }
   });
 

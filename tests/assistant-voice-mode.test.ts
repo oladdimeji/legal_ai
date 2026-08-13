@@ -5,11 +5,13 @@ import type { Message } from "../src/types.js";
 import {
   VOICE_MODE_ACKNOWLEDGEMENT,
   VOICE_MODE_CONFIG,
+  VOICE_MODE_PROGRESS_ACKNOWLEDGEMENT,
   boundedVoiceHistory,
   liveConnectConfig,
   resolveFirmLibraryTitle,
   voiceCredentialRequest,
   voiceAcknowledgementRequest,
+  voiceProgressAcknowledgementRequest,
   voiceMessageId,
 } from "../server/voiceMode.js";
 import {
@@ -21,6 +23,8 @@ import {
   finalizeVoiceTranscripts,
   initializeLiveHistory,
   shouldPlayVoiceAcknowledgement,
+  shouldPlayVoiceProgressAcknowledgement,
+  VOICE_PROGRESS_HEARTBEAT_INTERVAL_MS,
 } from "../src/hooks/useVoiceMode.js";
 
 function message(id: string, role: "user" | "assistant", content: string): Message {
@@ -62,13 +66,22 @@ test("Gemini Live configuration is centralized for native audio, transcription, 
   assert.doesNotMatch(String(config.systemInstruction), /you may give one short, natural acknowledgement/i);
 });
 
-test("Voice acknowledgement TTS reuses the configured Voice Agent identity and fixed phrase", () => {
+test("Voice acknowledgement TTS clips reuse the configured Voice Agent identity and fixed phrases", () => {
   const request = voiceAcknowledgementRequest();
+  const progressRequest = voiceProgressAcknowledgementRequest();
   assert.equal(VOICE_MODE_ACKNOWLEDGEMENT.text, "Okay, I'm on it.");
+  assert.equal(VOICE_MODE_PROGRESS_ACKNOWLEDGEMENT.text, "Still on it.");
   assert.equal(request.model, "gemini-3.1-flash-tts-preview");
+  assert.equal(progressRequest.model, request.model);
+  assert.equal(VOICE_MODE_PROGRESS_ACKNOWLEDGEMENT.model, VOICE_MODE_ACKNOWLEDGEMENT.model);
   assert.deepEqual(request.config.responseModalities, ["AUDIO"]);
+  assert.deepEqual(progressRequest.config.responseModalities, ["AUDIO"]);
   assert.equal(
     request.config.speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName,
+    VOICE_MODE_CONFIG.voiceName
+  );
+  assert.equal(
+    progressRequest.config.speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName,
     VOICE_MODE_CONFIG.voiceName
   );
   assert.equal(VOICE_MODE_CONFIG.voiceName, "Kore");
@@ -82,24 +95,55 @@ test("Voice acknowledgement eligibility is heavy-call-only and once per existing
   assert.equal(shouldPlayVoiceAcknowledgement(undefined, 7, null), false);
 });
 
-test("Voice acknowledgement is isolated, fail-open, prefetched, and cleaned up with shared playback", async () => {
-  const [server, hook] = await Promise.all([
+test("Voice progress eligibility is truthful to lifecycle, turn, active session, and outstanding heavy work", () => {
+  const eligible = {
+    lifecycle: 4,
+    currentLifecycle: 4,
+    turnBoundary: 9,
+    currentTurnBoundary: 9,
+    heavyCallCount: 1,
+    sessionActive: true,
+  };
+  assert.equal(VOICE_PROGRESS_HEARTBEAT_INTERVAL_MS, 6000);
+  assert.equal(shouldPlayVoiceProgressAcknowledgement(eligible), true);
+  assert.equal(shouldPlayVoiceProgressAcknowledgement({ ...eligible, currentLifecycle: 5 }), false);
+  assert.equal(shouldPlayVoiceProgressAcknowledgement({ ...eligible, currentTurnBoundary: 10 }), false);
+  assert.equal(shouldPlayVoiceProgressAcknowledgement({ ...eligible, heavyCallCount: 0 }), false);
+  assert.equal(shouldPlayVoiceProgressAcknowledgement({ ...eligible, sessionActive: false }), false);
+});
+
+test("Voice acknowledgements are cached, isolated, fail-open, prefetched, and cleaned up with shared playback", async () => {
+  const [server, hook, voiceMode] = await Promise.all([
     readFile(new URL("../server.ts", import.meta.url), "utf8"),
     readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8"),
+    readFile(new URL("../server/voiceMode.ts", import.meta.url), "utf8"),
   ]);
   const route = server.slice(
     server.indexOf('app.get("/api/threads/:id/voice/acknowledgement"'),
+    server.indexOf('app.get("/api/threads/:id/voice/progress-acknowledgement"')
+  );
+  const progressRoute = server.slice(
+    server.indexOf('app.get("/api/threads/:id/voice/progress-acknowledgement"'),
     server.indexOf('app.post("/api/threads/:id/voice/lookup"')
   );
   assert.match(route, /db\.getThreadById\(req\.params\.id, ownership\(req\)\)/);
   assert.match(route, /getVoiceAcknowledgementAudio\(\)/);
   assert.match(route, /status\(502\)/);
   assert.doesNotMatch(route, /db\.addMessage|db\.addVoiceMessage|voice\/messages/);
+  assert.match(progressRoute, /db\.getThreadById\(req\.params\.id, ownership\(req\)\)/);
+  assert.match(progressRoute, /getVoiceProgressAcknowledgementAudio\(\)/);
+  assert.match(progressRoute, /status\(502\)/);
+  assert.doesNotMatch(progressRoute, /db\.addMessage|db\.addVoiceMessage|voice\/messages/);
+  assert.match(voiceMode, /voiceAcknowledgementAudioCache = new Map/);
+  assert.match(voiceMode, /getVoiceAcknowledgementAudioFor/);
+  assert.equal((voiceMode.match(/models\.generateContent/g) ?? []).length, 1);
 
-  const prefetch = hook.slice(hook.indexOf("const prefetchAcknowledgement"), hook.indexOf("const handleServerMessage"));
+  const prefetch = hook.slice(hook.indexOf("const prefetchAcknowledgement"), hook.indexOf("const beginProgressHeartbeat"));
   assert.match(prefetch, /voice\/acknowledgement/);
+  assert.match(prefetch, /voice\/progress-acknowledgement/);
   assert.match(prefetch, /acknowledgementRequestRef\.current/);
-  assert.match(prefetch, /\.catch\(\(\) => null\)/);
+  assert.match(prefetch, /progressAcknowledgementRequestRef\.current/);
+  assert.equal((prefetch.match(/\.catch\(\(\) => null\);/g) ?? []).length, 2);
   assert.doesNotMatch(prefetch, /setError|fail\(|transcriptRef|setLiveTranscripts|persistFinalTranscript/);
 
   const toolHandler = hook.slice(hook.indexOf("const handleServerMessage"), hook.indexOf("const beginAmplitudeUpdates"));
@@ -111,13 +155,49 @@ test("Voice acknowledgement is isolated, fail-open, prefetched, and cleaned up w
 
   const start = hook.slice(hook.indexOf("const start"), hook.indexOf("const stop ="));
   assert.match(start, /sessionRef\.current = session;[\s\S]*prefetchAcknowledgement\(threadId, lifecycle\)/);
+  assert.match(start, /sessionRef\.current = session;[\s\S]*prefetchProgressAcknowledgement\(threadId, lifecycle\)/);
   const cleanup = hook.slice(hook.indexOf("const releaseResources"), hook.indexOf("const fail"));
   assert.match(cleanup, /stopPlayback\(\)/);
   assert.match(cleanup, /acknowledgedTurnRef\.current = null/);
   assert.match(cleanup, /acknowledgementAudioRef\.current = null/);
   assert.match(cleanup, /acknowledgementRequestRef\.current = null/);
+  assert.match(cleanup, /progressAcknowledgementAudioRef\.current = null/);
+  assert.match(cleanup, /progressAcknowledgementRequestRef\.current = null/);
   assert.doesNotMatch(hook, /speechSynthesis|SpeechSynthesisUtterance|webkitSpeechRecognition|SpeechRecognition/);
   assert.doesNotMatch(hook, /playbackRate/);
+});
+
+test("Voice progress heartbeat tracks only heavy capability calls with one timer and complete cleanup", async () => {
+  const hook = await readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8");
+  const clearWorking = hook.slice(hook.indexOf("const stopProgressHeartbeat"), hook.indexOf("const stopPlayback"));
+  const heartbeat = hook.slice(hook.indexOf("const beginProgressHeartbeat"), hook.indexOf("const handleServerMessage"));
+  const toolHandler = hook.slice(hook.indexOf("const handleServerMessage"), hook.indexOf("const beginAmplitudeUpdates"));
+  const cleanup = hook.slice(hook.indexOf("const releaseResources"), hook.indexOf("const fail"));
+
+  assert.match(heartbeat, /progressHeartbeatIntervalRef\.current !== null\) return/);
+  assert.match(heartbeat, /setInterval\([\s\S]*VOICE_PROGRESS_HEARTBEAT_INTERVAL_MS/);
+  assert.match(heartbeat, /shouldPlayVoiceProgressAcknowledgement/);
+  assert.match(heartbeat, /heavyCallCount: heavyWorkingCallIdsRef\.current\.size/);
+  assert.match(heartbeat, /sessionThreadRef\.current === threadId && sessionRef\.current !== null/);
+  assert.match(heartbeat, /progressAcknowledgementAudioRef\.current/);
+  assert.match(heartbeat, /scheduleAudio\(audio\.data, audio\.mimeType\)/);
+  assert.doesNotMatch(heartbeat, /fetch\(|prefetch|transcriptRef|setLiveTranscripts|persistFinalTranscript|voice\/messages/);
+
+  assert.match(toolHandler, /if \(isAssistantCapability\) \{[\s\S]*heavyWorkingCallIdsRef\.current\.add\(workingCallId\)/);
+  assert.match(toolHandler, /const startsHeavyPeriod = heavyWorkingCallIdsRef\.current\.size === 0/);
+  assert.match(toolHandler, /if \(startsHeavyPeriod\) \{[\s\S]*beginProgressHeartbeat/);
+  assert.match(toolHandler, /finally \{[\s\S]*heavyWorkingCallIdsRef\.current\.delete\(workingCallId\)/);
+  assert.match(toolHandler, /heavyWorkingCallIdsRef\.current\.size === 0\) stopProgressHeartbeat\(\)/);
+  assert.match(toolHandler, /body: JSON\.stringify\(isAssistantCapability[\s\S]*\? \{ request, pageContext \}/);
+  assert.match(toolHandler, /session\.sendToolResponse\(\{[\s\S]*functionResponses/);
+  assert.match(toolHandler, /content\.interrupted[\s\S]*clearWorking\(\)/);
+  assert.match(toolHandler, /content\.turnComplete[\s\S]*clearWorking\(\)/);
+
+  assert.match(clearWorking, /clearInterval\(progressHeartbeatIntervalRef\.current\)/);
+  assert.match(clearWorking, /workingCallIdsRef\.current\.clear\(\)/);
+  assert.match(clearWorking, /heavyWorkingCallIdsRef\.current\.clear\(\)/);
+  assert.match(clearWorking, /stopProgressHeartbeat\(\)/);
+  assert.match(cleanup, /clearWorking\(\)/);
 });
 
 test("Live tool declarations expose named Firm Library lookup and keep routine reads out of the heavy bridge", () => {

@@ -91,6 +91,29 @@ export function shouldPlayVoiceAcknowledgement(
   return functionName === "use_assistant_capabilities" && acknowledgedTurn !== turnBoundary;
 }
 
+export const VOICE_PROGRESS_HEARTBEAT_INTERVAL_MS = 6000;
+
+export function shouldPlayVoiceProgressAcknowledgement({
+  lifecycle,
+  currentLifecycle,
+  turnBoundary,
+  currentTurnBoundary,
+  heavyCallCount,
+  sessionActive,
+}: {
+  lifecycle: number;
+  currentLifecycle: number;
+  turnBoundary: number;
+  currentTurnBoundary: number;
+  heavyCallCount: number;
+  sessionActive: boolean;
+}): boolean {
+  return lifecycle === currentLifecycle
+    && turnBoundary === currentTurnBoundary
+    && heavyCallCount > 0
+    && sessionActive;
+}
+
 export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   const [state, setState] = useState<VoiceModeState>("off");
   const [error, setError] = useState("");
@@ -118,10 +141,14 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   const persistQueueRef = useRef(Promise.resolve());
   const pendingCapabilityMetadataRef = useRef<VoiceCapabilityMetadata | null>(null);
   const workingCallIdsRef = useRef(new Set<string>());
+  const heavyWorkingCallIdsRef = useRef(new Set<string>());
+  const progressHeartbeatIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const turnBoundaryRef = useRef(0);
   const acknowledgedTurnRef = useRef<number | null>(null);
   const acknowledgementAudioRef = useRef<VoiceAcknowledgementAudio | null>(null);
   const acknowledgementRequestRef = useRef<Promise<VoiceAcknowledgementAudio | null> | null>(null);
+  const progressAcknowledgementAudioRef = useRef<VoiceAcknowledgementAudio | null>(null);
+  const progressAcknowledgementRequestRef = useRef<Promise<VoiceAcknowledgementAudio | null> | null>(null);
   const onTranscriptRef = useRef(onTranscript);
   onTranscriptRef.current = onTranscript;
 
@@ -130,10 +157,19 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     setState(next);
   }, []);
 
+  const stopProgressHeartbeat = useCallback(() => {
+    if (progressHeartbeatIntervalRef.current !== null) {
+      clearInterval(progressHeartbeatIntervalRef.current);
+      progressHeartbeatIntervalRef.current = null;
+    }
+  }, []);
+
   const clearWorking = useCallback(() => {
     workingCallIdsRef.current.clear();
+    heavyWorkingCallIdsRef.current.clear();
+    stopProgressHeartbeat();
     setWorking(false);
-  }, []);
+  }, [stopProgressHeartbeat]);
 
   const stopPlayback = useCallback(() => {
     for (const source of playbackSourcesRef.current) {
@@ -177,6 +213,8 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     acknowledgedTurnRef.current = null;
     acknowledgementAudioRef.current = null;
     acknowledgementRequestRef.current = null;
+    progressAcknowledgementAudioRef.current = null;
+    progressAcknowledgementRequestRef.current = null;
     clearWorking();
     turnBoundaryRef.current += 1;
     setLiveTranscripts({ user: "", assistant: "" });
@@ -281,6 +319,61 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     return request;
   }, []);
 
+  const prefetchProgressAcknowledgement = useCallback((threadId: string, lifecycle: number) => {
+    if (progressAcknowledgementAudioRef.current) return Promise.resolve(progressAcknowledgementAudioRef.current);
+    if (progressAcknowledgementRequestRef.current) return progressAcknowledgementRequestRef.current;
+    const request = fetch(`/api/threads/${encodeURIComponent(threadId)}/voice/progress-acknowledgement`)
+      .then(async (response) => {
+        if (!response.ok) return null;
+        const audio = await response.json().catch(() => null) as VoiceAcknowledgementAudio | null;
+        return audio?.data && audio.mimeType ? audio : null;
+      })
+      .then((audio) => {
+        if (audio && lifecycle === lifecycleRef.current && sessionThreadRef.current === threadId) {
+          progressAcknowledgementAudioRef.current = audio;
+          return audio;
+        }
+        return null;
+      })
+      .catch(() => null);
+    progressAcknowledgementRequestRef.current = request;
+    void request.finally(() => {
+      if (progressAcknowledgementRequestRef.current === request) {
+        progressAcknowledgementRequestRef.current = null;
+      }
+    });
+    return request;
+  }, []);
+
+  const beginProgressHeartbeat = useCallback((
+    threadId: string,
+    lifecycle: number,
+    turnBoundary: number
+  ) => {
+    if (progressHeartbeatIntervalRef.current !== null) return;
+    progressHeartbeatIntervalRef.current = setInterval(() => {
+      const eligible = shouldPlayVoiceProgressAcknowledgement({
+        lifecycle,
+        currentLifecycle: lifecycleRef.current,
+        turnBoundary,
+        currentTurnBoundary: turnBoundaryRef.current,
+        heavyCallCount: heavyWorkingCallIdsRef.current.size,
+        sessionActive: sessionThreadRef.current === threadId && sessionRef.current !== null,
+      });
+      if (!eligible) {
+        stopProgressHeartbeat();
+        return;
+      }
+      const audio = progressAcknowledgementAudioRef.current;
+      if (!audio) return;
+      try {
+        scheduleAudio(audio.data, audio.mimeType);
+      } catch {
+        // Progress reassurance is optional and must never affect the heavy request.
+      }
+    }, VOICE_PROGRESS_HEARTBEAT_INTERVAL_MS);
+  }, [scheduleAudio, stopProgressHeartbeat]);
+
   const handleServerMessage = useCallback((message: LiveServerMessage) => {
     if (message.toolCall?.functionCalls?.length) {
       const threadId = sessionThreadRef.current;
@@ -314,6 +407,13 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
           }
           const workingCallId = call.id || `${call.name || "lookup_workspace"}_${Date.now()}_${callIndex}`;
           workingCallIdsRef.current.add(workingCallId);
+          if (isAssistantCapability) {
+            const startsHeavyPeriod = heavyWorkingCallIdsRef.current.size === 0;
+            heavyWorkingCallIdsRef.current.add(workingCallId);
+            if (startsHeavyPeriod) {
+              beginProgressHeartbeat(threadId, lifecycleRef.current, turnBoundary);
+            }
+          }
           setWorking(true);
           try {
             const response = await fetch(`/api/threads/${encodeURIComponent(threadId)}/voice/${isAssistantCapability ? "assistant" : "lookup"}`, {
@@ -359,6 +459,10 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
               }],
             });
           } finally {
+            if (isAssistantCapability) {
+              heavyWorkingCallIdsRef.current.delete(workingCallId);
+              if (heavyWorkingCallIdsRef.current.size === 0) stopProgressHeartbeat();
+            }
             workingCallIdsRef.current.delete(workingCallId);
             setWorking(workingCallIdsRef.current.size > 0);
           }
@@ -394,10 +498,11 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     }
     if (content.interrupted) finalizeTranscripts("interrupted");
     if (content.turnComplete) {
+      clearWorking();
       finalizeTranscripts("turnComplete");
       if (playbackSourcesRef.current.size === 0) updateState("listening");
     }
-  }, [clearWorking, finalizeTranscripts, prefetchAcknowledgement, scheduleAudio, stopPlayback, updateState]);
+  }, [beginProgressHeartbeat, clearWorking, finalizeTranscripts, prefetchAcknowledgement, scheduleAudio, stopPlayback, stopProgressHeartbeat, updateState]);
 
   const beginAmplitudeUpdates = useCallback(() => {
     const microphoneData = new Uint8Array(256);
@@ -491,7 +596,8 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       }
       sessionRef.current = session;
       initializeLiveHistory(session, tokenData.history);
-      prefetchAcknowledgement(threadId, lifecycle);
+      void prefetchAcknowledgement(threadId, lifecycle);
+      void prefetchProgressAcknowledgement(threadId, lifecycle);
       processor.onaudioprocess = (event) => {
         if (sessionRef.current !== session) return;
         const samples = downsampleAudio(event.inputBuffer.getChannelData(0), context.sampleRate);
@@ -507,7 +613,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
         ? "Microphone access was denied. Allow microphone access to use Voice Mode."
         : startError instanceof Error ? startError.message : "Voice Mode could not start.");
     }
-  }, [beginAmplitudeUpdates, fail, handleServerMessage, prefetchAcknowledgement, updateState]);
+  }, [beginAmplitudeUpdates, fail, handleServerMessage, prefetchAcknowledgement, prefetchProgressAcknowledgement, updateState]);
 
   const stop = useCallback(() => {
     setError("");
