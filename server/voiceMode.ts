@@ -14,12 +14,7 @@ export const VOICE_MODE_CONFIG = {
 } as const;
 
 export const VOICE_MODE_ACKNOWLEDGEMENT = {
-  text: "Okay, I'm on it.",
-  model: "gemini-3.1-flash-tts-preview",
-} as const;
-
-export const VOICE_MODE_PROGRESS_ACKNOWLEDGEMENT = {
-  text: "Still on it.",
+  text: "Okay, I'm on it. This may take a little while.",
   model: "gemini-3.1-flash-tts-preview",
 } as const;
 
@@ -58,10 +53,6 @@ export function voiceAcknowledgementRequest() {
   return voiceAcknowledgementRequestFor(VOICE_MODE_ACKNOWLEDGEMENT);
 }
 
-export function voiceProgressAcknowledgementRequest() {
-  return voiceAcknowledgementRequestFor(VOICE_MODE_PROGRESS_ACKNOWLEDGEMENT);
-}
-
 async function getVoiceAcknowledgementAudioFor(
   acknowledgement: VoiceAcknowledgement
 ): Promise<VoiceAcknowledgementAudio> {
@@ -97,10 +88,6 @@ async function getVoiceAcknowledgementAudioFor(
 
 export function getVoiceAcknowledgementAudio(): Promise<VoiceAcknowledgementAudio> {
   return getVoiceAcknowledgementAudioFor(VOICE_MODE_ACKNOWLEDGEMENT);
-}
-
-export function getVoiceProgressAcknowledgementAudio(): Promise<VoiceAcknowledgementAudio> {
-  return getVoiceAcknowledgementAudioFor(VOICE_MODE_PROGRESS_ACKNOWLEDGEMENT);
 }
 
 export function normalizeFirmLibraryTitle(value: string): string {

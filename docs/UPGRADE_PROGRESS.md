@@ -1923,15 +1923,14 @@ Status: Implementation complete; focused-phase verification recorded below.
 - No schema, migration, dependency, drafting model, default thinking level, planner, intent classification, retrieval, routing, Matter scope, memory, destination, persistence, or generation-pass change was made.
 - Focused drafting, revision, format, model, and DOCX tests passed (48/48). Verification passed: `npm run lint`, all 441 tests, `npm run build`, and final `npm run verify`. The build required execution outside the managed filesystem sandbox after its initial Vite config read was denied; the existing non-fatal large-chunk warning remains.
 
-### Voice Mode in-progress reassurance heartbeat
+### Voice Mode heavy-operation acknowledgement cleanup
 
-- Preserved the once-per-turn `Okay, I'm on it.` acknowledgement and added the fixed `Still on it.` progress clip. Both use `gemini-3.1-flash-tts-preview`, the centralized `VOICE_MODE_CONFIG.voiceName` (`Kore`), and the existing Web Audio scheduling path.
-- Added a thread-owned, non-persisting progress-audio endpoint and generalized the private server TTS generation/cache path so each fixed model/voice/phrase clip is generated at most once per process cache entry. Voice connection success starts non-blocking, fail-open prefetches for both clips; interval ticks never refetch or regenerate audio.
-- Added a separate heavy-call ID set for `use_assistant_capabilities` only. A single deterministic 6000 ms interval begins on a 0-to-1 heavy transition, remains while any concurrent heavy call is outstanding, and stops when the last heavy call completes or fails. `lookup_workspace` and the existing general working set retain their prior semantics.
-- Before every progress playback, the hook revalidates the Voice lifecycle, turn boundary, active session/thread, and nonempty heavy-call set. Interruption, turn completion, Voice stop, thread change, connection failure, resource release, and unmount all clear heavy tracking and cancel the interval.
-- Progress playback never enters transcript buffers, live transcript state, `/voice/messages`, Gemini Live input/history, capability metadata, tool responses, or final Assistant text. The existing `/voice/assistant` request payload, `session.sendToolResponse`, microphone, playback, final response, and Live connection behavior remain unchanged.
-- No schema, migration, dependency, model, voice, Voice system-instruction, Assistant capability, retrieval, reasoning, or persistence change was made.
-- Focused Voice tests passed (30/30). Verification passed: `npm run lint`, all 443 tests, `npm run build`, and final `npm run verify`. Build and verify ran outside the managed filesystem sandbox so Vite could resolve its config; the existing non-fatal large-chunk warning remains.
+- Expanded the once-per-turn heavy-operation acknowledgement to `Okay, I'm on it. This may take a little while.` for `use_assistant_capabilities`, while `lookup_workspace` and ordinary conversation remain silent.
+- Removed the recurring progress heartbeat, its progress-audio endpoint and prefetch, its six-second timer, and its separate heavy-call tracking. Voice now remains silent after the initial acknowledgement until the existing final response is ready.
+- Preserved server-side `gemini-3.1-flash-tts-preview` generation, process-level caching, client prefetch, existing Web Audio playback, and the centralized `VOICE_MODE_CONFIG.voiceName` (`Kore`). Acknowledgement failures remain fail-open and never delay or abort the Assistant HTTP request.
+- The acknowledgement remains application-owned UX audio and does not enter transcripts, `/voice/messages`, persisted history, Gemini conversation history, Assistant reasoning, capability metadata, or tool responses. Normal ref-counted `working` state and interruption cleanup remain unchanged.
+- No schema, migration, dependency, model, voice, Voice system-instruction, Assistant capability, retrieval, reasoning, final response, or persistence change was made.
+- Verification passed: `npm run lint`, all 447 tests, `npm run build`, and final `npm run verify`. The build required execution outside the managed filesystem sandbox after its initial Vite config read was denied; the existing non-fatal large-chunk warning remains.
 
 ### Standalone Exepts technical administration
 
