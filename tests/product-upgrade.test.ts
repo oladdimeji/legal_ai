@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { buildWorkProductDraftPrompt } from "../server/workProductDrafting.js";
 import { cleanMatterIntelligenceContent } from "../server/matterIntelligenceContent.js";
 
 test("Phase 3 navigation separates Matters and Firm Library", async () => {
@@ -533,11 +534,16 @@ test("Focused UX fix removes generic generated-document disclaimer instructions"
 
 test("Phase 12 generated draft prompt uses actual Matter account and date metadata", async () => {
   const server = await readFile("server.ts", "utf8");
-  assert.match(server, /Matter and account metadata/);
+  const prompt = buildWorkProductDraftPrompt({
+    format: "memo",
+    matterMetadata: "Lawyer name: Lawyer Example\nFirm name: Example LLP\nCurrent date: August 13, 2026",
+    conversationHistory: "USER: Draft the requested memorandum.",
+  });
+  assert.match(prompt, /Matter and account metadata/);
   assert.match(server, /Lawyer name:/);
   assert.match(server, /Firm name:/);
   assert.match(server, /Current date:/);
-  assert.match(server, /Do not emit bracketed placeholders/);
+  assert.match(prompt, /Do not emit bracketed placeholders/);
 });
 
 test("Phase 13 Collaboration empty state hides normal sections until collaborator exists", async () => {

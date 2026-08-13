@@ -2,6 +2,7 @@ import { WorkspacePageContext } from "../src/types.js";
 import type { AssistantDepth } from "./assistant/assistantTypes.js";
 import { extractGeneratedSubject, extractSummaryHeading } from "./extractGeneratedSubject.js";
 import { EXPORT_SAFE_DOCUMENT_MARKDOWN_RULES } from "./documentDraftingRules.js";
+import { TOP_TIER_LEGAL_DRAFTING_STANDARD } from "./legalDraftingStandard.js";
 
 export function buildAssistantDraftPrompt({
   instruction,
@@ -49,6 +50,8 @@ Grounded public research:
 ${webResearchPerformed ? publicWebResearch || "Public research was performed but returned no usable report." : "No public web research was performed. Do not claim to have searched the web."}
 
 Requested reasoning depth: ${depth}.
+
+${TOP_TIER_LEGAL_DRAFTING_STANDARD}
 
 Drafting rules:
 1. Return exactly one polished standalone document, beginning with a specific Markdown H1 title when appropriate for the document type.

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { cleanGeneratedBoilerplate } from "../server/generatedContentCleanup.js";
+import { buildWorkProductDraftPrompt } from "../server/workProductDrafting.js";
 import { editorJsonToMarkdown, markdownToEditorDocument } from "../src/lib/documentEditorCodec.js";
 import { stripInternalCitationsForWorkProduct } from "../src/lib/assistantCitations.js";
 
@@ -118,9 +119,14 @@ test("Work Product routes clean historical content, duplication, revisions, and 
 
 test("Work Product generation asks for standalone deliverables without automatic references", async () => {
   const server = await readFile("server.ts", "utf8");
-  assert.match(server, /Produce a polished standalone work product/);
-  assert.match(server, /Do not include internal source IDs, Assistant citation tokens, numbered source markers, clickable citation syntax, footnotes, endnotes, a references list, or a bibliography/);
-  assert.match(server, /Integrate legal authorities naturally into prose/);
+  const prompt = buildWorkProductDraftPrompt({
+    format: "memo",
+    matterMetadata: "Matter name: Example",
+    conversationHistory: "USER: Draft the requested memorandum.",
+  });
+  assert.match(prompt, /Produce a polished standalone work product/);
+  assert.match(prompt, /Do not include internal source IDs, Assistant citation tokens, numbered source markers, clickable citation syntax, footnotes, endnotes, a references list, or a bibliography/);
+  assert.match(prompt, /Integrate legal authorities naturally into prose/);
   assert.match(server, /cleanGeneratedWorkProductContent\(draftResult\.text\)/);
   assert.doesNotMatch(server, /Carry over all relevant citation references/);
   assert.doesNotMatch(server, /professional disclaimer|standard liability disclaimer/);

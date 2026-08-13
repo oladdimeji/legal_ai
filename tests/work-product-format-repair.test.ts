@@ -9,6 +9,7 @@ import {
   getWorkProductFormatInstructions,
   isWorkProductFormat,
 } from "../server/workProductFormat.js";
+import { buildWorkProductDraftPrompt } from "../server/workProductDrafting.js";
 
 test("draft formats accept only memo, email, and summary", () => {
   for (const format of ["memo", "email", "summary"]) {
@@ -124,12 +125,14 @@ test("draft creation uses Subject, summary heading, or the unchanged technical f
   assert.match(server, /db\.createDraft\([\s\S]*?title,\s*cleanedContent,\s*requestOwnership/);
   assert.doesNotMatch(server, /matter\.name[\s\S]{0,100}extractSummaryHeading|extractSummaryHeading[\s\S]{0,100}matter\.name/);
 
-  const promptConstruction = server.slice(
-    server.indexOf("const draftPrompt"),
-    server.indexOf('const draftResult = await callModel("draft-generation"')
-  );
-  assert.match(promptConstruction, /\$\{formatInstructions\}/);
-  assert.doesNotMatch(promptConstruction, /extractGeneratedSubject|extractSummaryHeading|summaryTitle/);
+  const prompt = buildWorkProductDraftPrompt({
+    format: "summary",
+    matterMetadata: "Matter name: Example",
+    conversationHistory: "USER: Summarize the supplied evidence.",
+  });
+  assert.match(prompt, /Create a clear legal summary/);
+  assert.doesNotMatch(prompt, /extractGeneratedSubject|extractSummaryHeading|summaryTitle/);
+  assert.match(server, /const draftPrompt = buildWorkProductDraftPrompt\(\{/);
 });
 
 test("historical and custom Work Product titles remain untouched", async () => {

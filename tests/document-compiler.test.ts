@@ -14,6 +14,7 @@ import type { TableBlock } from "../shared/document/documentTypes.js";
 import { shouldPreventRowSplit } from "../server/docx/renderDocx.js";
 import { markdownToDocxDocument } from "../server/docxMarkdown.js";
 import { EXPORT_SAFE_DOCUMENT_MARKDOWN_RULES } from "../server/documentDraftingRules.js";
+import { buildWorkProductDraftPrompt } from "../server/workProductDrafting.js";
 import { buildAssistantDraftPrompt } from "../server/assistantDrafting.js";
 
 const fixture = async (name: string) => readFile(`tests/fixtures/docx/${name}.md`, "utf8");
@@ -164,8 +165,14 @@ test("all exportable generation prompts share the exact export-safe rules", asyn
     depth: "standard",
   });
   assert.ok(assistantPrompt.includes(EXPORT_SAFE_DOCUMENT_MARKDOWN_RULES));
+  const workProductPrompt = buildWorkProductDraftPrompt({
+    format: "memo",
+    matterMetadata: "Matter name: Example",
+    conversationHistory: "USER: Draft a memo.",
+  });
+  assert.ok(workProductPrompt.includes(EXPORT_SAFE_DOCUMENT_MARKDOWN_RULES));
   const server = await readFile("server.ts", "utf8");
-  assert.equal((server.match(/\$\{EXPORT_SAFE_DOCUMENT_MARKDOWN_RULES\}/g) ?? []).length, 2);
+  assert.equal((server.match(/\$\{EXPORT_SAFE_DOCUMENT_MARKDOWN_RULES\}/g) ?? []).length, 1);
   assert.match(server, /Use exactly these Markdown section headings:/);
   assert.match(server, /Do not infer facts from other matters or external knowledge/);
   assert.match(server, /Do not append generic legal-advice/);
