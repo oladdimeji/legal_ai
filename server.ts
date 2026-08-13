@@ -103,6 +103,20 @@ import {
   validateOAuthState,
 } from "./server/auth.js";
 import {
+  ADMIN_OAUTH_STATE_COOKIE_NAME,
+  ADMIN_SESSION_COOKIE_NAME,
+  AdminIdentity,
+  adminOAuthStateCookie,
+  adminSessionCookie,
+  clearAdminOAuthStateCookie,
+  clearAdminSessionCookie,
+  createAdminOAuthState,
+  createAdminSessionToken,
+  isValidAdminSessionSecret,
+  validateAdminOAuthState,
+  verifyAdminSessionToken,
+} from "./server/adminAuth.js";
+import {
   SITE_LOCK_DENIED_MESSAGE,
   canAccessPrivateApplication,
   isProtectedApplicationPath,
@@ -122,6 +136,10 @@ const upload = multer({
 
 interface AuthenticatedRequest extends Request {
   auth?: Account;
+}
+
+interface AdminAuthenticatedRequest extends Request {
+  admin?: AdminIdentity;
 }
 
 function ownership(req: Request): OwnershipContext {
@@ -549,21 +567,23 @@ function accessReviewAdminEmails(): string[] {
   return Array.from(new Set(entries));
 }
 
-function isAccessReviewAdminAccount(account: Account | undefined): boolean {
-  if (
-    account?.user.account_type !== "lawyer" ||
-    !account.user.onboarding_completed ||
-    account.user.platform_access_status !== "approved" ||
-    !account.user.firm_id ||
-    !account.firm ||
-    account.user.firm_id !== account.firm.id
-  ) {
-    return false;
-  }
+function isAccessReviewAdminEmail(rawEmail: string): boolean {
   try {
-    return accessReviewAdminEmails().includes(normalizeEmail(account.user.email));
+    return accessReviewAdminEmails().includes(normalizeEmail(rawEmail));
   } catch {
     return false;
+  }
+}
+
+function adminGoogleRedirectUri(): string | null {
+  const configured = process.env.GOOGLE_ADMIN_OAUTH_REDIRECT_URI?.trim();
+  if (configured) return configured;
+  const appUrl = process.env.APP_URL?.trim();
+  if (!appUrl) return null;
+  try {
+    return new URL("/api/admin/auth/google/callback", appUrl).toString();
+  } catch {
+    return null;
   }
 }
 
@@ -870,6 +890,89 @@ async function startServer() {
     if (isSiteLocked(siteLockPolicy)) return denySiteLockAccess(res);
     res.setHeader("Cache-Control", "no-store");
     return res.status(410).json({ error: "Password authentication is no longer available." });
+  });
+
+  app.get("/api/admin/auth/google", (_req, res) => {
+    const clientId = process.env.GOOGLE_CLIENT_ID;
+    const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+    const redirectUri = adminGoogleRedirectUri();
+    const adminSessionSecret = process.env.ADMIN_SESSION_SECRET;
+    try {
+      accessReviewAdminEmails();
+    } catch {
+      res.setHeader("Cache-Control", "no-store");
+      return res.status(503).json({ error: "Exepts administration is not configured." });
+    }
+    if (!clientId || !clientSecret || !redirectUri || !isValidAdminSessionSecret(adminSessionSecret)) {
+      res.setHeader("Cache-Control", "no-store");
+      return res.status(503).json({ error: "Exepts administration is not configured." });
+    }
+    const state = createAdminOAuthState();
+    const client = new OAuth2Client(clientId, clientSecret, redirectUri);
+    const url = client.generateAuthUrl({
+      access_type: "online",
+      scope: ["openid", "email", "profile"],
+      state,
+      prompt: "select_account",
+    });
+    res.setHeader("Set-Cookie", adminOAuthStateCookie(state, isProduction));
+    res.setHeader("Cache-Control", "no-store");
+    return res.redirect(url);
+  });
+
+  app.get("/api/admin/auth/google/callback", async (req, res) => {
+    const stateCookie = parseCookie(req.headers.cookie, ADMIN_OAUTH_STATE_COOKIE_NAME);
+    const stateIsValid = validateAdminOAuthState(req.query.state, stateCookie);
+    const fail = (reason: "invalid" | "unverified" | "unauthorized" | "failed") => {
+      res.setHeader("Set-Cookie", clearAdminOAuthStateCookie(isProduction));
+      res.setHeader("Cache-Control", "no-store");
+      return res.redirect(redirectUrl(req, `/admin?authError=${reason}`));
+    };
+    if (!stateIsValid) return fail("invalid");
+    const code = typeof req.query.code === "string" ? req.query.code : "";
+    const clientId = process.env.GOOGLE_CLIENT_ID;
+    const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+    const redirectUri = adminGoogleRedirectUri();
+    const adminSessionSecret = process.env.ADMIN_SESSION_SECRET;
+    if (
+      !code ||
+      !clientId ||
+      !clientSecret ||
+      !redirectUri ||
+      !isValidAdminSessionSecret(adminSessionSecret)
+    ) {
+      return fail("failed");
+    }
+    try {
+      const client = new OAuth2Client(clientId, clientSecret, redirectUri);
+      const { tokens } = await client.getToken(code);
+      if (!tokens.id_token) return fail("unverified");
+      const ticket = await client.verifyIdToken({ idToken: tokens.id_token, audience: clientId });
+      const payload = ticket.getPayload();
+      const validIssuer =
+        payload?.iss === "accounts.google.com" || payload?.iss === "https://accounts.google.com";
+      if (
+        !payload?.sub ||
+        !payload.email ||
+        payload.email_verified !== true ||
+        payload.aud !== clientId ||
+        !validIssuer
+      ) {
+        return fail("unverified");
+      }
+      const email = normalizeEmail(payload.email);
+      if (!isAccessReviewAdminEmail(email)) return fail("unauthorized");
+      const adminToken = createAdminSessionToken(email, adminSessionSecret);
+      res.setHeader("Set-Cookie", [
+        adminSessionCookie(adminToken, isProduction),
+        clearAdminOAuthStateCookie(isProduction),
+      ]);
+      res.setHeader("Cache-Control", "no-store");
+      return res.redirect(redirectUrl(req, "/admin"));
+    } catch {
+      console.error("Google administrator authentication failed.");
+      return fail("failed");
+    }
   });
 
   app.get("/api/auth/google", (req, res) => {
@@ -1264,47 +1367,58 @@ async function startServer() {
     return next();
   };
 
-  const requireAccessReviewAdmin = (
-    req: AuthenticatedRequest,
+  const requireTechnicalAdmin = (
+    req: AdminAuthenticatedRequest,
     res: Response,
     next: NextFunction
   ) => {
-    if (!isAccessReviewAdminAccount(req.auth)) {
+    const token = parseCookie(req.headers.cookie, ADMIN_SESSION_COOKIE_NAME);
+    const identity = verifyAdminSessionToken(token, process.env.ADMIN_SESSION_SECRET);
+    if (!identity) {
       res.setHeader("Cache-Control", "no-store");
-      return res.status(403).json({ error: "Platform access-review administrator access is required." });
+      return res.status(401).json({ error: "Administrator authentication is required." });
     }
+    if (!isAccessReviewAdminEmail(identity.email)) {
+      res.setHeader("Cache-Control", "no-store");
+      return res.status(403).json({ error: "Administrator access is required." });
+    }
+    req.admin = identity;
     return next();
   };
 
   app.get(
     "/api/access-admin/status",
-    requireAuth,
-    (req: AuthenticatedRequest, res) => {
+    requireTechnicalAdmin,
+    (_req: AdminAuthenticatedRequest, res) => {
       res.setHeader("Cache-Control", "no-store");
-      return res.json({ isAccessReviewAdmin: isAccessReviewAdminAccount(req.auth) });
+      return res.json({ authenticated: true });
     }
   );
 
+  app.post("/api/access-admin/logout", (_req, res) => {
+    res.setHeader("Set-Cookie", clearAdminSessionCookie(isProduction));
+    res.setHeader("Cache-Control", "no-store");
+    return res.json({ success: true });
+  });
+
   app.get(
     "/api/access-admin/requests",
-    requireAuth,
-    requireAccessReviewAdmin,
-    async (_req: AuthenticatedRequest, res) => {
+    requireTechnicalAdmin,
+    async (_req: AdminAuthenticatedRequest, res) => {
       res.setHeader("Cache-Control", "no-store");
       try {
-        return res.json({ requests: await db.listPendingPlatformAccessRequests() });
+        return res.json({ requests: await db.listPlatformAccessRequests() });
       } catch {
         console.error("Platform access request listing failed.");
-        return res.status(500).json({ error: "Pending access requests could not be loaded." });
+        return res.status(500).json({ error: "Access requests could not be loaded." });
       }
     }
   );
 
   app.post(
     "/api/access-admin/requests/:userId/decision",
-    requireAuth,
-    requireAccessReviewAdmin,
-    async (req: AuthenticatedRequest, res) => {
+    requireTechnicalAdmin,
+    async (req: AdminAuthenticatedRequest, res) => {
       res.setHeader("Cache-Control", "no-store");
       const userId = typeof req.params.userId === "string" ? req.params.userId.trim() : "";
       const decision = req.body?.decision;

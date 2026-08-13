@@ -1402,16 +1402,17 @@ class DatabaseService {
     }
   }
 
-  public async listPendingPlatformAccessRequests(): Promise<PlatformAccessRequest[]> {
+  public async listPlatformAccessRequests(): Promise<PlatformAccessRequest[]> {
     const rows = await this.query(
       `SELECT u.id, u.name, u.email, u.professional_role,
          u.custom_professional_role, u.workspace_type, u.practice_areas,
-         u.custom_practice_area, u.access_submitted_at, f.name AS firm_name
+         u.custom_practice_area, u.access_submitted_at, u.platform_access_status,
+         f.name AS firm_name
        FROM users u
-       JOIN firm f ON f.id = u.firm_id
+       LEFT JOIN firm f ON f.id = u.firm_id
        WHERE u.account_type = 'lawyer'
          AND u.onboarding_completed = TRUE
-         AND u.platform_access_status = 'pending'
+         AND u.platform_access_status IN ('pending', 'approved', 'denied')
          AND u.access_submitted_at IS NOT NULL
          AND u.name IS NOT NULL
          AND u.professional_role IS NOT NULL
@@ -1426,11 +1427,13 @@ class DatabaseService {
       customProfessionalRole: row.custom_professional_role
         ? String(row.custom_professional_role) : null,
       workspaceType: row.workspace_type as WorkspaceType,
-      firmName: row.workspace_type === "firm" ? String(row.firm_name) : null,
+      firmName: row.workspace_type === "firm" && row.firm_name
+        ? String(row.firm_name)
+        : null,
       practiceAreas: Array.isArray(row.practice_areas) ? row.practice_areas.map(String) : [],
       customPracticeArea: row.custom_practice_area ? String(row.custom_practice_area) : null,
       submittedAt: String(row.access_submitted_at),
-      status: "pending" as const,
+      status: row.platform_access_status as PlatformAccessStatus,
     }));
   }
 

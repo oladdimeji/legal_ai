@@ -17,6 +17,7 @@ import AccessReviewView from "./components/AccessReviewView";
 import AccessRequestSubmittedView from "./components/AccessRequestSubmittedView";
 import ClientAccessGateView from "./components/ClientAccessGateView";
 import ClientInviteAccessView from "./components/ClientInviteAccessView";
+import AdminView from "./components/AdminView";
 import { Account, AssistantDocumentReference, Case, WorkspacePageContext } from "./types";
 import { parseRoute, routePath, safeReturnTo } from "./lib/routes";
 import {
@@ -119,6 +120,7 @@ function AppContent() {
     `${window.location.pathname}${window.location.search}${window.location.hash}`
   );
   const route = useMemo(() => parseRoute(window.location.pathname), [locationKey]);
+  const isAdminRoute = route.kind === "admin";
   const [cases, setCases] = useState<Case[]>([]);
   const [account, setAccount] = useState<Account | null>(null);
   const [siteStatus, setSiteStatus] = useState<PublicSiteStatus | null>(null);
@@ -146,6 +148,7 @@ function AppContent() {
   }, []);
 
   useEffect(() => {
+    if (isAdminRoute) return;
     let cancelled = false;
     const loadSiteStatus = async () => {
       try {
@@ -168,10 +171,10 @@ function AppContent() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [isAdminRoute]);
 
   useEffect(() => {
-    if (!siteStatus) return;
+    if (isAdminRoute || !siteStatus) return;
     let cancelled = false;
     const loadSession = async () => {
       try {
@@ -187,9 +190,10 @@ function AppContent() {
     return () => {
       cancelled = true;
     };
-  }, [siteStatus]);
+  }, [isAdminRoute, siteStatus]);
 
   useEffect(() => {
+    if (route.kind === "admin") return;
     if (authLoading || !siteStatus) return;
     if (route.kind === "accessReview") return;
     if (!account) {
@@ -313,6 +317,10 @@ function AppContent() {
       navigate("/", true);
     }
   };
+
+  if (route.kind === "admin") {
+    return <AdminView />;
+  }
 
   if (route.kind === "accessReview") {
     return <AccessReviewView token={route.token} />;

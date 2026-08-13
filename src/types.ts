@@ -55,7 +55,7 @@ export interface PlatformAccessRequest {
   practiceAreas: string[];
   customPracticeArea: string | null;
   submittedAt: string;
-  status: "pending";
+  status: PlatformAccessStatus;
 }
 
 export type WorkspacePageContext = {

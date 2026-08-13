@@ -6,6 +6,7 @@ export type AppRoute =
   | { kind: "accessRequested" }
   | { kind: "accessGate" }
   | { kind: "accessReview"; token: string }
+  | { kind: "admin" }
   | { kind: "assistant" }
   | { kind: "matters" }
   | { kind: "matter"; matterId: string }
@@ -38,6 +39,7 @@ export function parseRoute(pathname: string): AppRoute {
   if (path === "/request-demo") return { kind: "requestDemo" };
   if (path === "/access-requested") return { kind: "accessRequested" };
   if (path === "/access") return { kind: "accessGate" };
+  if (path === "/admin") return { kind: "admin" };
   if (path === "/assistant") return { kind: "assistant" };
   if (path === "/matters") return { kind: "matters" };
   if (path === "/library") return { kind: "library" };
@@ -111,6 +113,7 @@ export function safeReturnTo(value: string | null, fallback = "/matters"): strin
 }
 
 export function routePath(route: AppRoute): string {
+  if (route.kind === "admin") return "/admin";
   if (route.kind === "accessGate") return "/access";
   if (route.kind === "accessReview") {
     return `/access-review/${encodeURIComponent(route.token)}`;
