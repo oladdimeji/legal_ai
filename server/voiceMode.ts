@@ -14,7 +14,7 @@ export const VOICE_MODE_CONFIG = {
 } as const;
 
 export const VOICE_MODE_ACKNOWLEDGEMENT = {
-  text: "Okay, I'm on it. This may take a little while.",
+  text: "Absolutely — give me a moment, I’m working on that now.",
   model: "gemini-3.1-flash-tts-preview",
 } as const;
 
