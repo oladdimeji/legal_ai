@@ -1925,7 +1925,7 @@ Status: Implementation complete; focused-phase verification recorded below.
 
 ### Voice Mode heavy-operation acknowledgement cleanup
 
-- Expanded the once-per-turn heavy-operation acknowledgement to `Okay, I'm on it. This may take a little while.` for `use_assistant_capabilities`, while `lookup_workspace` and ordinary conversation remain silent.
+- Expanded the once-per-turn heavy-operation acknowledgement to `Absolutely — give me a moment, I’m working on that now.` for `use_assistant_capabilities`, while `lookup_workspace` and ordinary conversation remain silent.
 - Removed the recurring progress heartbeat, its progress-audio endpoint and prefetch, its six-second timer, and its separate heavy-call tracking. Voice now remains silent after the initial acknowledgement until the existing final response is ready.
 - Preserved server-side `gemini-3.1-flash-tts-preview` generation, process-level caching, client prefetch, existing Web Audio playback, and the centralized `VOICE_MODE_CONFIG.voiceName` (`Kore`). Acknowledgement failures remain fail-open and never delay or abort the Assistant HTTP request.
 - The acknowledgement remains application-owned UX audio and does not enter transcripts, `/voice/messages`, persisted history, Gemini conversation history, Assistant reasoning, capability metadata, or tool responses. Normal ref-counted `working` state and interruption cleanup remain unchanged.

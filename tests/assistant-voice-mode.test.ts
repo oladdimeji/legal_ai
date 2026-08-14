@@ -64,7 +64,7 @@ test("Gemini Live configuration is centralized for native audio, transcription, 
 
 test("Voice acknowledgement TTS reuses the configured Voice Agent identity and fixed phrase", () => {
   const request = voiceAcknowledgementRequest();
-  assert.equal(VOICE_MODE_ACKNOWLEDGEMENT.text, "Okay, I'm on it. This may take a little while.");
+  assert.equal(VOICE_MODE_ACKNOWLEDGEMENT.text, "Absolutely — give me a moment, I’m working on that now.");
   assert.equal(request.model, "gemini-3.1-flash-tts-preview");
   assert.deepEqual(request.config.responseModalities, ["AUDIO"]);
   assert.equal(
