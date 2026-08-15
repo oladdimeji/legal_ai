@@ -3,6 +3,13 @@ import { LogOut, ShieldCheck } from "lucide-react";
 import { PlatformAccessRequest, PlatformAccessStatus } from "../types";
 
 type AdminState = "loading" | "unauthenticated" | "authenticated" | "error";
+export type AdminOrder = "newest" | "cost-desc" | "cost-asc" | "status";
+
+const STATUS_ORDER: Record<PlatformAccessStatus, number> = {
+  pending: 0,
+  approved: 1,
+  denied: 2,
+};
 
 async function responseError(response: Response, fallback: string): Promise<string> {
   const data = (await response.json().catch(() => null)) as { error?: string } | null;
@@ -46,6 +53,41 @@ export function filterAdminRequests(
   ].some((value) => value.toLocaleLowerCase().includes(query)));
 }
 
+function trackedCostNanos(value: string | undefined): bigint {
+  try {
+    return BigInt(value || "0");
+  } catch {
+    return 0n;
+  }
+}
+
+function compareNewest(
+  first: PlatformAccessRequest,
+  second: PlatformAccessRequest
+): number {
+  return Date.parse(second.submittedAt) - Date.parse(first.submittedAt);
+}
+
+export function orderAdminRequests(
+  requests: PlatformAccessRequest[],
+  orderBy: AdminOrder
+): PlatformAccessRequest[] {
+  return [...requests].sort((first, second) => {
+    if (orderBy === "newest") return compareNewest(first, second);
+
+    if (orderBy === "status") {
+      const statusDifference = STATUS_ORDER[first.status] - STATUS_ORDER[second.status];
+      return statusDifference || compareNewest(first, second);
+    }
+
+    const firstCost = trackedCostNanos(first.trackedAiCostUsdNanos);
+    const secondCost = trackedCostNanos(second.trackedAiCostUsdNanos);
+    if (firstCost === secondCost) return compareNewest(first, second);
+    if (orderBy === "cost-desc") return firstCost > secondCost ? -1 : 1;
+    return firstCost < secondCost ? -1 : 1;
+  });
+}
+
 export function formatTrackedAiCost(nanosValue: string): string {
   let nanos: bigint;
   try {
@@ -69,6 +111,7 @@ export default function AdminView() {
   const [error, setError] = useState("");
   const [decidingUserId, setDecidingUserId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
+  const [orderBy, setOrderBy] = useState<AdminOrder>("newest");
   const authError = useMemo(
     () => new URLSearchParams(window.location.search).get("authError"),
     []
@@ -76,6 +119,10 @@ export default function AdminView() {
   const filteredRequests = useMemo(
     () => filterAdminRequests(requests, searchTerm),
     [requests, searchTerm]
+  );
+  const orderedRequests = useMemo(
+    () => orderAdminRequests(filteredRequests, orderBy),
+    [filteredRequests, orderBy]
   );
 
   const loadDashboard = useCallback(async () => {
@@ -268,18 +315,38 @@ export default function AdminView() {
             </p>
           </div>
 
-          <div className="mt-5 max-w-xl">
-            <label htmlFor="admin-user-search" className="text-[10px] font-mono font-bold uppercase text-zinc-500">
-              Search users
-            </label>
-            <input
-              id="admin-user-search"
-              type="search"
-              value={searchTerm}
-              onChange={(event) => setSearchTerm(event.target.value)}
-              placeholder="Name, email, firm, or role"
-              className="mt-2 w-full rounded border border-zinc-300 bg-white px-3 py-2.5 text-sm outline-none placeholder:text-zinc-400 focus:border-zinc-950"
-            />
+          <div className="mt-5 grid max-w-3xl gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(14rem,0.65fr)] sm:items-end">
+            <div>
+              <label htmlFor="admin-user-search" className="text-[10px] font-mono font-bold uppercase text-zinc-500">
+                Search users
+              </label>
+              <input
+                id="admin-user-search"
+                type="search"
+                value={searchTerm}
+                onChange={(event) => setSearchTerm(event.target.value)}
+                placeholder="Name, email, firm, or role"
+                className="mt-2 w-full rounded border border-zinc-300 bg-white px-3 py-2.5 text-sm outline-none placeholder:text-zinc-400 focus:border-zinc-950"
+              />
+            </div>
+            <div>
+              <label htmlFor="admin-user-order" className="text-[10px] font-mono font-bold uppercase text-zinc-500">
+                Order users by
+              </label>
+              <select
+                id="admin-user-order"
+                value={orderBy}
+                onChange={(event) => setOrderBy(event.target.value as AdminOrder)}
+                className="mt-2 w-full rounded border border-zinc-300 bg-white px-3 py-2.5 text-sm outline-none focus:border-zinc-950"
+              >
+                <option value="newest">Newest first</option>
+                <option value="cost-desc">Tracked AI Cost: High to Low</option>
+                <option value="cost-asc">Tracked AI Cost: Low to High</option>
+                <option value="status">Status: Pending first</option>
+              </select>
+            </div>
+          </div>
+          <div className="max-w-xl">
             <p className="mt-2 text-xs text-zinc-500">
               Tracked AI Cost reflects server-side Gemini generation usage recorded from tracking deployment onward.
             </p>
@@ -295,7 +362,7 @@ export default function AdminView() {
             </p>
           ) : (
             <div className="mt-5 overflow-hidden rounded border border-zinc-200">
-              {filteredRequests.map((request) => {
+              {orderedRequests.map((request) => {
                 const busy = decidingUserId === request.userId;
                 return (
                   <article

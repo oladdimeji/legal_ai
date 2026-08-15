@@ -268,7 +268,7 @@ test("admin cost formatting keeps small values visible without floating-point ac
 test("admin UI visibly renders search, its empty state, cost, and existing status actions", async () => {
   const adminView = await readFile("src/components/AdminView.tsx", "utf8");
   assert.match(adminView, /type="search"/);
-  assert.match(adminView, /filteredRequests\.map/);
+  assert.match(adminView, /orderedRequests\.map/);
   assert.match(adminView, /No users match your search\./);
   assert.match(adminView, /Tracked AI Cost/);
   assert.match(adminView, /formatTrackedAiCost\(request\.trackedAiCostUsdNanos\)/);
