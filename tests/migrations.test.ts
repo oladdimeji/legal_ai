@@ -30,3 +30,15 @@ test("lawyer assistant memory migration is additive and idempotent", async () =>
   assert.match(memoryMigration, /ADD COLUMN IF NOT EXISTS memory_updated_at TEXT/);
   assert.doesNotMatch(memoryMigration, /DROP TABLE|DELETE FROM|TRUNCATE/);
 });
+
+test("AI usage ledger migration is registered after migration 26", async () => {
+  assert.ok(
+    migrationManifest.some(
+      (migration) => migration.version === 27 && migration.name === "append_only_ai_usage_ledger"
+    )
+  );
+  const source = await readFile("server/migrations.ts", "utf8");
+  const usageMigration = source.slice(source.indexOf("version: 27"));
+  assert.match(usageMigration, /CREATE TABLE IF NOT EXISTS ai_usage_events/);
+  assert.doesNotMatch(usageMigration, /\bDROP\b|\bTRUNCATE\b|DELETE\s+FROM|ALTER\s+TABLE[\s\S]*RENAME/i);
+});

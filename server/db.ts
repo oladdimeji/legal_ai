@@ -20,6 +20,7 @@ import {
 } from "../src/types.js";
 import { callModel, embedTexts } from "./model.js";
 import { runMigrations } from "./migrations.js";
+import { registerAiUsageRecorder, type AiUsageEvent } from "./aiUsage.js";
 import {
   OTP_MAX_ATTEMPTS,
   OTP_MAX_REQUESTS_PER_WINDOW,
@@ -1419,9 +1420,16 @@ class DatabaseService {
       `SELECT u.id, u.name, u.email, u.professional_role,
          u.custom_professional_role, u.workspace_type, u.practice_areas,
          u.custom_practice_area, u.access_submitted_at, u.platform_access_status,
-         f.name AS firm_name
+         f.name AS firm_name,
+         COALESCE(usage.tracked_ai_cost_usd_nanos, 0::bigint) AS tracked_ai_cost_usd_nanos
        FROM users u
        LEFT JOIN firm f ON f.id = u.firm_id
+       LEFT JOIN (
+         SELECT user_id, SUM(cost_usd_nanos) AS tracked_ai_cost_usd_nanos
+         FROM ai_usage_events
+         WHERE cost_usd_nanos IS NOT NULL
+         GROUP BY user_id
+       ) usage ON usage.user_id = u.id
        WHERE u.account_type = 'lawyer'
          AND u.onboarding_completed = TRUE
          AND u.platform_access_status IN ('pending', 'approved', 'denied')
@@ -1446,7 +1454,43 @@ class DatabaseService {
       customPracticeArea: row.custom_practice_area ? String(row.custom_practice_area) : null,
       submittedAt: String(row.access_submitted_at),
       status: row.platform_access_status as PlatformAccessStatus,
+      trackedAiCostUsdNanos: String(row.tracked_ai_cost_usd_nanos),
     }));
+  }
+
+  public async recordAiUsageEvent(event: AiUsageEvent): Promise<void> {
+    await this.query(
+      `INSERT INTO ai_usage_events (
+         id, user_id, firm_id, provider, model, task_type,
+         prompt_tokens, cached_tokens, candidate_tokens, thinking_tokens,
+         tool_use_prompt_tokens, total_tokens,
+         input_rate_nanos_per_token, cached_input_rate_nanos_per_token,
+         output_rate_nanos_per_token, cost_usd_nanos, created_at
+       ) VALUES (
+         $1, $2, $3, $4, $5, $6,
+         $7, $8, $9, $10, $11, $12,
+         $13, $14, $15, $16, $17
+       )`,
+      [
+        randomUUID(),
+        event.userId,
+        event.firmId,
+        event.provider,
+        event.model,
+        event.taskType,
+        event.promptTokens.toString(),
+        event.cachedTokens.toString(),
+        event.candidateTokens.toString(),
+        event.thinkingTokens.toString(),
+        event.toolUsePromptTokens.toString(),
+        event.totalTokens.toString(),
+        event.inputRateNanosPerToken?.toString() ?? null,
+        event.cachedInputRateNanosPerToken?.toString() ?? null,
+        event.outputRateNanosPerToken?.toString() ?? null,
+        event.costUsdNanos?.toString() ?? null,
+        event.createdAt.toISOString(),
+      ]
+    );
   }
 
   public async decidePlatformAccessRequest(
@@ -3944,3 +3988,5 @@ class DatabaseService {
 }
 
 export const db = new DatabaseService();
+
+registerAiUsageRecorder((event) => db.recordAiUsageEvent(event));

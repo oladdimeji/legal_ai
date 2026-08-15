@@ -7,6 +7,7 @@ import { createServer as createViteServer } from "vite";
 import { db } from "./server/db.js";
 import type { AccessReviewApplicant, OwnershipContext } from "./server/db.js";
 import { callModel, MODEL_CONFIGS } from "./server/model.js";
+import { runWithAiUsageContext } from "./server/aiUsage.js";
 import {
   Account,
   AssistantDocumentReference,
@@ -1297,7 +1298,15 @@ async function startServer() {
         return denySiteLockAccess(res);
       }
       req.auth = account;
-      return next();
+      return runWithAiUsageContext(
+        {
+          userId: account.user.id,
+          firmId: account.user.firm_id && account.firm?.id === account.user.firm_id
+            ? account.user.firm_id
+            : null,
+        },
+        () => next()
+      );
     } catch (err) {
       console.error("Session validation failed:", err);
       return res.status(500).json({ error: "Unable to validate the session." });

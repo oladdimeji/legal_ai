@@ -1,5 +1,6 @@
 import { GoogleGenAI, Type, type GroundingMetadata } from "@google/genai";
 import dotenv from "dotenv";
+import { captureGeminiGenerationUsage } from "./aiUsage.js";
 
 dotenv.config();
 
@@ -234,6 +235,43 @@ type EmbeddingClient = {
   };
 };
 
+export type GenerationClient = {
+  models: {
+    generateContent: (input: {
+      model: string;
+      contents: Array<{ role: string; parts: Array<{ text: string }> }>;
+      config: any;
+    }) => Promise<any>;
+  };
+};
+
+export async function generateContentWithClient(
+  taskType: GenerationModelTaskType,
+  messages: any[],
+  options: CallModelOptions,
+  client: GenerationClient
+): Promise<ModelGenerationResult> {
+  const modelName = MODEL_CONFIGS[taskType];
+  const contents = messages.map((message) => ({
+    role: message.role === "assistant" ? "model" : "user",
+    parts: [{ text: message.content }],
+  }));
+  const response = await client.models.generateContent({
+    model: modelName,
+    contents,
+    config: buildGenerationConfig(taskType, options),
+  });
+  captureGeminiGenerationUsage({
+    model: modelName,
+    taskType,
+    usageMetadata: response.usageMetadata,
+  });
+  return {
+    text: response.text || "",
+    groundingMetadata: response.candidates?.[0]?.groundingMetadata || null,
+  };
+}
+
 function embeddingVectors(response: unknown, expectedCount: number): number[][] {
   const record = asRecord(response);
   const embeddings = Array.isArray(record?.embeddings)
@@ -356,29 +394,12 @@ export async function callModel(
         }
         return await runWithTransientModelRetries(async () => {
           const ai = getAiClient();
-
-          // Prepare contents for standard text generation
-          // Convert standard chat message structures into Gemini parts/contents format
-          const contents = messages.map((m) => {
-            return {
-              role: m.role === "assistant" ? "model" : "user",
-              parts: [{ text: m.content }],
-            };
-          });
-
-          const config = buildGenerationConfig(taskType, options);
-
-          const response = await ai.models.generateContent({
-            model: modelName,
-            contents,
-            config,
-          });
-
-          // Return both text and any grounding metadata (for inline citations and web links)
-          return {
-            text: response.text || "",
-            groundingMetadata: response.candidates?.[0]?.groundingMetadata || null,
-          };
+          return generateContentWithClient(
+            taskType,
+            messages,
+            options,
+            ai as unknown as GenerationClient
+          );
         }, {
           onRetry: (details) => {
             const status = details.statusCode ? ` status=${details.statusCode}` : "";

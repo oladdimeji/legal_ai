@@ -32,14 +32,50 @@ function statusLabel(status: PlatformAccessStatus): string {
   return status[0].toUpperCase() + status.slice(1);
 }
 
+export function filterAdminRequests(
+  requests: PlatformAccessRequest[],
+  searchTerm: string
+): PlatformAccessRequest[] {
+  const query = searchTerm.trim().toLocaleLowerCase();
+  if (!query) return requests;
+  return requests.filter((request) => [
+    request.fullName,
+    request.email,
+    workspaceLabel(request),
+    professionalRole(request),
+  ].some((value) => value.toLocaleLowerCase().includes(query)));
+}
+
+export function formatTrackedAiCost(nanosValue: string): string {
+  let nanos: bigint;
+  try {
+    nanos = BigInt(nanosValue);
+  } catch {
+    nanos = 0n;
+  }
+  if (nanos < 0n) nanos = 0n;
+  const decimals = nanos < 1_000_000_000n ? 4 : 2;
+  const decimalBase = 10n ** BigInt(decimals);
+  const nanosPerDisplayUnit = 1_000_000_000n / decimalBase;
+  const roundedUnits = (nanos + nanosPerDisplayUnit / 2n) / nanosPerDisplayUnit;
+  const whole = roundedUnits / decimalBase;
+  const fraction = (roundedUnits % decimalBase).toString().padStart(decimals, "0");
+  return `$${whole}.${fraction}`;
+}
+
 export default function AdminView() {
   const [adminState, setAdminState] = useState<AdminState>("loading");
   const [requests, setRequests] = useState<PlatformAccessRequest[]>([]);
   const [error, setError] = useState("");
   const [decidingUserId, setDecidingUserId] = useState<string | null>(null);
+  const [searchTerm, setSearchTerm] = useState("");
   const authError = useMemo(
     () => new URLSearchParams(window.location.search).get("authError"),
     []
+  );
+  const filteredRequests = useMemo(
+    () => filterAdminRequests(requests, searchTerm),
+    [requests, searchTerm]
   );
 
   const loadDashboard = useCallback(async () => {
@@ -226,7 +262,26 @@ export default function AdminView() {
               <p className="mt-1 text-xs text-zinc-500">Newest submitted requests appear first.</p>
             </div>
             <p className="text-[10px] font-mono uppercase text-zinc-400">
-              {requests.length} {requests.length === 1 ? "request" : "requests"}
+              {searchTerm.trim()
+                ? `${filteredRequests.length} of ${requests.length} users`
+                : `${requests.length} ${requests.length === 1 ? "user" : "users"}`}
+            </p>
+          </div>
+
+          <div className="mt-5 max-w-xl">
+            <label htmlFor="admin-user-search" className="text-[10px] font-mono font-bold uppercase text-zinc-500">
+              Search users
+            </label>
+            <input
+              id="admin-user-search"
+              type="search"
+              value={searchTerm}
+              onChange={(event) => setSearchTerm(event.target.value)}
+              placeholder="Name, email, firm, or role"
+              className="mt-2 w-full rounded border border-zinc-300 bg-white px-3 py-2.5 text-sm outline-none placeholder:text-zinc-400 focus:border-zinc-950"
+            />
+            <p className="mt-2 text-xs text-zinc-500">
+              Tracked AI Cost reflects server-side Gemini generation usage recorded from tracking deployment onward.
             </p>
           </div>
 
@@ -234,14 +289,18 @@ export default function AdminView() {
             <p className="mt-5 rounded border border-zinc-200 bg-zinc-50 px-4 py-8 text-center text-sm text-zinc-500">
               No submitted access requests.
             </p>
+          ) : filteredRequests.length === 0 ? (
+            <p className="mt-5 rounded border border-zinc-200 bg-zinc-50 px-4 py-8 text-center text-sm text-zinc-500">
+              No users match your search.
+            </p>
           ) : (
             <div className="mt-5 overflow-hidden rounded border border-zinc-200">
-              {requests.map((request) => {
+              {filteredRequests.map((request) => {
                 const busy = decidingUserId === request.userId;
                 return (
                   <article
                     key={request.userId}
-                    className="grid gap-4 border-b border-zinc-200 p-4 last:border-b-0 lg:grid-cols-[1.2fr_1.3fr_0.9fr_auto] lg:items-center"
+                    className="grid gap-4 border-b border-zinc-200 p-4 last:border-b-0 lg:grid-cols-[1.15fr_1.2fr_0.85fr_0.65fr_auto] lg:items-center"
                   >
                     <div className="min-w-0">
                       <h3 className="truncate text-sm font-semibold">{request.fullName}</h3>
@@ -263,6 +322,14 @@ export default function AdminView() {
                       <span className="mt-2 inline-block rounded border border-zinc-300 px-2 py-1 text-[9px] font-mono font-bold uppercase">
                         {statusLabel(request.status)}
                       </span>
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-mono font-bold uppercase text-zinc-400">
+                        Tracked AI Cost
+                      </p>
+                      <p className="mt-1 text-sm font-semibold tabular-nums">
+                        {formatTrackedAiCost(request.trackedAiCostUsdNanos)}
+                      </p>
                     </div>
                     <div className="flex min-w-40 justify-start gap-2 lg:justify-end">
                       {request.status === "pending" ? (

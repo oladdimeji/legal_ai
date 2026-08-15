@@ -759,6 +759,37 @@ const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 27,
+    name: "append_only_ai_usage_ledger",
+    async run(client) {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS ai_usage_events (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL REFERENCES users(id),
+          firm_id TEXT REFERENCES firm(id) ON DELETE SET NULL,
+          provider TEXT NOT NULL,
+          model TEXT NOT NULL,
+          task_type TEXT NOT NULL,
+          prompt_tokens BIGINT NOT NULL CHECK (prompt_tokens >= 0),
+          cached_tokens BIGINT NOT NULL CHECK (cached_tokens >= 0),
+          candidate_tokens BIGINT NOT NULL CHECK (candidate_tokens >= 0),
+          thinking_tokens BIGINT NOT NULL CHECK (thinking_tokens >= 0),
+          tool_use_prompt_tokens BIGINT NOT NULL CHECK (tool_use_prompt_tokens >= 0),
+          total_tokens BIGINT NOT NULL CHECK (total_tokens >= 0),
+          input_rate_nanos_per_token BIGINT CHECK (input_rate_nanos_per_token >= 0),
+          cached_input_rate_nanos_per_token BIGINT CHECK (cached_input_rate_nanos_per_token >= 0),
+          output_rate_nanos_per_token BIGINT CHECK (output_rate_nanos_per_token >= 0),
+          cost_usd_nanos BIGINT CHECK (cost_usd_nanos >= 0),
+          created_at TIMESTAMPTZ NOT NULL
+        )
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS ai_usage_events_user_created_idx
+        ON ai_usage_events(user_id, created_at DESC)
+      `);
+    },
+  },
 ];
 
 export async function runMigrations(pool: Pool): Promise<void> {

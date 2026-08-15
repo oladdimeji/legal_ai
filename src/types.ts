@@ -56,6 +56,7 @@ export interface PlatformAccessRequest {
   customPracticeArea: string | null;
   submittedAt: string;
   status: PlatformAccessStatus;
+  trackedAiCostUsdNanos: string;
 }
 
 export type WorkspacePageContext = {
