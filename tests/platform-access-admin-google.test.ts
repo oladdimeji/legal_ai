@@ -14,6 +14,7 @@ import {
   verifyAdminSessionToken,
 } from "../server/adminAuth.js";
 import { SESSION_COOKIE_NAME } from "../server/auth.js";
+import { isPlatformAccessTransitionAllowed } from "../server/db.js";
 import { parseRoute } from "../src/lib/routes.js";
 
 const sessionSecret = "test-only-admin-session-secret-with-32-characters";
@@ -116,7 +117,7 @@ test("all access-admin APIs require the dedicated admin session, not lawyer or F
   assert.doesNotMatch(routes, /clearSessionCookie|deleteSession/);
 });
 
-test("admin dashboard lists submitted lawyer requests across existing statuses", async () => {
+test("admin dashboard lists submitted lawyers and renders actions for every existing status", async () => {
   const [database, adminView] = await Promise.all([
     readFile("server/db.ts", "utf8"),
     readFile("src/components/AdminView.tsx", "utf8"),
@@ -134,28 +135,49 @@ test("admin dashboard lists submitted lawyer requests across existing statuses",
   assert.match(adminView, /request\.status === "pending"/);
   assert.match(adminView, /Approve/);
   assert.match(adminView, /Deny/);
+  assert.match(adminView, /request\.status === "approved"/);
+  assert.match(adminView, /Deactivate/);
+  assert.match(adminView, /Activate/);
+  assert.match(adminView, /Deactivate platform access for/);
+  assert.match(adminView, /Deny platform access for/);
+  assert.match(adminView, /item\.userId === request\.userId \? \{ \.\.\.item, status: decision \}/);
   assert.match(adminView, /statusLabel\(request\.status\)/);
   assert.match(adminView, /professionalRole\(request\)/);
   assert.match(adminView, /workspaceLabel\(request\)/);
   assert.match(adminView, /practiceAreas\(request\)/);
 });
 
-test("platform decisions retain atomic pending-only semantics and best-effort email", async () => {
-  const [database, server] = await Promise.all([
-    readFile("server/db.ts", "utf8"),
-    readFile("server.ts", "utf8"),
-  ]);
+test("platform access transition allowlist accepts only the four reversible changes", () => {
+  assert.equal(isPlatformAccessTransitionAllowed("pending", "approved"), true);
+  assert.equal(isPlatformAccessTransitionAllowed("pending", "denied"), true);
+  assert.equal(isPlatformAccessTransitionAllowed("approved", "denied"), true);
+  assert.equal(isPlatformAccessTransitionAllowed("denied", "approved"), true);
+  assert.equal(isPlatformAccessTransitionAllowed("approved", "approved"), false);
+  assert.equal(isPlatformAccessTransitionAllowed("denied", "denied"), false);
+});
+
+test("platform decisions stay atomic, preserve user data, and invalidate review links only when pending", async () => {
+  const database = await readFile("server/db.ts", "utf8");
   const decision = database.slice(
     database.indexOf("public async decidePlatformAccessRequest"),
     database.indexOf("public async getFirmAdminSettings")
   );
+  assert.match(decision, /await client\.query\("BEGIN"\)/);
   assert.match(decision, /FROM users WHERE id = \$1 FOR UPDATE/);
   assert.match(decision, /account_type !== "lawyer"/);
-  assert.match(decision, /platform_access_status !== "pending"/);
+  assert.match(decision, /isPlatformAccessTransitionAllowed\(previousStatus, decision\)/);
+  assert.match(decision, /reason: "invalid_transition"/);
   assert.match(decision, /platform_access_status = \$2, access_reviewed_at = \$3/);
-  assert.match(decision, /UPDATE access_review_requests SET invalidated_at = \$2/);
+  assert.match(decision, /updated_at = \$3/);
+  assert.match(decision, /previousStatus === "pending"[\s\S]*UPDATE access_review_requests SET invalidated_at = \$2/);
   assert.match(decision, /consumed_at IS NULL AND invalidated_at IS NULL/);
   assert.match(decision, /await client\.query\("COMMIT"\)[\s\S]*changed: true/);
+  assert.match(decision, /await client\.query\("ROLLBACK"\)/);
+  assert.doesNotMatch(decision, /DELETE|TRUNCATE|DROP|INSERT INTO|onboarding_completed\s*=/);
+});
+
+test("initial decisions keep applicant email while activate and deactivate suppress it", async () => {
+  const server = await readFile("server.ts", "utf8");
 
   const route = server.slice(
     server.indexOf('"/api/access-admin/requests/:userId/decision"'),
@@ -163,7 +185,7 @@ test("platform decisions retain atomic pending-only semantics and best-effort em
   );
   assert.match(route, /status\(409\)/);
   assert.match(route, /await db\.decidePlatformAccessRequest/);
-  assert.match(route, /try \{[\s\S]*sendAccessDecisionEmail/);
+  assert.match(route, /result\.previousStatus === "pending"[\s\S]*sendAccessDecisionEmail/);
   assert.match(route, /Access decision applicant email delivery failed/);
   assert.match(route, /return res\.json\(\{ success: true/);
 });

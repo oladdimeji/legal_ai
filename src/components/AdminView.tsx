@@ -80,9 +80,12 @@ export default function AdminView() {
     request: PlatformAccessRequest,
     decision: "approved" | "denied"
   ) => {
-    if (request.status !== "pending" || decidingUserId) return;
-    if (decision === "denied" && !window.confirm(`Deny platform access for ${request.fullName}?`)) {
-      return;
+    if (decidingUserId) return;
+    if (decision === "denied") {
+      const confirmation = request.status === "approved"
+        ? `Deactivate platform access for ${request.fullName}?`
+        : `Deny platform access for ${request.fullName}?`;
+      if (!window.confirm(confirmation)) return;
     }
     setError("");
     setDecidingUserId(request.userId);
@@ -281,8 +284,24 @@ export default function AdminView() {
                             Deny
                           </button>
                         </>
+                      ) : request.status === "approved" ? (
+                        <button
+                          type="button"
+                          disabled={decidingUserId !== null}
+                          onClick={() => void decide(request, "denied")}
+                          className="rounded border border-zinc-300 px-3 py-2 text-[10px] font-mono font-bold uppercase disabled:opacity-50"
+                        >
+                          {busy ? "Saving..." : "Deactivate"}
+                        </button>
                       ) : (
-                        <span className="text-xs text-zinc-400">-</span>
+                        <button
+                          type="button"
+                          disabled={decidingUserId !== null}
+                          onClick={() => void decide(request, "approved")}
+                          className="rounded bg-zinc-950 px-3 py-2 text-[10px] font-mono font-bold uppercase text-white disabled:opacity-50"
+                        >
+                          {busy ? "Saving..." : "Activate"}
+                        </button>
                       )}
                     </div>
                   </article>

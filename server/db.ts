@@ -208,12 +208,24 @@ export type AccessReviewDecisionResult =
     };
 
 export type PlatformAccessDecisionResult =
-  | { changed: false; reason: "unavailable" | "already_decided" }
+  | { changed: false; reason: "unavailable" | "invalid_transition" }
   | {
       changed: true;
       decision: "approved" | "denied";
+      previousStatus: PlatformAccessStatus;
       user: { email: string; name: string | null };
     };
+
+export function isPlatformAccessTransitionAllowed(
+  currentStatus: PlatformAccessStatus,
+  decision: "approved" | "denied"
+): boolean {
+  return (
+    (currentStatus === "pending" && (decision === "approved" || decision === "denied")) ||
+    (currentStatus === "approved" && decision === "denied") ||
+    (currentStatus === "denied" && decision === "approved")
+  );
+}
 
 // Lazy initialization of Pool
 let poolInstance: pg.Pool | null = null;
@@ -1465,24 +1477,28 @@ class DatabaseService {
         await client.query("COMMIT");
         return { changed: false, reason: "unavailable" };
       }
-      if (user.platform_access_status !== "pending") {
+      const previousStatus = user.platform_access_status;
+      if (!isPlatformAccessTransitionAllowed(previousStatus, decision)) {
         await client.query("COMMIT");
-        return { changed: false, reason: "already_decided" };
+        return { changed: false, reason: "invalid_transition" };
       }
       await client.query(
         `UPDATE users SET platform_access_status = $2, access_reviewed_at = $3,
            updated_at = $3 WHERE id = $1`,
         [user.id, decision, now]
       );
-      await client.query(
-        `UPDATE access_review_requests SET invalidated_at = $2
-         WHERE user_id = $1 AND consumed_at IS NULL AND invalidated_at IS NULL`,
-        [user.id, now]
-      );
+      if (previousStatus === "pending") {
+        await client.query(
+          `UPDATE access_review_requests SET invalidated_at = $2
+           WHERE user_id = $1 AND consumed_at IS NULL AND invalidated_at IS NULL`,
+          [user.id, now]
+        );
+      }
       await client.query("COMMIT");
       return {
         changed: true,
         decision,
+        previousStatus,
         user: { email: user.email, name: user.name },
       };
     } catch (error) {

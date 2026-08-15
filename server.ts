@@ -1422,19 +1422,21 @@ async function startServer() {
       const userId = typeof req.params.userId === "string" ? req.params.userId.trim() : "";
       const decision = req.body?.decision;
       if (!userId || userId.length > 200 || (decision !== "approved" && decision !== "denied")) {
-        return res.status(400).json({ error: "A valid pending user and access decision are required." });
+        return res.status(400).json({ error: "A valid user and access decision are required." });
       }
       try {
         const result = await db.decidePlatformAccessRequest(userId, decision);
         if (result.changed === false) {
-          return result.reason === "already_decided"
-            ? res.status(409).json({ error: "This access request has already been decided." })
-            : res.status(404).json({ error: "This pending access request is unavailable." });
+          return result.reason === "invalid_transition"
+            ? res.status(409).json({ error: "That platform access status change is not allowed." })
+            : res.status(404).json({ error: "This platform access user is unavailable." });
         }
-        try {
-          await sendAccessDecisionEmail(result.user.email, result.user.name, decision);
-        } catch {
-          console.error("Access decision applicant email delivery failed.");
+        if (result.previousStatus === "pending") {
+          try {
+            await sendAccessDecisionEmail(result.user.email, result.user.name, decision);
+          } catch {
+            console.error("Access decision applicant email delivery failed.");
+          }
         }
         return res.json({ success: true, decision: result.decision });
       } catch {

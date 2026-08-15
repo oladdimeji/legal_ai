@@ -1940,3 +1940,11 @@ Status: Implementation complete; focused-phase verification recorded below.
 - The dashboard lists genuine submitted lawyer access requests across the existing pending, approved, and denied states. Pending Approve/Deny actions retain the established transaction, pending-only conflict protection, `access_reviewed_at`, email-link invalidation, and best-effort Brevo notification behavior.
 - Normal lawyer Google login, email OTP, Request Access, Client authentication, Firms, Matters, and `SITE_LOCKED` remain unchanged. No database migration or dependency change was required.
 - Verification passed: focused admin tests (9/9), `npm run lint`, all 448 tests, `npm run build`, and final `npm run verify`. The first build attempt encountered the documented managed-sandbox Vite config restriction; the approved build and verify runs passed with only the existing non-fatal large-chunk warning.
+
+### Reversible platform access administration
+
+- Extended the existing `/admin` access controls without adding statuses or schema: pending lawyers retain Approve and Deny, approved lawyers can be Deactivated to denied, and denied lawyers can be Activated to approved. Deny and Deactivate require confirmation, and the existing per-user saving state and immediate local status update remain in place.
+- Added an explicit backend transition allowlist for `pending -> approved`, `pending -> denied`, `approved -> denied`, and `denied -> approved`. Same-status and other invalid transitions return a conflict without modifying the user, while the existing transaction, locked user read, status/review timestamp updates, and workspace checks remain intact.
+- Outstanding access-review links are invalidated only when resolving an initial pending request. The existing applicant approval/denial email remains best effort for initial pending decisions and is not sent for Activate or Deactivate.
+- No user, Firm, Matter, file, conversation, document, history, onboarding, session, authentication, data, schema, migration, dependency, or approved-only access-gate behavior changed.
+- Verification passed: focused admin/access-gate tests (21/21), `npm run lint`, all 449 tests, and `npm run build`. The first build attempt encountered the documented managed-sandbox Vite config restriction; the approved build passed with only the existing non-fatal large-chunk warning.
