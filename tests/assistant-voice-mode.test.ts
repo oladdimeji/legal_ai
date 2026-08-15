@@ -428,6 +428,31 @@ test("Voice function HTTP work exposes a ref-counted working state without chang
   assert.doesNotMatch(toolHandler, /playbackRate|createBuffer|silenceDurationMs|prefixPaddingMs|live\.connect/);
 });
 
+test("Voice working state drives the existing Assistant activity panel through an independent visual timer", async () => {
+  const assistant = await readFile(new URL("../src/components/AssistantView.tsx", import.meta.url), "utf8");
+  const voiceEffectStart = assistant.indexOf("  useEffect(() => {\n    if (!voiceMode.working)");
+  const voiceEffectEnd = assistant.indexOf(
+    "  }, [voiceMode.working, voiceWorkingStageIndex]);",
+    voiceEffectStart
+  );
+  const voiceEffect = assistant.slice(voiceEffectStart, voiceEffectEnd);
+
+  assert.match(assistant, /const VOICE_WORKING_ACTIVITIES = buildAssistantWorkingActivities\(\{\s*hasAttachments: false,?\s*\}\)/);
+  assert.match(assistant, /const \[voiceWorkingStageIndex, setVoiceWorkingStageIndex\] = useState\(0\)/);
+  assert.match(assistant, /const voiceWorkingActivityTimerRef = useRef<number \| null>\(null\)/);
+  assert.match(voiceEffect, /if \(!voiceMode\.working\) \{\s*setVoiceWorkingStageIndex\(0\);\s*return;/);
+  assert.match(voiceEffect, /voiceWorkingStageIndex >= VOICE_WORKING_ACTIVITIES\.length - 1/);
+  assert.match(voiceEffect, /voiceWorkingActivityTimerRef\.current = window\.setTimeout/);
+  assert.match(voiceEffect, /advanceWorkingActivityIndex\(current, VOICE_WORKING_ACTIVITIES\.length\)/);
+  assert.match(voiceEffect, /WORKING_ACTIVITY_DELAY_MS/);
+  assert.match(voiceEffect, /window\.clearTimeout\(voiceWorkingActivityTimerRef\.current\)/);
+  assert.doesNotMatch(voiceEffect, /setLoading|setStreaming|handleSend/);
+  assert.match(assistant, /loading && !streaming \? \([\s\S]*activities=\{workingActivities\}[\s\S]*\) : voiceMode\.working \? \([\s\S]*activities=\{VOICE_WORKING_ACTIVITIES\}[\s\S]*\) : null/);
+  assert.match(assistant, /function AssistantWorkingActivityPanel[\s\S]*role="status"[\s\S]*aria-live="polite"[\s\S]*visibleAssistantWorkingActivities\(activities, stageIndex\)/);
+  assert.match(assistant, /\[messages, voiceMode\.liveTranscripts, loading, workingStageIndex, voiceMode\.working, voiceWorkingStageIndex\]/);
+  assert.match(assistant, /componentMountedRef\.current = false;[\s\S]*window\.clearTimeout\(voiceWorkingActivityTimerRef\.current\)/);
+});
+
 test("Voice Assistant capability routing reuses the owned Assistant pipeline without reconnecting or duplicating chat messages", async () => {
   const [server, hook] = await Promise.all([
     readFile(new URL("../server.ts", import.meta.url), "utf8"),

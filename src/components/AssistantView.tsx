@@ -48,6 +48,9 @@ const STOP_WORDS = new Set([
 ]);
 
 const WORKING_ACTIVITY_DELAY_MS = 2000;
+const VOICE_WORKING_ACTIVITIES = buildAssistantWorkingActivities({
+  hasAttachments: false,
+});
 
 export class AssistantServerError extends Error {}
 
@@ -149,6 +152,48 @@ function getProcessedSnippet(snippet: string, queryText: string, maxLen: number 
   return { element, isTruncated };
 }
 
+function AssistantWorkingActivityPanel({
+  activities,
+  stageIndex,
+}: {
+  activities: WorkingActivity[];
+  stageIndex: number;
+}) {
+  return (
+    <div
+      className="flex min-w-0 items-start"
+      id="chat-loading-indicator"
+      role="status"
+      aria-live="polite"
+    >
+      <div className="flex w-full max-w-xl min-w-0 flex-col gap-2 overflow-hidden rounded-lg border border-zinc-200 bg-zinc-50 px-4 py-3 select-none">
+        {visibleAssistantWorkingActivities(activities, stageIndex).map((activity) => (
+          <div
+            key={activity.activeLabel}
+            className={`flex min-w-0 items-start gap-2 ${
+              activity.isCompleted
+                ? "text-zinc-500"
+                : "animate-pulse text-zinc-700 motion-reduce:animate-none"
+            }`}
+          >
+            {activity.isCompleted ? (
+              <Check className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            ) : (
+              <span
+                className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-zinc-700"
+                aria-hidden="true"
+              />
+            )}
+            <p className="min-w-0 break-words text-xs font-mono font-medium leading-relaxed">
+              {activity.label}
+            </p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function AssistantView({ 
   pageContext,
   activeThreadId,
@@ -164,6 +209,7 @@ export default function AssistantView({
   const [streaming, setStreaming] = useState(false);
   const [workingActivities, setWorkingActivities] = useState<WorkingActivity[]>([]);
   const [workingStageIndex, setWorkingStageIndex] = useState(0);
+  const [voiceWorkingStageIndex, setVoiceWorkingStageIndex] = useState(0);
   const [citationPanelSource, setCitationPanelSource] = useState<Citation | null>(null);
   const [activeMessageCitations, setActiveMessageCitations] = useState<Citation[]>([]);
   
@@ -176,6 +222,7 @@ export default function AssistantView({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const workingActivityTimerRef = useRef<number | null>(null);
+  const voiceWorkingActivityTimerRef = useRef<number | null>(null);
   const responseStreamTimerRef = useRef<number | null>(null);
   const responseStreamResolveRef = useRef<(() => void) | null>(null);
   const componentMountedRef = useRef(true);
@@ -368,7 +415,7 @@ export default function AssistantView({
   // Scroll to bottom
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, voiceMode.liveTranscripts, loading, workingStageIndex]);
+  }, [messages, voiceMode.liveTranscripts, loading, workingStageIndex, voiceMode.working, voiceWorkingStageIndex]);
 
   useEffect(() => {
     if (
@@ -392,11 +439,34 @@ export default function AssistantView({
   }, [loading, streaming, workingActivities, workingStageIndex]);
 
   useEffect(() => {
+    if (!voiceMode.working) {
+      setVoiceWorkingStageIndex(0);
+      return;
+    }
+    if (voiceWorkingStageIndex >= VOICE_WORKING_ACTIVITIES.length - 1) return;
+    voiceWorkingActivityTimerRef.current = window.setTimeout(() => {
+      voiceWorkingActivityTimerRef.current = null;
+      setVoiceWorkingStageIndex((current) =>
+        advanceWorkingActivityIndex(current, VOICE_WORKING_ACTIVITIES.length)
+      );
+    }, WORKING_ACTIVITY_DELAY_MS);
+    return () => {
+      if (voiceWorkingActivityTimerRef.current !== null) {
+        window.clearTimeout(voiceWorkingActivityTimerRef.current);
+        voiceWorkingActivityTimerRef.current = null;
+      }
+    };
+  }, [voiceMode.working, voiceWorkingStageIndex]);
+
+  useEffect(() => {
     componentMountedRef.current = true;
     return () => {
       componentMountedRef.current = false;
       if (workingActivityTimerRef.current !== null) {
         window.clearTimeout(workingActivityTimerRef.current);
+      }
+      if (voiceWorkingActivityTimerRef.current !== null) {
+        window.clearTimeout(voiceWorkingActivityTimerRef.current);
       }
       if (responseStreamTimerRef.current !== null) {
         window.clearTimeout(responseStreamTimerRef.current);
@@ -1267,42 +1337,17 @@ export default function AssistantView({
                 );
               })}
 
-              {loading && !streaming && (
-                <div
-                  className="flex min-w-0 items-start"
-                  id="chat-loading-indicator"
-                  role="status"
-                  aria-live="polite"
-                >
-                  <div className="flex w-full max-w-xl min-w-0 flex-col gap-2 overflow-hidden rounded-lg border border-zinc-200 bg-zinc-50 px-4 py-3 select-none">
-                    {visibleAssistantWorkingActivities(
-                      workingActivities,
-                      workingStageIndex
-                    ).map((activity) => (
-                      <div
-                        key={activity.activeLabel}
-                        className={`flex min-w-0 items-start gap-2 ${
-                          activity.isCompleted
-                            ? "text-zinc-500"
-                            : "animate-pulse text-zinc-700 motion-reduce:animate-none"
-                        }`}
-                      >
-                        {activity.isCompleted ? (
-                          <Check className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                        ) : (
-                          <span
-                            className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-zinc-700"
-                            aria-hidden="true"
-                          />
-                        )}
-                        <p className="min-w-0 break-words text-xs font-mono font-medium leading-relaxed">
-                          {activity.label}
-                        </p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+              {loading && !streaming ? (
+                <AssistantWorkingActivityPanel
+                  activities={workingActivities}
+                  stageIndex={workingStageIndex}
+                />
+              ) : voiceMode.working ? (
+                <AssistantWorkingActivityPanel
+                  activities={VOICE_WORKING_ACTIVITIES}
+                  stageIndex={voiceWorkingStageIndex}
+                />
+              ) : null}
 
               <div ref={messagesEndRef} />
             </div>

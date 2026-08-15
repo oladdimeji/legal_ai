@@ -1948,3 +1948,10 @@ Status: Implementation complete; focused-phase verification recorded below.
 - Outstanding access-review links are invalidated only when resolving an initial pending request. The existing applicant approval/denial email remains best effort for initial pending decisions and is not sent for Activate or Deactivate.
 - No user, Firm, Matter, file, conversation, document, history, onboarding, session, authentication, data, schema, migration, dependency, or approved-only access-gate behavior changed.
 - Verification passed: focused admin/access-gate tests (21/21), `npm run lint`, all 449 tests, and `npm run build`. The first build attempt encountered the documented managed-sandbox Vite config restriction; the approved build passed with only the existing non-fatal large-chunk warning.
+
+### Voice Agent working-stage visibility
+
+- Added the existing Assistant progressive working-stage panel during `voiceMode.working`, using the standard no-attachment sequence, the existing two-second non-looping progression, and the existing panel styling and accessibility presentation.
+- Kept a Voice-only presentation index and timer that reset between working periods, stop at the final stage, clean up when work stops or the component unmounts, and do not alter typed Assistant loading or streaming state. The typed Assistant panel retains priority if both lifecycles are active, preventing duplicate panels.
+- No Voice processing, acknowledgement, tool, response, timing, audio, lifecycle, API, backend, authentication, database, schema, migration, or dependency behavior changed.
+- Verification passed: focused Assistant Voice/UX/working-activity tests (44/44), `npm run lint`, and `npm run build`. The initial build encountered the documented managed-sandbox Vite config restriction; the approved retry passed with only the existing non-fatal large-chunk warning.

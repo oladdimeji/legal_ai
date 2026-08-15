@@ -54,10 +54,11 @@ test("Assistant uses progressive working activities and completes designed respo
   assert.doesNotMatch(activityImplementation, /\(current(?:Index)? \+ 1\) %/);
   assert.match(activityHelper, /Math\.min\(currentIndex \+ 1, activityCount - 1\)/);
   assert.match(assistant, /workingStageIndex >= workingActivities\.length - 1/);
-  assert.match(assistant, /visibleAssistantWorkingActivities\([\s\S]*workingActivities,[\s\S]*workingStageIndex/);
+  assert.match(assistant, /visibleAssistantWorkingActivities\(activities, stageIndex\)/);
+  assert.match(assistant, /activities=\{workingActivities\}[\s\S]*stageIndex=\{workingStageIndex\}/);
   assert.match(assistant, /activity\.isCompleted[\s\S]*<Check /);
   assert.match(assistant, /activity\.isCompleted[\s\S]*\? "text-zinc-500"[\s\S]*: "animate-pulse text-zinc-700 motion-reduce:animate-none"/);
-  assert.match(assistant, /\{loading && !streaming && \(/);
+  assert.match(assistant, /\{loading && !streaming \? \(/);
   assert.match(assistant, /role="status"[\s\S]*aria-live="polite"/);
   assert.match(assistant, /min-w-0 break-words/);
   assert.doesNotMatch(activityImplementation, /classificationReason|Classifier result|confidence score/i);
