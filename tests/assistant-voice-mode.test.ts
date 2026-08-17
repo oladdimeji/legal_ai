@@ -21,6 +21,7 @@ import {
   finalizeVoiceTranscripts,
   initializeLiveHistory,
   shouldPlayVoiceAcknowledgement,
+  shouldAdvanceVoiceTurnBoundary,
 } from "../src/hooks/useVoiceMode.js";
 
 function message(id: string, role: "user" | "assistant", content: string): Message {
@@ -57,6 +58,9 @@ test("Gemini Live configuration is centralized for native audio, transcription, 
   assert.match(String(config.systemInstruction), /Before saying authenticated workspace information is unavailable, use the appropriate function/);
   assert.match(String(config.systemInstruction), /measured conversational pace/);
   assert.match(String(config.systemInstruction), /Never fabricate progress/);
+  assert.match(String(config.systemInstruction), /Treat both functions as your own internal actions/);
+  assert.match(String(config.systemInstruction), /report it as your own completed work in the first person/);
+  assert.match(String(config.systemInstruction), /Never mention function names, tools, capabilities, delegation, or another Assistant/);
   assert.doesNotMatch(String(config.systemInstruction), /Voice Mode is read-only|better handled in the standard Assistant/);
   assert.doesNotMatch(String(config.systemInstruction), /pretend|browser text-to-speech/i);
   assert.doesNotMatch(String(config.systemInstruction), /you may give one short, natural acknowledgement/i);
@@ -80,6 +84,26 @@ test("Voice acknowledgement eligibility is heavy-call-only and once per existing
   assert.equal(shouldPlayVoiceAcknowledgement("use_assistant_capabilities", 7, 7), false);
   assert.equal(shouldPlayVoiceAcknowledgement("lookup_workspace", 7, null), false);
   assert.equal(shouldPlayVoiceAcknowledgement(undefined, 7, null), false);
+});
+
+test("Voice capability metadata waits through contentless completion but remains discarded after interruption", async () => {
+  const hook = await readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8");
+  const capabilityTurnBoundary = 9;
+  let currentTurnBoundary = capabilityTurnBoundary;
+
+  assert.equal(shouldAdvanceVoiceTurnBoundary("turnComplete", "", true), false);
+  assert.equal(currentTurnBoundary, capabilityTurnBoundary);
+  assert.equal(capabilityTurnBoundary === currentTurnBoundary, true);
+
+  assert.equal(shouldAdvanceVoiceTurnBoundary("interrupted", "", true), true);
+  currentTurnBoundary += 1;
+  assert.equal(capabilityTurnBoundary === currentTurnBoundary, false);
+
+  const completion = hook.slice(hook.indexOf("if (content.turnComplete)"), hook.indexOf("  }, [clearWorking", hook.indexOf("if (content.turnComplete)")));
+  assert.match(completion, /inFlightAssistantCapabilityTurnsRef/);
+  assert.match(completion, /shouldAdvanceVoiceTurnBoundary/);
+  assert.match(completion, /finalizeTranscripts\("turnComplete", false\)/);
+  assert.match(hook, /pausedAssistantCapabilityTurnRef\.current === turnBoundaryRef\.current[\s\S]*pendingCapabilityMetadataRef\.current = null[\s\S]*turnBoundaryRef\.current \+= 1/);
 });
 
 test("Voice acknowledgement is cached, isolated, fail-open, prefetched, and cleaned up with shared playback", async () => {

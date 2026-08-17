@@ -91,6 +91,14 @@ export function shouldPlayVoiceAcknowledgement(
   return functionName === "use_assistant_capabilities" && acknowledgedTurn !== turnBoundary;
 }
 
+export function shouldAdvanceVoiceTurnBoundary(
+  boundary: "turnComplete" | "interrupted",
+  assistantTranscript: string,
+  hasInFlightAssistantCapability: boolean
+): boolean {
+  return boundary === "interrupted" || assistantTranscript.trim().length > 0 || !hasInFlightAssistantCapability;
+}
+
 export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   const [state, setState] = useState<VoiceModeState>("off");
   const [error, setError] = useState("");
@@ -118,6 +126,8 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   const persistQueueRef = useRef(Promise.resolve());
   const pendingCapabilityMetadataRef = useRef<VoiceCapabilityMetadata | null>(null);
   const workingCallIdsRef = useRef(new Set<string>());
+  const inFlightAssistantCapabilityTurnsRef = useRef(new Map<number, number>());
+  const pausedAssistantCapabilityTurnRef = useRef<number | null>(null);
   const turnBoundaryRef = useRef(0);
   const acknowledgedTurnRef = useRef<number | null>(null);
   const acknowledgementAudioRef = useRef<VoiceAcknowledgementAudio | null>(null);
@@ -174,6 +184,8 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     transcriptRef.current = { user: "", assistant: "" };
     pageContextRef.current = null;
     pendingCapabilityMetadataRef.current = null;
+    inFlightAssistantCapabilityTurnsRef.current.clear();
+    pausedAssistantCapabilityTurnRef.current = null;
     acknowledgedTurnRef.current = null;
     acknowledgementAudioRef.current = null;
     acknowledgementRequestRef.current = null;
@@ -217,12 +229,18 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     });
   }, []);
 
-  const finalizeTranscripts = useCallback((boundary: "turnComplete" | "interrupted") => {
+  const finalizeTranscripts = useCallback((
+    boundary: "turnComplete" | "interrupted",
+    advanceTurnBoundary = true
+  ) => {
     const { completed, remaining } = finalizeVoiceTranscripts(transcriptRef.current, boundary);
     transcriptRef.current = remaining;
     const capabilityMetadata = boundary === "turnComplete" ? pendingCapabilityMetadataRef.current : null;
-    pendingCapabilityMetadataRef.current = null;
-    turnBoundaryRef.current += 1;
+    if (advanceTurnBoundary) {
+      pendingCapabilityMetadataRef.current = null;
+      pausedAssistantCapabilityTurnRef.current = null;
+      turnBoundaryRef.current += 1;
+    }
     for (const transcript of completed) {
       persistFinalTranscript(
         transcript.role,
@@ -314,6 +332,10 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
           }
           const workingCallId = call.id || `${call.name || "lookup_workspace"}_${Date.now()}_${callIndex}`;
           workingCallIdsRef.current.add(workingCallId);
+          if (isAssistantCapability) {
+            const inFlightCount = inFlightAssistantCapabilityTurnsRef.current.get(turnBoundary) || 0;
+            inFlightAssistantCapabilityTurnsRef.current.set(turnBoundary, inFlightCount + 1);
+          }
           setWorking(true);
           try {
             const response = await fetch(`/api/threads/${encodeURIComponent(threadId)}/voice/${isAssistantCapability ? "assistant" : "lookup"}`, {
@@ -360,6 +382,11 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
             });
           } finally {
             workingCallIdsRef.current.delete(workingCallId);
+            if (isAssistantCapability) {
+              const inFlightCount = inFlightAssistantCapabilityTurnsRef.current.get(turnBoundary) || 0;
+              if (inFlightCount <= 1) inFlightAssistantCapabilityTurnsRef.current.delete(turnBoundary);
+              else inFlightAssistantCapabilityTurnsRef.current.set(turnBoundary, inFlightCount - 1);
+            }
             setWorking(workingCallIdsRef.current.size > 0);
           }
         }));
@@ -379,6 +406,11 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       }
     }
     if (content.inputTranscription?.text) {
+      if (pausedAssistantCapabilityTurnRef.current === turnBoundaryRef.current) {
+        pendingCapabilityMetadataRef.current = null;
+        pausedAssistantCapabilityTurnRef.current = null;
+        turnBoundaryRef.current += 1;
+      }
       transcriptRef.current.user = mergeTranscriptChunk(
         transcriptRef.current.user,
         content.inputTranscription.text
@@ -394,9 +426,20 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     }
     if (content.interrupted) finalizeTranscripts("interrupted");
     if (content.turnComplete) {
-      clearWorking();
-      finalizeTranscripts("turnComplete");
-      if (playbackSourcesRef.current.size === 0) updateState("listening");
+      const hasInFlightAssistantCapability = (inFlightAssistantCapabilityTurnsRef.current.get(turnBoundaryRef.current) || 0) > 0;
+      const shouldAdvanceTurnBoundary = shouldAdvanceVoiceTurnBoundary(
+        "turnComplete",
+        transcriptRef.current.assistant,
+        hasInFlightAssistantCapability
+      );
+      if (shouldAdvanceTurnBoundary) {
+        clearWorking();
+        finalizeTranscripts("turnComplete");
+        if (playbackSourcesRef.current.size === 0) updateState("listening");
+      } else {
+        pausedAssistantCapabilityTurnRef.current = turnBoundaryRef.current;
+        finalizeTranscripts("turnComplete", false);
+      }
     }
   }, [clearWorking, finalizeTranscripts, prefetchAcknowledgement, scheduleAudio, stopPlayback, updateState]);
 
