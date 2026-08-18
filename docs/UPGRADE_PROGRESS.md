@@ -2032,3 +2032,12 @@ Status: Implementation complete; focused-phase verification recorded below.
 - The unused transcript parameter was removed from `shouldAdvanceVoiceTurnBoundary` rather than left in place, since having spoken is explicitly not evidence that a turn is complete.
 - The filler line is still saved as an ordinary spoken message, the existing pause, interruption, stale-metadata, ownership-validation, and idempotent persistence behavior is unchanged, and no server route, schema, or dependency changed.
 - Verification: `npm run verify` passed with `npm run lint`, 477/477 tests, and `npm run build`.
+
+### Generated documents contain no diagrams or illustrations
+
+- Added an explicit prohibition on diagrams to `EXPORT_SAFE_DOCUMENT_MARKDOWN_RULES`, the single constant shared by the autonomous Assistant draft prompt, the Work Product draft prompt, and the one generation prompt in `server.ts`. Nothing previously forbade a flow chart, so the model occasionally produced one, and the rules already permitted code fences for other reasons. The prohibition covers flow charts, process illustrations, decision trees, organisation charts, timeline graphics, data charts, graphs and figures, however expressed, and directs sequences and structures to prose, headings, ordered lists, or a conventional table instead.
+- Added `stripGeneratedDiagramBlocks` as a deterministic backstop so this does not depend on the model complying. It removes fenced blocks whose language is a recognised diagram notation, covering Mermaid, PlantUML, Graphviz and DOT, and the other common diagram and chart notations. Both document paths already run through `cleanGeneratedWorkProductContent`, so the backstop applies everywhere a document is generated.
+- The backstop is deliberately narrow. A fenced block in any other language, an unlabelled fence, an unterminated fence, tables, lists, headings, and all ordinary prose are returned byte for byte unchanged, so existing drafting quality cannot regress.
+- Drafting substance is untouched: the premium drafting standard, document-type inference, structure, tone, evidence grounding, attachment rules, citation rules, and disclaimer rules are all unchanged.
+- Added tests covering the prohibition across all four prompts, removal of each diagram notation, and byte-for-byte preservation of non-diagram content. No API, authentication, database, schema, migration, or dependency change was made.
+- Verification: `npm run verify` passed with `npm run lint`, 477/477 tests, and `npm run build`.

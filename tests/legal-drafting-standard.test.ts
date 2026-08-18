@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { buildAssistantDraftPrompt } from "../server/assistantDrafting.js";
+import {
+  cleanGeneratedWorkProductContent,
+  stripGeneratedDiagramBlocks,
+} from "../server/generatedContentCleanup.js";
 import { TOP_TIER_LEGAL_DRAFTING_STANDARD } from "../server/legalDraftingStandard.js";
 import { MODEL_CONFIGS, MODEL_THINKING_LEVELS } from "../server/model.js";
 import { buildWorkProductDraftPrompt } from "../server/workProductDrafting.js";
@@ -89,6 +93,67 @@ test("legacy Work Product formats retain distinct instructions inside the shared
     assert.ok(prompt.includes(TOP_TIER_LEGAL_DRAFTING_STANDARD));
     assert.match(prompt, /Do not append generic legal-advice/);
   }
+});
+
+test("no generated document may contain a diagram, chart, or other drawn illustration", () => {
+  for (const prompt of [autonomousPrompt(), workProductPrompt("memo"), workProductPrompt("email"), workProductPrompt("summary")]) {
+    assert.match(prompt, /Never include a diagram, flow chart, process illustration/);
+    assert.match(prompt, /Mermaid, PlantUML, Graphviz or DOT/);
+    assert.match(prompt, /box-drawing or arrow art, and text or ASCII art/);
+    assert.match(prompt, /Express a sequence, process, structure, hierarchy, or decision path in words/);
+  }
+});
+
+test("diagram markup is removed from generated documents while genuine content survives", () => {
+  const fence = "```";
+  const withDiagram = [
+    "# Statement of Work",
+    "",
+    "## Process",
+    "",
+    `${fence}mermaid`,
+    "graph TD",
+    "  A[Start] --> B[Review]",
+    fence,
+    "",
+    "The parties agree as follows.",
+  ].join("\n");
+  assert.equal(
+    cleanGeneratedWorkProductContent(withDiagram),
+    "# Statement of Work\n\n## Process\n\nThe parties agree as follows."
+  );
+
+  for (const language of ["graphviz", "plantuml", "flowchart", "gantt", "mindmap", "chart", "DOT"]) {
+    const block = `Intro.\n\n${fence}${language}\nnode -> node\n${fence}\n\nOutro.`;
+    assert.equal(cleanGeneratedWorkProductContent(block), "Intro.\n\nOutro.");
+  }
+
+  // Any other fenced block, and every ordinary construct, is left exactly alone.
+  const preserved = [
+    "# Agreement",
+    "",
+    "| Term | Value |",
+    "| --- | --- |",
+    "| Fee | 100 |",
+    "",
+    `${fence}json`,
+    '{"retained": true}',
+    fence,
+    "",
+    `${fence}`,
+    "A literal block with no language.",
+    fence,
+    "",
+    "1. First step",
+    "2. Second step",
+  ].join("\n");
+  assert.equal(cleanGeneratedWorkProductContent(preserved), preserved);
+  assert.equal(stripGeneratedDiagramBlocks(preserved), preserved);
+  assert.equal(stripGeneratedDiagramBlocks(""), "");
+
+  // An unterminated fence is ambiguous, so content is preserved rather than guessed at.
+  const unterminated = `Intro.\n\n${fence}mermaid\ngraph TD`;
+  assert.equal(stripGeneratedDiagramBlocks(unterminated), unterminated);
 });
 
 test("draft model and thinking configuration remain unchanged and each path has one generation call", async () => {

@@ -29,8 +29,22 @@ export function cleanGeneratedBoilerplate(content: string): string {
   return paragraphs.join("\n\n").trim();
 }
 
+// Diagram markup is never legitimate content in a legal document and does not
+// survive export, so a fenced block in one of these notations is removed outright
+// rather than left to render as raw markup.
+const DIAGRAM_FENCE_LANGUAGE = /^(?:mermaid|graphviz|dot|plantuml|puml|uml|flow|flowchart|sequence|sequencediagram|statediagram|classdiagram|erdiagram|gantt|journey|mindmap|pie|quadrantchart|timeline|nomnoml|svgbob|ditaa|asciiflow|blockdiag|seqdiag|actdiag|nwdiag|wavedrom|vega|vegalite|plotly|chart|chartjs|diagram)$/i;
+
+export function stripGeneratedDiagramBlocks(content: string): string {
+  return content
+    .replace(
+      /^[ \t]{0,3}(`{3,}|~{3,})[ \t]*([A-Za-z][\w+#-]*)[^\n]*\n[\s\S]*?^[ \t]{0,3}\1[ \t]*$/gm,
+      (block, _fence: string, language: string) => (DIAGRAM_FENCE_LANGUAGE.test(language) ? "" : block)
+    )
+    .replace(/\n{3,}/g, "\n\n");
+}
+
 export function cleanGeneratedWorkProductContent(content: string): string {
-  return stripInternalCitationsForWorkProduct(cleanGeneratedBoilerplate(content), {
+  return stripInternalCitationsForWorkProduct(cleanGeneratedBoilerplate(stripGeneratedDiagramBlocks(content)), {
     stripNumberedMarkers: true,
   });
 }
