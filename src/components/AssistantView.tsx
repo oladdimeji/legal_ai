@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
 import { 
   MessageSquare, Send, AlertCircle, AudioLines,
@@ -243,7 +243,7 @@ export default function AssistantView({
   useEffect(() => {
     voiceMode.updatePageContext(pageContext);
   }, [pageContext, voiceMode.updatePageContext]);
-  const liveTranscriptMessages: Message[] = (["user", "assistant"] as const).flatMap((role) => {
+  const liveTranscriptMessages: Message[] = useMemo(() => (["user", "assistant"] as const).flatMap((role) => {
     const content = voiceMode.liveTranscripts[role].trim();
     if (!content) return [];
     return [{
@@ -256,7 +256,7 @@ export default function AssistantView({
       created_at: new Date().toISOString(),
       metadata: { liveVoiceTranscript: true },
     }];
-  });
+  }), [voiceMode.liveTranscripts]);
   const displayMessages = [...messages, ...liveTranscriptMessages];
 
   // New docked side editor state declarations
@@ -412,9 +412,10 @@ export default function AssistantView({
     }
   }, [messages.length, onMessagesChange]);
 
-  // Scroll to bottom
+  // Scroll to bottom. Live voice transcription updates continuously, so it jumps
+  // instantly instead of restarting a smooth scroll animation on every chunk.
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    messagesEndRef.current?.scrollIntoView({ behavior: voiceMode.active ? "auto" : "smooth" });
   }, [messages, voiceMode.liveTranscripts, loading, workingStageIndex, voiceMode.working, voiceWorkingStageIndex]);
 
   useEffect(() => {
@@ -1006,9 +1007,9 @@ export default function AssistantView({
                 aria-label={voiceMode.active ? "Turn off Voice Agent" : "Start Voice Conversation"}
                 aria-pressed={voiceMode.active}
                 title={voiceMode.active ? "Turn off Voice Agent" : "Start Voice Conversation"}
+                ref={voiceMode.voiceControlRef}
                 data-voice-state={voiceMode.state}
                 data-voice-working={voiceMode.working ? "true" : "false"}
-                style={{ "--voice-level": voiceMode.amplitude } as React.CSSProperties}
                 className={`voice-mode-control inline-flex items-center gap-2 px-2.5 py-1.5 text-xs font-mono font-semibold border rounded transition-colors cursor-pointer ${voiceMode.active ? "border-zinc-950 bg-zinc-950 text-white" : voiceMode.state === "error" ? "border-red-300 bg-white text-red-700" : "border-zinc-200 bg-white text-zinc-700 hover:border-zinc-400 hover:text-zinc-950"}`}
               >
                 <span className="voice-mode-presence" aria-hidden="true">

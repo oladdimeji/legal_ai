@@ -102,7 +102,6 @@ export function shouldAdvanceVoiceTurnBoundary(
 export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   const [state, setState] = useState<VoiceModeState>("off");
   const [error, setError] = useState("");
-  const [amplitude, setAmplitude] = useState(0);
   const [working, setWorking] = useState(false);
   const [liveTranscripts, setLiveTranscripts] = useState<LiveVoiceTranscripts>({ user: "", assistant: "" });
   const stateRef = useRef<VoiceModeState>("off");
@@ -120,6 +119,8 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   const playbackSourcesRef = useRef(new Set<AudioBufferSourceNode>());
   const playbackAtRef = useRef(0);
   const animationFrameRef = useRef<number | null>(null);
+  const voiceControlRef = useRef<HTMLElement | null>(null);
+  const transcriptFrameRef = useRef<number | null>(null);
   const transcriptRef = useRef({ user: "", assistant: "" });
   const pageContextRef = useRef<WorkspacePageContext | null>(null);
   const eventSequenceRef = useRef({ user: 0, assistant: 0 });
@@ -145,6 +146,33 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     setWorking(false);
   }, []);
 
+  // The presence indicator is driven straight through CSS so that continuous audio
+  // levels never re-render the conversation while the microphone or playback is live.
+  const writeVoiceLevel = useCallback((level: number) => {
+    voiceControlRef.current?.style.setProperty("--voice-level", level.toFixed(2));
+  }, []);
+
+  const attachVoiceControl = useCallback((element: HTMLElement | null) => {
+    voiceControlRef.current = element;
+    element?.style.setProperty("--voice-level", "0");
+  }, []);
+
+  const cancelTranscriptFlush = useCallback(() => {
+    if (transcriptFrameRef.current === null) return;
+    cancelAnimationFrame(transcriptFrameRef.current);
+    transcriptFrameRef.current = null;
+  }, []);
+
+  // Live transcription arrives far faster than the display needs to change, so
+  // partial chunks are coalesced into one repaint instead of one render each.
+  const scheduleTranscriptFlush = useCallback(() => {
+    if (transcriptFrameRef.current !== null) return;
+    transcriptFrameRef.current = requestAnimationFrame(() => {
+      transcriptFrameRef.current = null;
+      setLiveTranscripts({ ...transcriptRef.current });
+    });
+  }, []);
+
   const stopPlayback = useCallback(() => {
     for (const source of playbackSourcesRef.current) {
       try { source.stop(); } catch { /* already stopped */ }
@@ -158,6 +186,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     lifecycleRef.current += 1;
     if (animationFrameRef.current !== null) cancelAnimationFrame(animationFrameRef.current);
     animationFrameRef.current = null;
+    cancelTranscriptFlush();
     stopPlayback();
     const session = sessionRef.current;
     sessionRef.current = null;
@@ -192,9 +221,9 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     clearWorking();
     turnBoundaryRef.current += 1;
     setLiveTranscripts({ user: "", assistant: "" });
-    setAmplitude(0);
+    writeVoiceLevel(0);
     updateState(finalState);
-  }, [clearWorking, stopPlayback, updateState]);
+  }, [cancelTranscriptFlush, clearWorking, stopPlayback, updateState, writeVoiceLevel]);
 
   const fail = useCallback((message: string) => {
     setError(message);
@@ -233,7 +262,12 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     boundary: "turnComplete" | "interrupted",
     advanceTurnBoundary = true
   ) => {
-    const { completed, remaining } = finalizeVoiceTranscripts(transcriptRef.current, boundary);
+    // Any coalesced partial chunk is applied first so persistence can recognise
+    // the finished text and retire the matching live bubble.
+    cancelTranscriptFlush();
+    const pending = transcriptRef.current;
+    setLiveTranscripts({ ...pending });
+    const { completed, remaining } = finalizeVoiceTranscripts(pending, boundary);
     transcriptRef.current = remaining;
     const capabilityMetadata = boundary === "turnComplete" ? pendingCapabilityMetadataRef.current : null;
     if (advanceTurnBoundary) {
@@ -248,7 +282,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
         transcript.role === "assistant" && capabilityMetadata ? capabilityMetadata : undefined
       );
     }
-  }, [persistFinalTranscript]);
+  }, [cancelTranscriptFlush, persistFinalTranscript]);
 
   const scheduleAudio = useCallback((data: string, mimeType?: string) => {
     const context = audioContextRef.current;
@@ -415,14 +449,14 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
         transcriptRef.current.user,
         content.inputTranscription.text
       );
-      setLiveTranscripts((current) => ({ ...current, user: transcriptRef.current.user }));
+      scheduleTranscriptFlush();
     }
     if (content.outputTranscription?.text) {
       transcriptRef.current.assistant = mergeTranscriptChunk(
         transcriptRef.current.assistant,
         content.outputTranscription.text
       );
-      setLiveTranscripts((current) => ({ ...current, assistant: transcriptRef.current.assistant }));
+      scheduleTranscriptFlush();
     }
     if (content.interrupted) finalizeTranscripts("interrupted");
     if (content.turnComplete) {
@@ -441,23 +475,28 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
         finalizeTranscripts("turnComplete", false);
       }
     }
-  }, [clearWorking, finalizeTranscripts, prefetchAcknowledgement, scheduleAudio, stopPlayback, updateState]);
+  }, [clearWorking, finalizeTranscripts, prefetchAcknowledgement, scheduleAudio, scheduleTranscriptFlush, stopPlayback, updateState]);
 
   const beginAmplitudeUpdates = useCallback(() => {
     const microphoneData = new Uint8Array(256);
     const assistantData = new Uint8Array(256);
     let lastUpdate = 0;
+    let lastLevel = -1;
     const frame = (now: number) => {
-      const microphoneLevel = analyserLevel(microphoneAnalyserRef.current, microphoneData);
-      const assistantLevel = analyserLevel(assistantAnalyserRef.current, assistantData);
       if (now - lastUpdate > 50) {
-        setAmplitude(stateRef.current === "speaking" ? assistantLevel : microphoneLevel);
+        const microphoneLevel = analyserLevel(microphoneAnalyserRef.current, microphoneData);
+        const assistantLevel = analyserLevel(assistantAnalyserRef.current, assistantData);
+        const level = stateRef.current === "speaking" ? assistantLevel : microphoneLevel;
+        if (Math.abs(level - lastLevel) >= 0.02) {
+          writeVoiceLevel(level);
+          lastLevel = level;
+        }
         lastUpdate = now;
       }
       animationFrameRef.current = requestAnimationFrame(frame);
     };
     animationFrameRef.current = requestAnimationFrame(frame);
-  }, []);
+  }, [writeVoiceLevel]);
 
   const start = useCallback(async (threadId: string, pageContext: WorkspacePageContext) => {
     if (stateRef.current === "connecting" || stateRef.current === "listening" || stateRef.current === "speaking") return;
@@ -571,7 +610,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   return {
     state,
     error,
-    amplitude,
+    voiceControlRef: attachVoiceControl,
     working,
     liveTranscripts,
     active: state === "connecting" || state === "listening" || state === "speaking",
