@@ -10,7 +10,54 @@ import {
   downsampleAudio,
   float32ToPcm16Base64,
   mergeTranscriptChunk,
+  pcm16BufferToBase64,
 } from "../lib/voiceAudio";
+import {
+  VOICE_CAPTURE_CHUNK_SAMPLES,
+  VOICE_CAPTURE_PROCESSOR_NAME,
+  VOICE_CAPTURE_TARGET_RATE,
+  VOICE_CAPTURE_WORKLET_SOURCE,
+} from "../lib/voiceCaptureWorklet";
+
+// Playback is scheduled this far ahead of the audio clock so that a delayed
+// websocket message or a busy main thread cannot open an audible gap mid-sentence.
+const VOICE_PLAYBACK_LEAD_SECONDS = 0.16;
+
+// A drained queue only ends the speaking state once it stays drained, so a brief
+// scheduling gap no longer flips the presence state back and forth.
+const VOICE_PLAYBACK_SETTLE_MS = 200;
+
+type VoiceCapture =
+  | { kind: "worklet"; node: AudioWorkletNode }
+  | { kind: "script"; node: ScriptProcessorNode };
+
+async function createVoiceCapture(context: AudioContext): Promise<VoiceCapture> {
+  if (context.audioWorklet) {
+    const moduleUrl = URL.createObjectURL(
+      new Blob([VOICE_CAPTURE_WORKLET_SOURCE], { type: "text/javascript" })
+    );
+    try {
+      await context.audioWorklet.addModule(moduleUrl);
+      return {
+        kind: "worklet",
+        node: new AudioWorkletNode(context, VOICE_CAPTURE_PROCESSOR_NAME, {
+          numberOfInputs: 1,
+          numberOfOutputs: 1,
+          outputChannelCount: [1],
+          processorOptions: {
+            targetRate: VOICE_CAPTURE_TARGET_RATE,
+            chunkSamples: VOICE_CAPTURE_CHUNK_SAMPLES,
+          },
+        }),
+      };
+    } catch {
+      // Browsers without a usable AudioWorklet keep the legacy capture path.
+    } finally {
+      URL.revokeObjectURL(moduleUrl);
+    }
+  }
+  return { kind: "script", node: context.createScriptProcessor(2048, 1, 1) };
+}
 
 export type VoiceModeState = "off" | "connecting" | "listening" | "speaking" | "error";
 
@@ -112,7 +159,9 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   const streamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const microphoneSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
-  const processorRef = useRef<ScriptProcessorNode | null>(null);
+  const processorRef = useRef<AudioNode | null>(null);
+  const releaseCaptureRef = useRef<(() => void) | null>(null);
+  const playbackSettleTimerRef = useRef<number | null>(null);
   const silentGainRef = useRef<GainNode | null>(null);
   const microphoneAnalyserRef = useRef<AnalyserNode | null>(null);
   const assistantAnalyserRef = useRef<AnalyserNode | null>(null);
@@ -173,14 +222,31 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     });
   }, []);
 
+  const cancelPlaybackSettle = useCallback(() => {
+    if (playbackSettleTimerRef.current === null) return;
+    window.clearTimeout(playbackSettleTimerRef.current);
+    playbackSettleTimerRef.current = null;
+  }, []);
+
+  const schedulePlaybackSettle = useCallback(() => {
+    cancelPlaybackSettle();
+    playbackSettleTimerRef.current = window.setTimeout(() => {
+      playbackSettleTimerRef.current = null;
+      if (playbackSourcesRef.current.size === 0 && stateRef.current === "speaking") {
+        updateState("listening");
+      }
+    }, VOICE_PLAYBACK_SETTLE_MS);
+  }, [cancelPlaybackSettle, updateState]);
+
   const stopPlayback = useCallback(() => {
+    cancelPlaybackSettle();
     for (const source of playbackSourcesRef.current) {
       try { source.stop(); } catch { /* already stopped */ }
       source.disconnect();
     }
     playbackSourcesRef.current.clear();
     playbackAtRef.current = 0;
-  }, []);
+  }, [cancelPlaybackSettle]);
 
   const releaseResources = useCallback((finalState: VoiceModeState = "off") => {
     lifecycleRef.current += 1;
@@ -194,6 +260,8 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       try { session.sendRealtimeInput({ audioStreamEnd: true }); } catch { /* socket may be closed */ }
       try { session.close(); } catch { /* socket may be closed */ }
     }
+    releaseCaptureRef.current?.();
+    releaseCaptureRef.current = null;
     processorRef.current?.disconnect();
     microphoneSourceRef.current?.disconnect();
     silentGainRef.current?.disconnect();
@@ -295,19 +363,20 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     const source = context.createBufferSource();
     source.buffer = buffer;
     source.connect(analyser);
-    const startAt = Math.max(context.currentTime + 0.015, playbackAtRef.current);
+    cancelPlaybackSettle();
+    const startAt = Math.max(context.currentTime + VOICE_PLAYBACK_LEAD_SECONDS, playbackAtRef.current);
     playbackAtRef.current = startAt + buffer.duration;
     playbackSourcesRef.current.add(source);
     source.onended = () => {
       playbackSourcesRef.current.delete(source);
       source.disconnect();
       if (playbackSourcesRef.current.size === 0 && stateRef.current === "speaking") {
-        updateState("listening");
+        schedulePlaybackSettle();
       }
     };
     updateState("speaking");
     source.start(startAt);
-  }, [updateState]);
+  }, [cancelPlaybackSettle, schedulePlaybackSettle, updateState]);
 
   const prefetchAcknowledgement = useCallback((threadId: string, lifecycle: number) => {
     if (acknowledgementAudioRef.current) return Promise.resolve(acknowledgementAudioRef.current);
@@ -539,17 +608,21 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       assistantAnalyser.fftSize = 256;
       assistantAnalyser.smoothingTimeConstant = 0.68;
       assistantAnalyser.connect(context.destination);
-      const processor = context.createScriptProcessor(2048, 1, 1);
+      const capture = await createVoiceCapture(context);
+      if (lifecycle !== lifecycleRef.current) {
+        try { capture.node.disconnect(); } catch { /* context already released */ }
+        return;
+      }
       const silentGain = context.createGain();
       silentGain.gain.value = 0;
       microphoneSource.connect(microphoneAnalyser);
-      microphoneSource.connect(processor);
-      processor.connect(silentGain);
+      microphoneSource.connect(capture.node);
+      capture.node.connect(silentGain);
       silentGain.connect(context.destination);
       microphoneSourceRef.current = microphoneSource;
       microphoneAnalyserRef.current = microphoneAnalyser;
       assistantAnalyserRef.current = assistantAnalyser;
-      processorRef.current = processor;
+      processorRef.current = capture.node;
       silentGainRef.current = silentGain;
 
       const ai = new GoogleGenAI({
@@ -575,13 +648,24 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       sessionRef.current = session;
       initializeLiveHistory(session, tokenData.history);
       void prefetchAcknowledgement(threadId, lifecycle);
-      processor.onaudioprocess = (event) => {
-        if (sessionRef.current !== session) return;
-        const samples = downsampleAudio(event.inputBuffer.getChannelData(0), context.sampleRate);
-        session.sendRealtimeInput({
-          audio: { data: float32ToPcm16Base64(samples), mimeType: "audio/pcm;rate=16000" },
-        });
-      };
+      if (capture.kind === "worklet") {
+        capture.node.port.onmessage = (event: MessageEvent<ArrayBuffer>) => {
+          if (sessionRef.current !== session) return;
+          session.sendRealtimeInput({
+            audio: { data: pcm16BufferToBase64(event.data), mimeType: "audio/pcm;rate=16000" },
+          });
+        };
+        releaseCaptureRef.current = () => { capture.node.port.onmessage = null; };
+      } else {
+        capture.node.onaudioprocess = (event) => {
+          if (sessionRef.current !== session) return;
+          const samples = downsampleAudio(event.inputBuffer.getChannelData(0), context.sampleRate);
+          session.sendRealtimeInput({
+            audio: { data: float32ToPcm16Base64(samples), mimeType: "audio/pcm;rate=16000" },
+          });
+        };
+        releaseCaptureRef.current = () => { capture.node.onaudioprocess = null; };
+      }
       beginAmplitudeUpdates();
       updateState("listening");
     } catch (startError) {

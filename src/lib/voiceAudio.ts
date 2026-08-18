@@ -8,6 +8,19 @@ export function mergeTranscriptChunk(current: string, incoming: string): string 
   return `${previous} ${next}`;
 }
 
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const block = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += block) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + block));
+  }
+  return btoa(binary);
+}
+
+export function pcm16BufferToBase64(buffer: ArrayBuffer): string {
+  return bytesToBase64(new Uint8Array(buffer));
+}
+
 export function float32ToPcm16Base64(samples: Float32Array): string {
   const bytes = new Uint8Array(samples.length * 2);
   const view = new DataView(bytes.buffer);
@@ -15,12 +28,7 @@ export function float32ToPcm16Base64(samples: Float32Array): string {
     const sample = Math.max(-1, Math.min(1, samples[index]));
     view.setInt16(index * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
   }
-  let binary = "";
-  const block = 0x8000;
-  for (let offset = 0; offset < bytes.length; offset += block) {
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + block));
-  }
-  return btoa(binary);
+  return bytesToBase64(bytes);
 }
 
 export function downsampleAudio(input: Float32Array, inputRate: number, outputRate = 16000): Float32Array {

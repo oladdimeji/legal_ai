@@ -1983,3 +1983,14 @@ Status: Implementation complete; focused-phase verification recorded below.
 - Live voice transcription now jumps the conversation to the bottom instantly instead of restarting a smooth scroll animation on every partial chunk. Typed Assistant scrolling remains smooth and the existing effect dependencies are unchanged.
 - No Voice audio capture, playback, acknowledgement, tool, transcript persistence, lifecycle, API, backend, authentication, database, schema, migration, or dependency behavior changed.
 - Verification: `npm run lint` passed, `npm run build` passed, and the suite passed 471/472. The single failure is the pre-existing `assistant-voice-mode.test.ts` activity-panel assertion, which slices source with an LF-only literal and therefore cannot match on a CRLF checkout; it fails identically before these changes.
+
+### Voice Mode responsiveness, phase 2: audio capture and playback transport
+
+- Added `src/lib/voiceCaptureWorklet.ts`, an `AudioWorklet` processor that downsamples microphone frames to 16 kHz and converts them to PCM16 on the audio rendering thread. Capture no longer depends on main-thread timing, so a busy render can no longer delay or drop outgoing microphone packets and therefore can no longer delay server-side end-of-speech detection.
+- The worklet is registered from an object URL, so no build, bundler, or static asset configuration changed. Browsers without a usable `AudioWorklet` transparently fall back to the previous `ScriptProcessorNode` path, which is unchanged.
+- Packets are 512 samples at 16 kHz, one 32 ms packet, replacing the previous 2048-frame main-thread buffer. Only the finished PCM16 packet is transferred back for base64 encoding and `sendRealtimeInput`.
+- Raised the playback scheduling lead from 15 ms to 160 ms. Playback previously had effectively no jitter buffer, so any stall longer than the queued audio drained the queue and opened a permanent gap for that utterance; the lead now absorbs delayed messages instead. Barge-in is unaffected because interruption still stops every scheduled source immediately.
+- A drained playback queue now settles for 200 ms before leaving the speaking state, so a momentary scheduling gap no longer flips presence state twice and re-renders the conversation each time.
+- Capture handlers are detached explicitly on release alongside the existing node disconnection, microphone track stop, session close, and context close.
+- No Live model, tool, acknowledgement, transcript persistence, API, backend, authentication, database, schema, migration, or dependency behavior changed.
+- Verification: `npm run lint` passed, `npm run build` passed, and the suite passed 471/472 with the same pre-existing CRLF-related failure.
