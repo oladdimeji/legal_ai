@@ -65,9 +65,11 @@ test("Assistant uses progressive working activities and completes designed respo
   assert.match(assistant, /const \[streaming, setStreaming\]/);
   assert.match(assistant, /\{ \.\.\.savedAssistantMessage, content: "" \}/);
   assert.match(assistant, /content: revealedContent/);
-  assert.match(assistant, /2800 \+ wordCount \* 14/);
-  assert.match(assistant, /Math\.min\(8500, Math\.max\(3000,/);
-  assert.match(assistant, /Math\.min\(90, Math\.max\(24,/);
+  // The reveal is presentation only and runs after the answer has already arrived,
+  // so it stays about a second rather than holding the response back for seconds.
+  assert.match(assistant, /wordCount \* 6/);
+  assert.match(assistant, /Math\.min\(1200, Math\.max\(200,/);
+  assert.match(assistant, /Math\.min\(48, Math\.max\(8,/);
   assert.match(assistant, /prefers-reduced-motion: reduce/);
   assert.match(assistant, /revealedTokenCount < wordCount[\s\S]*revealNextChunk\(\)/);
   assert.match(assistant, /message\.id === savedAssistantMessage\.id \? savedAssistantMessage : message/);

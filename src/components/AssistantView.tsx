@@ -609,11 +609,14 @@ export default function AssistantView({
       const savedAssistantMessage = data.assistantMessage as Message;
       const leadingWhitespace = savedAssistantMessage.content.match(/^\s*/)?.[0] || "";
       const streamTokens = savedAssistantMessage.content.slice(leadingWhitespace.length).match(/\S+\s*/g) || [];
+      // The answer has already arrived, so the reveal is presentation only and must
+      // not hold the response back. It stays under roughly a second, and short
+      // confirmations such as a created document finish almost immediately.
       const wordCount = streamTokens.length;
-      const targetDuration = Math.min(8500, Math.max(3000, 2800 + wordCount * 14));
-      const targetUpdates = Math.min(90, Math.max(24, Math.ceil(wordCount / 2)));
+      const targetDuration = Math.min(1200, Math.max(200, wordCount * 6));
+      const targetUpdates = Math.min(48, Math.max(8, Math.ceil(wordCount / 4)));
       const tokensPerStep = Math.max(1, Math.ceil(wordCount / targetUpdates));
-      const streamDelay = Math.max(45, Math.round(targetDuration / Math.max(1, Math.ceil(wordCount / tokensPerStep))));
+      const streamDelay = Math.max(16, Math.round(targetDuration / Math.max(1, Math.ceil(wordCount / tokensPerStep))));
       let revealedTokenCount = 0;
 
       setMessages((prev) => {

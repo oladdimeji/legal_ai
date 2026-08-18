@@ -2003,3 +2003,13 @@ Status: Implementation complete; focused-phase verification recorded below.
 - `finalizeVoiceTranscripts` is unchanged, so the existing turn-boundary, idempotent persistence, capability metadata, and first-user-message conversation-title behavior all remain intact.
 - Added a focused test covering the opening-line instruction and the client-side suppression. No API, backend route, authentication, database, schema, migration, or dependency behavior changed.
 - Verification: `npm run lint` passed, `npm run build` passed, and the suite passed 472/473 with the same pre-existing CRLF-related failure.
+
+### Assistant and Voice response latency
+
+- Retimed the typed Assistant reveal animation. The answer is already saved and returned before the reveal begins, so it was pure added waiting: the previous pacing held a completed response for a minimum of three seconds and up to 8.5, and a 45 ms per-step floor across up to 90 steps meant a long answer took about four seconds to finish appearing no matter what. The reveal now targets roughly one second at most, and short confirmations such as "Created …" finish in about 200 ms.
+- Reduced the reveal to at most 48 state updates instead of 90. Combined with the memoized Markdown renderer, revealing a response now re-parses only the message being revealed.
+- Removed the follow-up suggestion model call from the Voice capability route. Voice speaks its answer and never renders follow-up pills, so that call was an extra blocking model round trip on every spoken reply whose result was discarded. The typed Assistant still generates and persists suggestions exactly as before.
+- Updated the three `assistant-ux-cleanup.test.ts` assertions that pinned the previous reveal constants, since those constants are the behavior being changed.
+- Retrieval was reviewed and deliberately left unchanged: `retrieveRound` already fetches candidate documents concurrently through `Promise.all`, so there is no sequential per-document round trip to remove. Assistant tool execution also remains strictly ordered, because evidence order, clarification handling, and Matter authorization depend on it.
+- No planning, retrieval, tool, drafting, citation, persistence, API, authentication, database, schema, migration, or dependency behavior changed.
+- Verification: `npm run lint` passed, `npm run build` passed, and the suite passed 472/473 with the same pre-existing CRLF-related failure.

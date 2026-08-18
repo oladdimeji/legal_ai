@@ -3134,7 +3134,9 @@ ${sourceText}`;
         planningRounds: orchestration.planningRounds,
         account: (req as AuthenticatedRequest).auth!,
         ownership: requestOwnership,
-        generateSuggestions: generateFollowUpSuggestions,
+        // Voice speaks the answer and never renders follow-up pills, so the
+        // suggestion model call would only add latency to a spoken reply.
+        generateSuggestions: async () => [],
       });
       if (completion.clarificationQuestion) {
         return res.json({
