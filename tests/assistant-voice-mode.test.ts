@@ -107,11 +107,11 @@ test("Voice capability metadata waits through contentless completion but remains
   const capabilityTurnBoundary = 9;
   let currentTurnBoundary = capabilityTurnBoundary;
 
-  assert.equal(shouldAdvanceVoiceTurnBoundary("turnComplete", "", true), false);
+  assert.equal(shouldAdvanceVoiceTurnBoundary("turnComplete", true), false);
   assert.equal(currentTurnBoundary, capabilityTurnBoundary);
   assert.equal(capabilityTurnBoundary === currentTurnBoundary, true);
 
-  assert.equal(shouldAdvanceVoiceTurnBoundary("interrupted", "", true), true);
+  assert.equal(shouldAdvanceVoiceTurnBoundary("interrupted", true), true);
   currentTurnBoundary += 1;
   assert.equal(capabilityTurnBoundary === currentTurnBoundary, false);
 
@@ -120,6 +120,21 @@ test("Voice capability metadata waits through contentless completion but remains
   assert.match(completion, /shouldAdvanceVoiceTurnBoundary/);
   assert.match(completion, /finalizeTranscripts\("turnComplete", false\)/);
   assert.match(hook, /pausedAssistantCapabilityTurnRef\.current === turnBoundaryRef\.current[\s\S]*pendingCapabilityMetadataRef\.current = null[\s\S]*turnBoundaryRef\.current \+= 1/);
+});
+
+test("a completed turn cannot retire an Assistant capability boundary while its call is still running", async () => {
+  const hook = await readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8");
+
+  // The model routinely speaks a short filler line before the deliverable arrives.
+  // Treating that as a finished turn orphaned the capability metadata, so the
+  // returned document never reached the saved assistant message as a card.
+  assert.equal(shouldAdvanceVoiceTurnBoundary("turnComplete", true), false);
+  assert.equal(shouldAdvanceVoiceTurnBoundary("turnComplete", false), true);
+  assert.equal(shouldAdvanceVoiceTurnBoundary("interrupted", true), true);
+  assert.equal(shouldAdvanceVoiceTurnBoundary("interrupted", false), true);
+
+  assert.match(hook, /shouldAdvanceVoiceTurnBoundary\(\s*"turnComplete",\s*hasInFlightAssistantCapability\s*\)/);
+  assert.doesNotMatch(hook, /shouldAdvanceVoiceTurnBoundary\([^)]*transcriptRef/);
 });
 
 test("Voice acknowledgement is cached, isolated, fail-open, prefetched, and cleaned up with shared playback", async () => {

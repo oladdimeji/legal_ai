@@ -138,12 +138,18 @@ export function shouldPlayVoiceAcknowledgement(
   return functionName === "use_assistant_capabilities" && acknowledgedTurn !== turnBoundary;
 }
 
+/**
+ * A completed turn must not retire the boundary that an Assistant capability call
+ * was issued against while that call is still running, otherwise the deliverable it
+ * returns is attributed to a turn that no longer exists and its document card is
+ * dropped. The model frequently speaks a short filler line before the result
+ * arrives, so having spoken is not evidence that the turn is finished.
+ */
 export function shouldAdvanceVoiceTurnBoundary(
   boundary: "turnComplete" | "interrupted",
-  assistantTranscript: string,
   hasInFlightAssistantCapability: boolean
 ): boolean {
-  return boundary === "interrupted" || assistantTranscript.trim().length > 0 || !hasInFlightAssistantCapability;
+  return boundary === "interrupted" || !hasInFlightAssistantCapability;
 }
 
 export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
@@ -539,7 +545,6 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       const hasInFlightAssistantCapability = (inFlightAssistantCapabilityTurnsRef.current.get(turnBoundaryRef.current) || 0) > 0;
       const shouldAdvanceTurnBoundary = shouldAdvanceVoiceTurnBoundary(
         "turnComplete",
-        transcriptRef.current.assistant,
         hasInFlightAssistantCapability
       );
       if (shouldAdvanceTurnBoundary) {

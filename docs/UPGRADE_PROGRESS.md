@@ -2023,3 +2023,12 @@ Status: Implementation complete; focused-phase verification recorded below.
 - Added tests covering the retried empty generation and the exhausted case. No API contract, authentication, ownership scoping, schema, migration, or dependency change was made.
 - Repaired the long-standing `assistant-voice-mode.test.ts` activity-panel failure. The test slices `AssistantView.tsx` using an LF-only string literal, so it matched nothing on a CRLF checkout and blocked `npm run verify` from reaching the build step. The source is now normalized before slicing; every assertion is unchanged.
 - Verification: `npm run verify` passed end to end for the first time, with `npm run lint`, 474/474 tests, and `npm run build` all green.
+
+### Voice deliverables always carry their document card
+
+- Fixed the intermittent loss of the document card on Voice replies that create or revise a document. Capability metadata is keyed to the turn boundary the call was issued against, but `shouldAdvanceVoiceTurnBoundary` treated any spoken assistant text as proof the turn had finished. The model routinely speaks a short filler line before the deliverable arrives, so that completed turn retired the boundary while the call was still running. When the call returned, its turn no longer matched, the metadata was discarded, and the answer was saved with no document reference.
+- A completed turn now never retires a boundary that still has an Assistant capability call in flight, regardless of whether the model has spoken. The turn is held exactly as it already was for the silent case, the returned metadata lands on the boundary that requested it, and the assistant message reporting the result carries its document card.
+- This is why the failure looked random: a Voice reply where the model waited silently always produced a card, and one where it spoke first never did. The typed Assistant was never affected because it attaches metadata directly to the message it saves.
+- The unused transcript parameter was removed from `shouldAdvanceVoiceTurnBoundary` rather than left in place, since having spoken is explicitly not evidence that a turn is complete.
+- The filler line is still saved as an ordinary spoken message, the existing pause, interruption, stale-metadata, ownership-validation, and idempotent persistence behavior is unchanged, and no server route, schema, or dependency changed.
+- Verification: `npm run verify` passed with `npm run lint`, 477/477 tests, and `npm run build`.
