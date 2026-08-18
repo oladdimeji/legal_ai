@@ -624,7 +624,6 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       const silentGain = context.createGain();
       silentGain.gain.value = 0;
       microphoneSource.connect(microphoneAnalyser);
-      microphoneSource.connect(capture.node);
       capture.node.connect(silentGain);
       silentGain.connect(context.destination);
       microphoneSourceRef.current = microphoneSource;
@@ -674,6 +673,9 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
         };
         releaseCaptureRef.current = () => { capture.node.onaudioprocess = null; };
       }
+      // Connected only once a handler is listening. A worklet port queues everything
+      // posted before that, which would flush pre-session audio into speech detection.
+      microphoneSource.connect(capture.node);
       beginAmplitudeUpdates();
       updateState("listening");
     } catch (startError) {

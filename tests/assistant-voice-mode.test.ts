@@ -469,7 +469,9 @@ test("Voice function HTTP work exposes a ref-counted working state without chang
 });
 
 test("Voice working state drives the existing Assistant activity panel through an independent visual timer", async () => {
-  const assistant = await readFile(new URL("../src/components/AssistantView.tsx", import.meta.url), "utf8");
+  // Sliced with an LF literal below, so a CRLF checkout must be normalized first.
+  const assistant = (await readFile(new URL("../src/components/AssistantView.tsx", import.meta.url), "utf8"))
+    .replace(/\r\n/g, "\n");
   const voiceEffectStart = assistant.indexOf("  useEffect(() => {\n    if (!voiceMode.working)");
   const voiceEffectEnd = assistant.indexOf(
     "  }, [voiceMode.working, voiceWorkingStageIndex]);",
