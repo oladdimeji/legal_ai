@@ -149,12 +149,18 @@ export async function createAssistantDeliverable(input: {
     webResearchPerformed: input.webResearch.performed,
     depth: input.plan.depth,
   });
-  const result = await model("draft-generation", [{ role: "user", content: prompt }], {
-    googleSearch: false,
-    thinkingLevel: input.plan.depth === "thorough" ? "high" : "medium",
-    systemInstruction: LAWYER_ASSISTANT_CHARTER,
-  });
-  const content = cleanGeneratedWorkProductContent(result.text);
+  const generateDocumentContent = async () => {
+    const result = await model("draft-generation", [{ role: "user", content: prompt }], {
+      googleSearch: false,
+      thinkingLevel: input.plan.depth === "thorough" ? "high" : "medium",
+      systemInstruction: LAWYER_ASSISTANT_CHARTER,
+    });
+    return cleanGeneratedWorkProductContent(result.text);
+  };
+  // A thinking model can occasionally return a successful response that carries no
+  // text. That is not a provider error, so the transient retry runner never covers
+  // it, and the request would fail even though repeating it normally succeeds.
+  const content = (await generateDocumentContent()) || (await generateDocumentContent());
   if (!content) throw new Error("The model did not return document content");
   const generatedTitle = titleForAssistantDraft(content, input.instruction, input.thread.title);
 

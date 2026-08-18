@@ -3618,7 +3618,7 @@ class DatabaseService {
     if (!caseId) throw new Error("A Matter is required before saving Work Product");
     await this.assertMatterAccess(caseId, context);
     await this.assertThreadMatterAccess(threadId, context);
-    const draftId = `draft_${Date.now()}`;
+    const draftId = `draft_${randomUUID()}`;
     const createdAt = new Date().toISOString();
 
     const inserted = await this.query(

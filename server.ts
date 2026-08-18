@@ -3040,7 +3040,7 @@ ${sourceText}`;
       if (error instanceof VoicePageContextError) {
         return res.status(error.status).json({ error: error.message });
       }
-      console.error("Voice workspace lookup failed.");
+      console.error("Voice workspace lookup failed.", error);
       return res.status(500).json({ error: "The authorized workspace lookup failed." });
     }
   });
@@ -3160,7 +3160,7 @@ ${sourceText}`;
       if (error instanceof VoicePageContextError) {
         return res.status(error.status).json({ error: error.message });
       }
-      console.error("Voice Assistant capability request failed.");
+      console.error("Voice Assistant capability request failed.", error);
       return res.status(500).json({ error: "The Assistant capability request failed." });
     }
   });

@@ -90,6 +90,40 @@ test("document creation uses the canonical drafting prompt and saves to the curr
   assert.match(prompt, /export-safe|Grounded public research|canonical/i);
 });
 
+test("a successful but empty generation is retried once instead of failing the request", async () => {
+  const responses = ["   ", "# Privacy Policy\n\n## Scope\nThis policy applies."];
+  let attempts = 0;
+  const result = await createAssistantDeliverable({
+    plan: documentPlan(), thread, currentMatter: null, conversationState: emptyState,
+    evidence: [], webResearch: noWeb, ownership, account,
+    instruction: "Create a policy.",
+    pageContext: { routeKind: "history", pageTitle: "Assistant" }, conversationContext: "",
+    database: {
+      createAssistantDocument: async () => ({ id: "assistant_document_new", title: "Privacy Policy" }),
+    } as any,
+    model: (async () => {
+      attempts += 1;
+      return { text: responses[attempts - 1] };
+    }) as any,
+  });
+  assert.equal(attempts, 2);
+  assert.equal(result.document.kind, "assistantDocument");
+
+  let exhausted = 0;
+  await assert.rejects(createAssistantDeliverable({
+    plan: documentPlan(), thread, currentMatter: null, conversationState: emptyState,
+    evidence: [], webResearch: noWeb, ownership, account,
+    instruction: "Create a policy.",
+    pageContext: { routeKind: "history", pageTitle: "Assistant" }, conversationContext: "",
+    database: { createAssistantDocument: async () => ({ id: "unused", title: "Unused" }) } as any,
+    model: (async () => {
+      exhausted += 1;
+      return { text: "" };
+    }) as any,
+  }), /did not return document content/);
+  assert.equal(exhausted, 2);
+});
+
 test("general document creation remains a private user-owned Assistant Document", async () => {
   let created = false;
   const result = await createAssistantDeliverable({
