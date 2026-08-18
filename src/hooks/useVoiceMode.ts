@@ -179,6 +179,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   const inFlightAssistantCapabilityTurnsRef = useRef(new Map<number, number>());
   const pausedAssistantCapabilityTurnRef = useRef<number | null>(null);
   const turnBoundaryRef = useRef(0);
+  const awaitingOpeningTurnRef = useRef(false);
   const acknowledgedTurnRef = useRef<number | null>(null);
   const acknowledgementAudioRef = useRef<VoiceAcknowledgementAudio | null>(null);
   const acknowledgementRequestRef = useRef<Promise<VoiceAcknowledgementAudio | null> | null>(null);
@@ -283,6 +284,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     pendingCapabilityMetadataRef.current = null;
     inFlightAssistantCapabilityTurnsRef.current.clear();
     pausedAssistantCapabilityTurnRef.current = null;
+    awaitingOpeningTurnRef.current = false;
     acknowledgedTurnRef.current = null;
     acknowledgementAudioRef.current = null;
     acknowledgementRequestRef.current = null;
@@ -498,6 +500,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     const content = message.serverContent;
     if (!content) return;
     if (content.interrupted) {
+      awaitingOpeningTurnRef.current = false;
       clearWorking();
       stopPlayback();
       updateState("listening");
@@ -509,6 +512,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       }
     }
     if (content.inputTranscription?.text) {
+      awaitingOpeningTurnRef.current = false;
       if (pausedAssistantCapabilityTurnRef.current === turnBoundaryRef.current) {
         pendingCapabilityMetadataRef.current = null;
         pausedAssistantCapabilityTurnRef.current = null;
@@ -520,7 +524,9 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       );
       scheduleTranscriptFlush();
     }
-    if (content.outputTranscription?.text) {
+    // The spoken opening line is a welcome, not part of the conversation, so it is
+    // heard but never accumulated into a transcript and never saved to the thread.
+    if (content.outputTranscription?.text && !awaitingOpeningTurnRef.current) {
       transcriptRef.current.assistant = mergeTranscriptChunk(
         transcriptRef.current.assistant,
         content.outputTranscription.text
@@ -529,6 +535,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     }
     if (content.interrupted) finalizeTranscripts("interrupted");
     if (content.turnComplete) {
+      awaitingOpeningTurnRef.current = false;
       const hasInFlightAssistantCapability = (inFlightAssistantCapabilityTurnsRef.current.get(turnBoundaryRef.current) || 0) > 0;
       const shouldAdvanceTurnBoundary = shouldAdvanceVoiceTurnBoundary(
         "turnComplete",
@@ -577,6 +584,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     sessionIdRef.current = voiceSessionId();
     eventSequenceRef.current = { user: 0, assistant: 0 };
     transcriptRef.current = { user: "", assistant: "" };
+    awaitingOpeningTurnRef.current = true;
     setLiveTranscripts({ user: "", assistant: "" });
     try {
       if (!navigator.mediaDevices?.getUserMedia) throw new Error("A microphone is not available in this browser.");

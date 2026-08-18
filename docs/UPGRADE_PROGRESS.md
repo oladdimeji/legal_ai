@@ -1994,3 +1994,12 @@ Status: Implementation complete; focused-phase verification recorded below.
 - Capture handlers are detached explicitly on release alongside the existing node disconnection, microphone track stop, session close, and context close.
 - No Live model, tool, acknowledgement, transcript persistence, API, backend, authentication, database, schema, migration, or dependency behavior changed.
 - Verification: `npm run lint` passed, `npm run build` passed, and the suite passed 471/472 with the same pre-existing CRLF-related failure.
+
+### Voice Mode opening line
+
+- Added the missing opening-line instruction to `VOICE_MODE_SYSTEM_INSTRUCTION`. The session previously asked the model to speak first with no guidance on what to say, immediately after a large authorized-context turn and a system instruction dominated by capability boundaries, so it improvised by describing what it could and could not do. It now opens with one short spoken welcome and is explicitly told not to describe, summarize, or enumerate its capabilities, the workspace context, the current page, or a previous conversation.
+- The spoken opening line is no longer written to the conversation. `useVoiceMode` arms an opening-turn flag when a session starts and skips accumulating assistant output transcription while it is set, so the welcome is heard but never becomes a live bubble or a saved thread message. Audio playback, interruption, and barge-in are unchanged.
+- The flag clears as soon as the user speaks, on interruption, or when the opening turn completes, so a user who speaks first gets a direct answer and every later assistant turn is transcribed and saved exactly as before. An interrupted opening line no longer leaves a truncated fragment in the thread.
+- `finalizeVoiceTranscripts` is unchanged, so the existing turn-boundary, idempotent persistence, capability metadata, and first-user-message conversation-title behavior all remain intact.
+- Added a focused test covering the opening-line instruction and the client-side suppression. No API, backend route, authentication, database, schema, migration, or dependency behavior changed.
+- Verification: `npm run lint` passed, `npm run build` passed, and the suite passed 472/473 with the same pre-existing CRLF-related failure.

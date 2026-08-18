@@ -66,6 +66,22 @@ test("Gemini Live configuration is centralized for native audio, transcription, 
   assert.doesNotMatch(String(config.systemInstruction), /you may give one short, natural acknowledgement/i);
 });
 
+test("the spoken opening line welcomes without describing capabilities and never reaches the conversation", async () => {
+  const hook = await readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8");
+  const instruction = String(liveConnectConfig().systemInstruction);
+
+  assert.match(instruction, /open with a single short, warm spoken line that simply welcomes the user/);
+  assert.match(instruction, /Do not describe, summarize, or enumerate your capabilities/);
+  assert.match(instruction, /If the user speaks first, answer the user instead and skip the opening line entirely/);
+
+  assert.match(hook, /const awaitingOpeningTurnRef = useRef\(false\)/);
+  assert.match(hook, /awaitingOpeningTurnRef\.current = true/);
+  assert.match(hook, /content\.outputTranscription\?\.text && !awaitingOpeningTurnRef\.current/);
+  assert.match(hook, /content\.inputTranscription\?\.text\) \{\s*awaitingOpeningTurnRef\.current = false/);
+  assert.match(hook, /content\.interrupted\) \{\s*awaitingOpeningTurnRef\.current = false/);
+  assert.match(hook, /content\.turnComplete\) \{\s*awaitingOpeningTurnRef\.current = false/);
+});
+
 test("Voice acknowledgement TTS reuses the configured Voice Agent identity and fixed phrase", () => {
   const request = voiceAcknowledgementRequest();
   assert.equal(VOICE_MODE_ACKNOWLEDGEMENT.text, "Absolutely — give me a moment, I’m working on that now.");
