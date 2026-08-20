@@ -243,20 +243,34 @@ export default function AssistantView({
   useEffect(() => {
     voiceMode.updatePageContext(pageContext);
   }, [pageContext, voiceMode.updatePageContext]);
-  const liveTranscriptMessages: Message[] = useMemo(() => (["user", "assistant"] as const).flatMap((role) => {
-    const content = voiceMode.liveTranscripts[role].trim();
-    if (!content) return [];
-    return [{
-      id: `voice-live-${role}`,
+  const liveTranscriptMessages: Message[] = useMemo(() => {
+    const roles: Array<"user" | "assistant"> = voiceMode.liveDeliverable ? ["user"] : ["user", "assistant"];
+    const liveMessages = roles.flatMap((role) => {
+      const content = voiceMode.liveTranscripts[role].trim();
+      if (!content) return [];
+      return [{
+        id: `voice-live-${role}`,
+        thread_id: activeThreadIdRef.current || "voice-live",
+        role,
+        content,
+        citations: [],
+        steps: null,
+        created_at: new Date().toISOString(),
+        metadata: { liveVoiceTranscript: true },
+      }];
+    });
+    if (!voiceMode.liveDeliverable) return liveMessages;
+    return [...liveMessages, {
+      id: "voice-live-deliverable",
       thread_id: activeThreadIdRef.current || "voice-live",
-      role,
-      content,
+      role: "assistant" as const,
+      content: voiceMode.liveDeliverable.content,
       citations: [],
       steps: null,
       created_at: new Date().toISOString(),
-      metadata: { liveVoiceTranscript: true },
+      metadata: { liveVoiceTranscript: true, ...voiceMode.liveDeliverable.metadata },
     }];
-  }), [voiceMode.liveTranscripts]);
+  }, [voiceMode.liveDeliverable, voiceMode.liveTranscripts]);
   const displayMessages = [...messages, ...liveTranscriptMessages];
 
   // New docked side editor state declarations
@@ -416,7 +430,7 @@ export default function AssistantView({
   // instantly instead of restarting a smooth scroll animation on every chunk.
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: voiceMode.active ? "auto" : "smooth" });
-  }, [messages, voiceMode.liveTranscripts, loading, workingStageIndex, voiceMode.working, voiceWorkingStageIndex]);
+  }, [messages, voiceMode.liveTranscripts, voiceMode.liveDeliverable, loading, workingStageIndex, voiceMode.working, voiceWorkingStageIndex]);
 
   useEffect(() => {
     if (

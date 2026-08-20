@@ -107,6 +107,37 @@ export type CompletedVoiceTranscript = {
   content: string;
 };
 
+export type VoiceLiveDeliverable = {
+  content: string;
+  metadata: VoiceCapabilityMetadata;
+};
+
+const VOICE_DOCUMENT_DELIVERABLE = String.raw`document|email|letter|memo|memorandum|agreement|contract|policy|brief|report|notice|checklist|nda|non-disclosure`;
+const VOICE_DOCUMENT_CREATE = new RegExp(
+  String.raw`\b(?:draft|prepare|write|compose|create|generate|produce|make)\b[\s\S]{0,120}\b(?:${VOICE_DOCUMENT_DELIVERABLE})\b`
+);
+const VOICE_DOCUMENT_CONVERT = new RegExp(
+  String.raw`\b(?:turn into|turn to|convert into|convert to|return as|provide as|put into|format as|save as)\b[\s\S]{0,100}\b(?:${VOICE_DOCUMENT_DELIVERABLE})\b`
+);
+const VOICE_DOCUMENT_REVISE = new RegExp(
+  String.raw`\b(?:revise|rewrite|update|amend|shorten|expand)\b[\s\S]{0,120}\b(?:it|that|document|draft|memo|letter|agreement|contract|report|policy|brief|email)\b`
+);
+
+export function looksLikeVoiceDocumentRequest(content: string): boolean {
+  const text = content.toLocaleLowerCase().replace(/[’]/g, "'").replace(/\s+/g, " ").trim();
+  if (!text) return false;
+  if (/\b(?:do not create a document|don't create a document|chat only|without creating a document|without saving)\b/.test(text)) {
+    return false;
+  }
+  if (/^(?:how (?:should|do|can|would) i|what is the (?:best )?way to)\b/.test(text)) return false;
+  if (/^(?:what should (?:the |an )?(?:email|letter|memo|memorandum|report) say)\b/.test(text)) return false;
+  return VOICE_DOCUMENT_CREATE.test(text) || VOICE_DOCUMENT_CONVERT.test(text) || VOICE_DOCUMENT_REVISE.test(text);
+}
+
+export function voiceAssistantInstruction(userTranscript: string, functionRequest: string): string {
+  return userTranscript.trim() || functionRequest.trim();
+}
+
 export function finalizeVoiceTranscripts(
   transcripts: LiveVoiceTranscripts,
   boundary: "turnComplete" | "interrupted"
@@ -172,6 +203,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   const [error, setError] = useState("");
   const [working, setWorking] = useState(false);
   const [liveTranscripts, setLiveTranscripts] = useState<LiveVoiceTranscripts>({ user: "", assistant: "" });
+  const [liveDeliverable, setLiveDeliverable] = useState<VoiceLiveDeliverable | null>(null);
   const stateRef = useRef<VoiceModeState>("off");
   const lifecycleRef = useRef(0);
   const sessionThreadRef = useRef<string | null>(null);
@@ -208,6 +240,13 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   const acknowledgedTurnRef = useRef<number | null>(null);
   const acknowledgementAudioRef = useRef<VoiceAcknowledgementAudio | null>(null);
   const acknowledgementRequestRef = useRef<Promise<VoiceAcknowledgementAudio | null> | null>(null);
+  const assistantCapabilityPromisesRef = useRef(new Map<number, Promise<{
+    ok: boolean;
+    result: string;
+    capabilityMetadata: VoiceCapabilityMetadata | null;
+    error?: string;
+  }>>());
+  const liveDeliverableRef = useRef<VoiceLiveDeliverable | null>(null);
   const onTranscriptRef = useRef(onTranscript);
   onTranscriptRef.current = onTranscript;
 
@@ -325,6 +364,9 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     pendingCapabilityMetadataRef.current = null;
     inFlightAssistantCapabilityTurnsRef.current.clear();
     pausedAssistantCapabilityTurnRef.current = null;
+    assistantCapabilityPromisesRef.current.clear();
+    liveDeliverableRef.current = null;
+    setLiveDeliverable(null);
     awaitingOpeningTurnRef.current = false;
     acknowledgedTurnRef.current = null;
     acknowledgementAudioRef.current = null;
@@ -360,6 +402,10 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       const data = await response.json().catch(() => ({})) as Message & { error?: string };
       if (!response.ok) throw new Error(data.error || "This Voice Mode transcript could not be saved.");
       onTranscriptRef.current(data);
+      if (capabilityMetadata?.document) {
+        liveDeliverableRef.current = null;
+        setLiveDeliverable(null);
+      }
       setLiveTranscripts((current) => current[role].trim() === normalized
         ? { ...current, [role]: "" }
         : current);
@@ -381,12 +427,19 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     const { completed, remaining } = finalizeVoiceTranscripts(pending, boundary);
     transcriptRef.current = remaining;
     const capabilityMetadata = boundary === "turnComplete" ? pendingCapabilityMetadataRef.current : null;
+    const completedTranscripts = boundary === "turnComplete"
+      && capabilityMetadata
+      && !completed.some((transcript) => transcript.role === "assistant")
+      && liveDeliverableRef.current?.content
+      ? [...completed, { role: "assistant" as const, content: liveDeliverableRef.current.content }]
+      : completed;
     if (advanceTurnBoundary) {
+      assistantCapabilityPromisesRef.current.delete(turnBoundaryRef.current);
       pendingCapabilityMetadataRef.current = null;
       pausedAssistantCapabilityTurnRef.current = null;
       turnBoundaryRef.current += 1;
     }
-    for (const transcript of completed) {
+    for (const transcript of completedTranscripts) {
       persistFinalTranscript(
         transcript.role,
         transcript.content,
@@ -459,15 +512,115 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   }, []);
 
   const handleServerMessage = useCallback((message: LiveServerMessage) => {
+    const threadId = sessionThreadRef.current;
+    const pageContext = pageContextRef.current;
+    const session = sessionRef.current;
+
+    const playAcknowledgement = (turnBoundary: number) => {
+      if (!shouldPlayVoiceAcknowledgement("use_assistant_capabilities", turnBoundary, acknowledgedTurnRef.current)) return;
+      acknowledgedTurnRef.current = turnBoundary;
+      const acknowledgementAudio = acknowledgementAudioRef.current;
+      if (acknowledgementAudio) {
+        scheduleAudio(acknowledgementAudio.data, acknowledgementAudio.mimeType);
+        return;
+      }
+      if (!threadId) return;
+      const acknowledgementLifecycle = lifecycleRef.current;
+      void prefetchAcknowledgement(threadId, acknowledgementLifecycle).then((audio) => {
+        if (
+          audio
+          && acknowledgementLifecycle === lifecycleRef.current
+          && turnBoundary === turnBoundaryRef.current
+          && acknowledgedTurnRef.current === turnBoundary
+        ) {
+          scheduleAudio(audio.data, audio.mimeType);
+        }
+      });
+    };
+
+    const ensureAssistantCapability = (request: string, turnBoundary: number) => {
+      const existing = assistantCapabilityPromisesRef.current.get(turnBoundary);
+      if (existing) return existing;
+      if (!threadId || !pageContext || !request) {
+        return Promise.resolve({
+          ok: false,
+          result: "",
+          capabilityMetadata: null as VoiceCapabilityMetadata | null,
+          error: "The Assistant capability request failed.",
+        });
+      }
+      playAcknowledgement(turnBoundary);
+      const workingCallId = `voice_assistant_${turnBoundary}`;
+      workingCallIdsRef.current.add(workingCallId);
+      const inFlightCount = inFlightAssistantCapabilityTurnsRef.current.get(turnBoundary) || 0;
+      inFlightAssistantCapabilityTurnsRef.current.set(turnBoundary, inFlightCount + 1);
+      setWorking(true);
+      const promise = (async () => {
+        try {
+          const response = await fetch(`/api/threads/${encodeURIComponent(threadId)}/voice/assistant`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ request, pageContext }),
+          });
+          const data = await response.json().catch(() => ({})) as {
+            result?: string;
+            capabilityMetadata?: VoiceCapabilityMetadata;
+            error?: string;
+          };
+          if (response.ok && turnBoundary === turnBoundaryRef.current) {
+            pendingCapabilityMetadataRef.current = data.capabilityMetadata || null;
+            if (data.capabilityMetadata?.document) {
+              const deliverable = {
+                content: data.result || "",
+                metadata: data.capabilityMetadata,
+              };
+              liveDeliverableRef.current = deliverable;
+              setLiveDeliverable(deliverable);
+            }
+          }
+          return {
+            ok: response.ok,
+            result: data.result || "",
+            capabilityMetadata: data.capabilityMetadata || null,
+            error: data.error,
+          };
+        } catch {
+          if (turnBoundary === turnBoundaryRef.current) pendingCapabilityMetadataRef.current = null;
+          return {
+            ok: false,
+            result: "",
+            capabilityMetadata: null,
+            error: "The Assistant capability request failed.",
+          };
+        } finally {
+          workingCallIdsRef.current.delete(workingCallId);
+          const currentCount = inFlightAssistantCapabilityTurnsRef.current.get(turnBoundary) || 0;
+          if (currentCount <= 1) inFlightAssistantCapabilityTurnsRef.current.delete(turnBoundary);
+          else inFlightAssistantCapabilityTurnsRef.current.set(turnBoundary, currentCount - 1);
+          setWorking(workingCallIdsRef.current.size > 0);
+        }
+      })();
+      assistantCapabilityPromisesRef.current.set(turnBoundary, promise);
+      return promise;
+    };
+
+    const maybeStartVoiceDocumentCapability = () => {
+      if (awaitingOpeningTurnRef.current) return;
+      const userTranscript = transcriptRef.current.user.trim();
+      if (!looksLikeVoiceDocumentRequest(userTranscript)) return;
+      void ensureAssistantCapability(userTranscript, turnBoundaryRef.current);
+    };
+
     if (message.toolCall?.functionCalls?.length) {
-      const threadId = sessionThreadRef.current;
-      const pageContext = pageContextRef.current;
-      const session = sessionRef.current;
+      maybeStartVoiceDocumentCapability();
       if (threadId && pageContext && session) {
         void Promise.all(message.toolCall.functionCalls.map(async (call, callIndex) => {
           const isAssistantCapability = call.name === "use_assistant_capabilities";
           const request = isAssistantCapability
-            ? (typeof call.args?.request === "string" ? call.args.request.trim() : "")
+            ? voiceAssistantInstruction(
+                transcriptRef.current.user,
+                typeof call.args?.request === "string" ? call.args.request : ""
+              )
             : (typeof call.args?.query === "string" ? call.args.query.trim() : "");
           const turnBoundary = turnBoundaryRef.current;
           if (shouldPlayVoiceAcknowledgement(call.name, turnBoundary, acknowledgedTurnRef.current)) {
@@ -489,63 +642,54 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
               });
             }
           }
+          if (isAssistantCapability) {
+            const capability = await ensureAssistantCapability(request, turnBoundary);
+            session.sendToolResponse({
+              functionResponses: [{
+                id: call.id,
+                name: call.name || "lookup_workspace",
+                response: capability.ok
+                  ? { output: capability.result || "No authorized result was found." }
+                  : { error: capability.error || "The Assistant capability request failed." },
+              }],
+            });
+            return;
+          }
           const workingCallId = call.id || `${call.name || "lookup_workspace"}_${Date.now()}_${callIndex}`;
           workingCallIdsRef.current.add(workingCallId);
-          if (isAssistantCapability) {
-            const inFlightCount = inFlightAssistantCapabilityTurnsRef.current.get(turnBoundary) || 0;
-            inFlightAssistantCapabilityTurnsRef.current.set(turnBoundary, inFlightCount + 1);
-          }
           setWorking(true);
           try {
-            const response = await fetch(`/api/threads/${encodeURIComponent(threadId)}/voice/${isAssistantCapability ? "assistant" : "lookup"}`, {
+            const response = await fetch(`/api/threads/${encodeURIComponent(threadId)}/voice/lookup`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(isAssistantCapability
-                ? { request, pageContext }
-                : {
-                    query: request,
-                    pageContext,
-                    ...(typeof call.args?.firmLibraryDocumentTitle === "string"
-                      ? { firmLibraryDocumentTitle: call.args.firmLibraryDocumentTitle.trim() }
-                      : {}),
-                  }),
+              body: JSON.stringify({
+                query: request,
+                pageContext,
+                ...(typeof call.args?.firmLibraryDocumentTitle === "string"
+                  ? { firmLibraryDocumentTitle: call.args.firmLibraryDocumentTitle.trim() }
+                  : {}),
+              }),
             });
-            const data = await response.json().catch(() => ({})) as {
-              evidence?: string;
-              result?: string;
-              capabilityMetadata?: VoiceCapabilityMetadata;
-              error?: string;
-            };
-            if (isAssistantCapability && response.ok && turnBoundary === turnBoundaryRef.current) {
-              pendingCapabilityMetadataRef.current = data.capabilityMetadata || null;
-            }
+            const data = await response.json().catch(() => ({})) as { evidence?: string; error?: string };
             session.sendToolResponse({
               functionResponses: [{
                 id: call.id,
                 name: call.name || "lookup_workspace",
                 response: response.ok
-                  ? { output: (isAssistantCapability ? data.result : data.evidence) || "No authorized result was found." }
-                  : { error: data.error || (isAssistantCapability ? "The Assistant capability request failed." : "The authorized workspace lookup failed.") },
+                  ? { output: data.evidence || "No authorized result was found." }
+                  : { error: data.error || "The authorized workspace lookup failed." },
               }],
             });
           } catch {
-            if (isAssistantCapability && turnBoundary === turnBoundaryRef.current) {
-              pendingCapabilityMetadataRef.current = null;
-            }
             session.sendToolResponse({
               functionResponses: [{
                 id: call.id,
                 name: call.name || "lookup_workspace",
-                response: { error: isAssistantCapability ? "The Assistant capability request failed." : "The authorized workspace lookup failed." },
+                response: { error: "The authorized workspace lookup failed." },
               }],
             });
           } finally {
             workingCallIdsRef.current.delete(workingCallId);
-            if (isAssistantCapability) {
-              const inFlightCount = inFlightAssistantCapabilityTurnsRef.current.get(turnBoundary) || 0;
-              if (inFlightCount <= 1) inFlightAssistantCapabilityTurnsRef.current.delete(turnBoundary);
-              else inFlightAssistantCapabilityTurnsRef.current.set(turnBoundary, inFlightCount - 1);
-            }
             setWorking(workingCallIdsRef.current.size > 0);
           }
         }));
@@ -555,6 +699,8 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     if (!content) return;
     if (content.interrupted) {
       awaitingOpeningTurnRef.current = false;
+      liveDeliverableRef.current = null;
+      setLiveDeliverable(null);
       clearWorking();
       stopPlayback();
       updateState("listening");
@@ -563,6 +709,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       const inlineData = part.inlineData;
       if (inlineData?.data && inlineData.mimeType?.startsWith("audio/")) {
         scheduleAudio(inlineData.data, inlineData.mimeType);
+        maybeStartVoiceDocumentCapability();
       }
     }
     if (content.inputTranscription?.text) {
@@ -586,6 +733,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
         content.outputTranscription.text
       );
       scheduleTranscriptFlush();
+      maybeStartVoiceDocumentCapability();
     }
     if (content.interrupted) finalizeTranscripts("interrupted");
     if (content.turnComplete) {
@@ -638,6 +786,8 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     eventSequenceRef.current = { user: 0, assistant: 0 };
     transcriptRef.current = { user: "", assistant: "" };
     awaitingOpeningTurnRef.current = true;
+    liveDeliverableRef.current = null;
+    setLiveDeliverable(null);
     setLiveTranscripts({ user: "", assistant: "" });
     try {
       if (!navigator.mediaDevices?.getUserMedia) throw new Error("A microphone is not available in this browser.");
@@ -791,6 +941,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     voiceControlRef: attachVoiceControl,
     working,
     liveTranscripts,
+    liveDeliverable,
     active: state === "connecting" || state === "listening" || state === "speaking",
     start,
     stop,

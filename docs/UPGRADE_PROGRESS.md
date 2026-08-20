@@ -2050,3 +2050,12 @@ Status: Implementation complete; focused-phase verification recorded below.
 - The worklet module URL is kept until the session is released rather than revoked during `addModule`. Browsers without AudioWorklet still use the previous capture and BufferSource path, with a 320 ms lead.
 - Added tests for leftover-carrying downsampling and for the playback jitter-buffer wiring. No API, authentication, database, schema, migration, or dependency change was made.
 - Verification: `npm run verify` passed with `npm run lint`, 478/478 tests, and `npm run build`.
+
+### Voice document generation latency
+
+- Voice and typed drafting already shared the same Assistant planner, retrieval, and `createAssistantDeliverable` path. Voice was slower because Gemini Live sat in front of that path: it often spoke before calling `use_assistant_capabilities`, the spoken user instruction could be paraphrased, and the document card waited until Live finished speaking the result.
+- Spoken create/revise instructions now start that existing `/voice/assistant` pipeline as soon as Live begins responding, using the user's transcript rather than a Live paraphrase. The same in-flight request is reused if Live later calls the tool, so drafting is not duplicated.
+- The document card is shown as soon as the existing Assistant pipeline returns, instead of waiting for Live's spoken confirmation. Persistence, ownership validation, interruption, acknowledgement audio, lookup, microphone, playback, and typed Assistant behavior are unchanged.
+- Live is instructed to call `use_assistant_capabilities` immediately, before any spoken audio, and then give one short confirmation rather than reading the document aloud.
+- No schema, migration, dependency, drafting model, planner, or typed Assistant change was made.
+- Verification: `npm run lint` passed, all 479 tests passed, and `npm run build` passed with the existing non-fatal large-chunk warning.

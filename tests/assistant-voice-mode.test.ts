@@ -21,8 +21,10 @@ import {
 import {
   finalizeVoiceTranscripts,
   initializeLiveHistory,
+  looksLikeVoiceDocumentRequest,
   shouldPlayVoiceAcknowledgement,
   shouldAdvanceVoiceTurnBoundary,
+  voiceAssistantInstruction,
 } from "../src/hooks/useVoiceMode.js";
 
 function message(id: string, role: "user" | "assistant", content: string): Message {
@@ -62,6 +64,8 @@ test("Gemini Live configuration is centralized for native audio, transcription, 
   assert.match(String(config.systemInstruction), /Treat both functions as your own internal actions/);
   assert.match(String(config.systemInstruction), /report it as your own completed work in the first person/);
   assert.match(String(config.systemInstruction), /Never mention function names, tools, capabilities, delegation, or another Assistant/);
+  assert.match(String(config.systemInstruction), /call use_assistant_capabilities immediately as your first action in the turn, before producing any spoken audio/);
+  assert.match(String(config.systemInstruction), /Do not read the document aloud/);
   assert.doesNotMatch(String(config.systemInstruction), /Voice Mode is read-only|better handled in the standard Assistant/);
   assert.doesNotMatch(String(config.systemInstruction), /pretend|browser text-to-speech/i);
   assert.doesNotMatch(String(config.systemInstruction), /you may give one short, natural acknowledgement/i);
@@ -138,6 +142,34 @@ test("a completed turn cannot retire an Assistant capability boundary while its 
   assert.doesNotMatch(hook, /shouldAdvanceVoiceTurnBoundary\([^)]*transcriptRef/);
 });
 
+test("spoken document instructions start the Assistant draft path without waiting for Live to finish talking", async () => {
+  const [hook, assistant] = await Promise.all([
+    readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/components/AssistantView.tsx", import.meta.url), "utf8"),
+  ]);
+  const toolHandler = hook.slice(hook.indexOf("const handleServerMessage"), hook.indexOf("const beginAmplitudeUpdates"));
+
+  assert.equal(looksLikeVoiceDocumentRequest("Draft an NDA for the Acme engagement."), true);
+  assert.equal(looksLikeVoiceDocumentRequest("Please write a client advice letter."), true);
+  assert.equal(looksLikeVoiceDocumentRequest("Revise the agreement to add a termination clause."), true);
+  assert.equal(looksLikeVoiceDocumentRequest("How should I draft a memorandum?"), false);
+  assert.equal(looksLikeVoiceDocumentRequest("What is the limitation period?"), false);
+  assert.equal(voiceAssistantInstruction("Draft an NDA.", "Please create a document"), "Draft an NDA.");
+  assert.equal(voiceAssistantInstruction("  ", "Please create a document"), "Please create a document");
+
+  assert.match(toolHandler, /maybeStartVoiceDocumentCapability/);
+  assert.match(toolHandler, /looksLikeVoiceDocumentRequest\(userTranscript\)/);
+  assert.match(toolHandler, /voiceAssistantInstruction\(/);
+  assert.match(toolHandler, /assistantCapabilityPromisesRef\.current\.get\(turnBoundary\)/);
+  assert.match(toolHandler, /setLiveDeliverable\(deliverable\)/);
+  assert.match(toolHandler, /inlineData\.mimeType\?\.startsWith\("audio\/"\)[\s\S]*maybeStartVoiceDocumentCapability\(\)/);
+  assert.match(toolHandler, /outputTranscription\?\.text && !awaitingOpeningTurnRef\.current[\s\S]*maybeStartVoiceDocumentCapability\(\)/);
+  assert.match(hook, /liveDeliverable/);
+  assert.match(assistant, /voiceMode\.liveDeliverable/);
+  assert.match(assistant, /id: "voice-live-deliverable"/);
+  assert.doesNotMatch(toolHandler, /persistFinalTranscript|voice\/messages/);
+});
+
 test("Voice acknowledgement is cached, isolated, fail-open, prefetched, and cleaned up with shared playback", async () => {
   const [server, hook, voiceMode] = await Promise.all([
     readFile(new URL("../server.ts", import.meta.url), "utf8"),
@@ -165,7 +197,8 @@ test("Voice acknowledgement is cached, isolated, fail-open, prefetched, and clea
   const toolHandler = hook.slice(hook.indexOf("const handleServerMessage"), hook.indexOf("const beginAmplitudeUpdates"));
   assert.match(toolHandler, /shouldPlayVoiceAcknowledgement\(call\.name, turnBoundary, acknowledgedTurnRef\.current\)/);
   assert.ok(toolHandler.indexOf("scheduleAudio(acknowledgementAudio.data") < toolHandler.indexOf("await fetch("));
-  assert.match(toolHandler, /isAssistantCapability \? "assistant" : "lookup"/);
+  assert.match(toolHandler, /voice\/assistant/);
+  assert.match(toolHandler, /voice\/lookup/);
   assert.match(toolHandler, /session\.sendToolResponse/);
   assert.doesNotMatch(toolHandler, /session\.close|live\.connect|persistFinalTranscript|voice\/messages/);
 
@@ -191,7 +224,8 @@ test("Voice heavy calls keep the normal working lifecycle without any progress h
 
   assert.match(toolHandler, /workingCallIdsRef\.current\.add\(workingCallId\)/);
   assert.match(toolHandler, /finally \{[\s\S]*workingCallIdsRef\.current\.delete\(workingCallId\)/);
-  assert.match(toolHandler, /body: JSON\.stringify\(isAssistantCapability[\s\S]*\? \{ request, pageContext \}/);
+  assert.match(toolHandler, /JSON\.stringify\(\{ request, pageContext \}\)/);
+  assert.match(toolHandler, /voice\/lookup/);
   assert.match(toolHandler, /session\.sendToolResponse\(\{[\s\S]*functionResponses/);
   assert.match(toolHandler, /content\.interrupted[\s\S]*clearWorking\(\)/);
   assert.match(toolHandler, /content\.turnComplete[\s\S]*clearWorking\(\)/);
@@ -208,6 +242,7 @@ test("Live tool declarations expose named Firm Library lookup and keep routine r
   assert.ok(Object.hasOwn(lookup.parametersJsonSchema.properties, "firmLibraryDocumentTitle"));
   assert.match(lookup.description, /even when that document is not currently open/);
   assert.match(lookup.description, /routine direct document reading/);
+  assert.match(assistant.description, /Call it immediately before speaking when the user asks to create or revise a document/);
   assert.match(assistant.description, /Do not use it for a routine direct read/);
 });
 
@@ -492,7 +527,8 @@ test("Voice workspace lookup is narrow, read-only, and derives scope from valida
   assert.doesNotMatch(lookupRoute, /planAssistantRequest|completeAssistantResponse/);
   assert.doesNotMatch(server, /currentMatterId !== threadMatterId|Voice page context does not match this conversation/);
   assert.doesNotMatch(lookupRoute, /req\.body\.(?:matterId|documentId|scope)|needsWeb: true|\b(?:create|update|delete|share|send|invite)\w*\(/);
-  assert.match(hook, /isAssistantCapability \? "assistant" : "lookup"/);
+  assert.match(hook, /voice\/assistant/);
+  assert.match(hook, /voice\/lookup/);
   assert.match(hook, /session\.sendToolResponse/);
   assert.match(hook, /functionResponses:\s*\[\{/);
   assert.match(hook, /firmLibraryDocumentTitle: call\.args\.firmLibraryDocumentTitle\.trim\(\)/);
@@ -539,7 +575,7 @@ test("Voice working state drives the existing Assistant activity panel through a
   assert.doesNotMatch(voiceEffect, /setLoading|setStreaming|handleSend/);
   assert.match(assistant, /loading && !streaming \? \([\s\S]*activities=\{workingActivities\}[\s\S]*\) : voiceMode\.working \? \([\s\S]*activities=\{VOICE_WORKING_ACTIVITIES\}[\s\S]*\) : null/);
   assert.match(assistant, /function AssistantWorkingActivityPanel[\s\S]*role="status"[\s\S]*aria-live="polite"[\s\S]*visibleAssistantWorkingActivities\(activities, stageIndex\)/);
-  assert.match(assistant, /\[messages, voiceMode\.liveTranscripts, loading, workingStageIndex, voiceMode\.working, voiceWorkingStageIndex\]/);
+  assert.match(assistant, /\[messages, voiceMode\.liveTranscripts, voiceMode\.liveDeliverable, loading, workingStageIndex, voiceMode\.working, voiceWorkingStageIndex\]/);
   assert.match(assistant, /componentMountedRef\.current = false;[\s\S]*window\.clearTimeout\(voiceWorkingActivityTimerRef\.current\)/);
 });
 
@@ -568,7 +604,8 @@ test("Voice Assistant capability routing reuses the owned Assistant pipeline wit
 
   const toolHandler = hook.slice(hook.indexOf("const handleServerMessage"), hook.indexOf("const beginAmplitudeUpdates"));
   assert.match(toolHandler, /call\.name === "use_assistant_capabilities"/);
-  assert.match(toolHandler, /isAssistantCapability \? "assistant" : "lookup"/);
+  assert.match(toolHandler, /voice\/assistant/);
+  assert.match(toolHandler, /voice\/lookup/);
   assert.match(toolHandler, /session\.sendToolResponse/);
   assert.doesNotMatch(toolHandler, /session\.close|live\.connect|releaseResources/);
   assert.doesNotMatch(hook, /fetch\([^\n]*\/api\/threads\/[^\n]*\/messages[^\n]*\)[\s\S]*use_assistant_capabilities/);
