@@ -7,7 +7,8 @@ import {
   analyserLevel,
   audioSampleRate,
   base64Pcm16ToFloat32,
-  downsampleAudio,
+  base64Pcm16ToInt16,
+  createStreamingDownsampler,
   float32ToPcm16Base64,
   mergeTranscriptChunk,
   pcm16BufferToBase64,
@@ -18,10 +19,17 @@ import {
   VOICE_CAPTURE_TARGET_RATE,
   VOICE_CAPTURE_WORKLET_SOURCE,
 } from "../lib/voiceCaptureWorklet";
+import {
+  VOICE_PLAYBACK_DRAIN_SECONDS,
+  VOICE_PLAYBACK_PREBUFFER_SECONDS,
+  VOICE_PLAYBACK_PROCESSOR_NAME,
+  VOICE_PLAYBACK_WORKLET_SOURCE,
+} from "../lib/voicePlaybackWorklet";
 
-// Playback is scheduled this far ahead of the audio clock so that a delayed
-// websocket message or a busy main thread cannot open an audible gap mid-sentence.
-const VOICE_PLAYBACK_LEAD_SECONDS = 0.16;
+// Fallback-only lead used when AudioWorklet playback is unavailable. The worklet
+// path uses a ring buffer instead, so a late packet is silence rather than a
+// permanent hole in the timeline.
+const VOICE_PLAYBACK_LEAD_SECONDS = 0.32;
 
 // A drained queue only ends the speaking state once it stays drained, so a brief
 // scheduling gap no longer flips the presence state back and forth.
@@ -31,30 +39,37 @@ type VoiceCapture =
   | { kind: "worklet"; node: AudioWorkletNode }
   | { kind: "script"; node: ScriptProcessorNode };
 
-async function createVoiceCapture(context: AudioContext): Promise<VoiceCapture> {
-  if (context.audioWorklet) {
-    const moduleUrl = URL.createObjectURL(
-      new Blob([VOICE_CAPTURE_WORKLET_SOURCE], { type: "text/javascript" })
-    );
-    try {
-      await context.audioWorklet.addModule(moduleUrl);
-      return {
-        kind: "worklet",
-        node: new AudioWorkletNode(context, VOICE_CAPTURE_PROCESSOR_NAME, {
-          numberOfInputs: 1,
-          numberOfOutputs: 1,
-          outputChannelCount: [1],
-          processorOptions: {
-            targetRate: VOICE_CAPTURE_TARGET_RATE,
-            chunkSamples: VOICE_CAPTURE_CHUNK_SAMPLES,
-          },
-        }),
-      };
-    } catch {
-      // Browsers without a usable AudioWorklet keep the legacy capture path.
-    } finally {
-      URL.revokeObjectURL(moduleUrl);
-    }
+async function loadVoiceWorklets(context: AudioContext): Promise<string | null> {
+  if (!context.audioWorklet) return null;
+  const moduleUrl = URL.createObjectURL(
+    new Blob(
+      [`${VOICE_CAPTURE_WORKLET_SOURCE}\n${VOICE_PLAYBACK_WORKLET_SOURCE}`],
+      { type: "text/javascript" }
+    )
+  );
+  try {
+    await context.audioWorklet.addModule(moduleUrl);
+    return moduleUrl;
+  } catch {
+    URL.revokeObjectURL(moduleUrl);
+    return null;
+  }
+}
+
+function createVoiceCapture(context: AudioContext, workletsLoaded: boolean): VoiceCapture {
+  if (workletsLoaded) {
+    return {
+      kind: "worklet",
+      node: new AudioWorkletNode(context, VOICE_CAPTURE_PROCESSOR_NAME, {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+        processorOptions: {
+          targetRate: VOICE_CAPTURE_TARGET_RATE,
+          chunkSamples: VOICE_CAPTURE_CHUNK_SAMPLES,
+        },
+      }),
+    };
   }
   return { kind: "script", node: context.createScriptProcessor(2048, 1, 1) };
 }
@@ -173,6 +188,10 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   const assistantAnalyserRef = useRef<AnalyserNode | null>(null);
   const playbackSourcesRef = useRef(new Set<AudioBufferSourceNode>());
   const playbackAtRef = useRef(0);
+  const playbackWorkletRef = useRef<AudioWorkletNode | null>(null);
+  const playbackActiveRef = useRef(false);
+  const workletModuleUrlRef = useRef<string | null>(null);
+  const captureDownsamplerRef = useRef<ReturnType<typeof createStreamingDownsampler> | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   const voiceControlRef = useRef<HTMLElement | null>(null);
   const transcriptFrameRef = useRef<number | null>(null);
@@ -239,7 +258,11 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     cancelPlaybackSettle();
     playbackSettleTimerRef.current = window.setTimeout(() => {
       playbackSettleTimerRef.current = null;
-      if (playbackSourcesRef.current.size === 0 && stateRef.current === "speaking") {
+      if (
+        !playbackActiveRef.current
+        && playbackSourcesRef.current.size === 0
+        && stateRef.current === "speaking"
+      ) {
         updateState("listening");
       }
     }, VOICE_PLAYBACK_SETTLE_MS);
@@ -247,6 +270,8 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
 
   const stopPlayback = useCallback(() => {
     cancelPlaybackSettle();
+    playbackActiveRef.current = false;
+    try { playbackWorkletRef.current?.port.postMessage({ type: "stop" }); } catch { /* node already released */ }
     for (const source of playbackSourcesRef.current) {
       try { source.stop(); } catch { /* already stopped */ }
       source.disconnect();
@@ -269,6 +294,12 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     }
     releaseCaptureRef.current?.();
     releaseCaptureRef.current = null;
+    const playbackNode = playbackWorkletRef.current;
+    if (playbackNode) playbackNode.port.onmessage = null;
+    playbackNode?.disconnect();
+    playbackWorkletRef.current = null;
+    playbackActiveRef.current = false;
+    captureDownsamplerRef.current = null;
     processorRef.current?.disconnect();
     microphoneSourceRef.current?.disconnect();
     silentGainRef.current?.disconnect();
@@ -284,6 +315,10 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     const context = audioContextRef.current;
     audioContextRef.current = null;
     if (context && context.state !== "closed") void context.close().catch(() => undefined);
+    if (workletModuleUrlRef.current) {
+      URL.revokeObjectURL(workletModuleUrlRef.current);
+      workletModuleUrlRef.current = null;
+    }
     sessionThreadRef.current = null;
     transcriptRef.current = { user: "", assistant: "" };
     pageContextRef.current = null;
@@ -364,6 +399,19 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     const context = audioContextRef.current;
     const analyser = assistantAnalyserRef.current;
     if (!context || !analyser || !data) return;
+    const playback = playbackWorkletRef.current;
+    if (playback) {
+      const pcm = base64Pcm16ToInt16(data);
+      if (pcm.length === 0) return;
+      playbackActiveRef.current = true;
+      cancelPlaybackSettle();
+      playback.port.postMessage(
+        { type: "push", samples: pcm, sampleRate: audioSampleRate(mimeType) },
+        [pcm.buffer]
+      );
+      updateState("speaking");
+      return;
+    }
     const samples = base64Pcm16ToFloat32(data);
     if (samples.length === 0) return;
     const buffer = context.createBuffer(1, samples.length, audioSampleRate(mimeType));
@@ -378,7 +426,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     source.onended = () => {
       playbackSourcesRef.current.delete(source);
       source.disconnect();
-      if (playbackSourcesRef.current.size === 0 && stateRef.current === "speaking") {
+      if (playbackSourcesRef.current.size === 0 && !playbackActiveRef.current && stateRef.current === "speaking") {
         schedulePlaybackSettle();
       }
     };
@@ -610,9 +658,15 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       if (!tokenResponse.ok || !tokenData.token) throw new Error(tokenData.error || "Voice Mode could not connect. Please try again.");
       if (lifecycle !== lifecycleRef.current) return;
 
-      const context = new AudioContext({ latencyHint: "interactive" });
+      const context = new AudioContext();
       audioContextRef.current = context;
       await context.resume();
+      const workletModuleUrl = await loadVoiceWorklets(context);
+      if (lifecycle !== lifecycleRef.current) {
+        if (workletModuleUrl) URL.revokeObjectURL(workletModuleUrl);
+        return;
+      }
+      workletModuleUrlRef.current = workletModuleUrl;
       const microphoneSource = context.createMediaStreamSource(stream);
       const microphoneAnalyser = context.createAnalyser();
       microphoneAnalyser.fftSize = 256;
@@ -621,9 +675,31 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       assistantAnalyser.fftSize = 256;
       assistantAnalyser.smoothingTimeConstant = 0.68;
       assistantAnalyser.connect(context.destination);
-      const capture = await createVoiceCapture(context);
+      if (workletModuleUrl) {
+        const playback = new AudioWorkletNode(context, VOICE_PLAYBACK_PROCESSOR_NAME, {
+          numberOfInputs: 1,
+          numberOfOutputs: 1,
+          outputChannelCount: [1],
+          processorOptions: {
+            prebufferSeconds: VOICE_PLAYBACK_PREBUFFER_SECONDS,
+            drainSeconds: VOICE_PLAYBACK_DRAIN_SECONDS,
+          },
+        });
+        playback.port.onmessage = (event: MessageEvent<{ type?: string }>) => {
+          if (event.data?.type !== "drained") return;
+          playbackActiveRef.current = false;
+          schedulePlaybackSettle();
+        };
+        playback.connect(assistantAnalyser);
+        playbackWorkletRef.current = playback;
+      }
+      const capture = createVoiceCapture(context, Boolean(workletModuleUrl));
       if (lifecycle !== lifecycleRef.current) {
         try { capture.node.disconnect(); } catch { /* context already released */ }
+        try { playbackWorkletRef.current?.disconnect(); } catch { /* context already released */ }
+        playbackWorkletRef.current = null;
+        if (workletModuleUrl) URL.revokeObjectURL(workletModuleUrl);
+        workletModuleUrlRef.current = null;
         return;
       }
       const silentGain = context.createGain();
@@ -669,9 +745,12 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
         };
         releaseCaptureRef.current = () => { capture.node.port.onmessage = null; };
       } else {
+        const downsampler = createStreamingDownsampler(context.sampleRate, VOICE_CAPTURE_TARGET_RATE);
+        captureDownsamplerRef.current = downsampler;
         capture.node.onaudioprocess = (event) => {
           if (sessionRef.current !== session) return;
-          const samples = downsampleAudio(event.inputBuffer.getChannelData(0), context.sampleRate);
+          const samples = downsampler.push(event.inputBuffer.getChannelData(0));
+          if (samples.length === 0) return;
           session.sendRealtimeInput({
             audio: { data: float32ToPcm16Base64(samples), mimeType: "audio/pcm;rate=16000" },
           });
@@ -689,7 +768,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
         ? "Microphone access was denied. Allow microphone access to use Voice Mode."
         : startError instanceof Error ? startError.message : "Voice Mode could not start.");
     }
-  }, [beginAmplitudeUpdates, fail, handleServerMessage, prefetchAcknowledgement, updateState]);
+  }, [beginAmplitudeUpdates, fail, handleServerMessage, prefetchAcknowledgement, schedulePlaybackSettle, updateState]);
 
   const stop = useCallback(() => {
     setError("");

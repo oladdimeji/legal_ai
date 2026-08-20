@@ -2041,3 +2041,12 @@ Status: Implementation complete; focused-phase verification recorded below.
 - Drafting substance is untouched: the premium drafting standard, document-type inference, structure, tone, evidence grounding, attachment rules, citation rules, and disclaimer rules are all unchanged.
 - Added tests covering the prohibition across all four prompts, removal of each diagram notation, and byte-for-byte preservation of non-diagram content. No API, authentication, database, schema, migration, or dependency change was made.
 - Verification: `npm run verify` passed with `npm run lint`, 477/477 tests, and `npm run build`.
+
+### Voice capture rate and playback jitter buffer
+
+- The previous Voice smoothness work was still present and was not rolled back. It stopped the conversation from re-rendering on every audio level, but two remaining audio-path faults could still produce the same chopped speech and delayed replies, which is why the issue looked as if it had returned.
+- Capture downsampling no longer uses a floating-point phase accumulator. At 48 kHz, `(16000 / 48000) * 3` is just under 1, so the worklet previously emitted a sample every four input samples, labelled it as 16 kHz, and sent sped-up audio to Gemini. End-of-speech then lagged behind a finished transcript. Capture now uses floor-window averaging with leftover samples carried between callbacks, matching `createStreamingDownsampler`, and the ScriptProcessor fallback uses the same helper.
+- Playback no longer schedules each Gemini packet as a separate `AudioBufferSourceNode`. That path opened a permanent hole whenever a packet arrived after the remaining lead had been consumed. A playback worklet now prebuffers about 300 ms, then reads from a ring buffer on the audio thread. A late packet becomes a brief silence in the same stream instead of a gap the clock can never fill. Interruption still posts `stop` and drops the queue immediately.
+- The worklet module URL is kept until the session is released rather than revoked during `addModule`. Browsers without AudioWorklet still use the previous capture and BufferSource path, with a 320 ms lead.
+- Added tests for leftover-carrying downsampling and for the playback jitter-buffer wiring. No API, authentication, database, schema, migration, or dependency change was made.
+- Verification: `npm run verify` passed with `npm run lint`, 478/478 tests, and `npm run build`.

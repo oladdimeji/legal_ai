@@ -21,6 +21,39 @@ export function pcm16BufferToBase64(buffer: ArrayBuffer): string {
   return bytesToBase64(new Uint8Array(buffer));
 }
 
+export function base64Pcm16ToInt16(data: string): Int16Array {
+  const binary = atob(data);
+  const evenLength = binary.length - (binary.length % 2);
+  const bytes = new Uint8Array(evenLength);
+  for (let index = 0; index < evenLength; index += 1) bytes[index] = binary.charCodeAt(index);
+  return new Int16Array(bytes.buffer, bytes.byteOffset, evenLength / 2);
+}
+
+export function createStreamingDownsampler(inputRate: number, outputRate = 16000) {
+  const ratio = inputRate / Math.max(1, outputRate);
+  let leftover = new Float32Array(0);
+  return {
+    push(input: Float32Array): Float32Array {
+      if (inputRate <= outputRate) return input.slice();
+      const combined = new Float32Array(leftover.length + input.length);
+      combined.set(leftover);
+      combined.set(input, leftover.length);
+      const outputLength = Math.floor(combined.length / ratio);
+      const consumed = Math.min(combined.length, Math.floor(outputLength * ratio));
+      const output = new Float32Array(outputLength);
+      for (let index = 0; index < outputLength; index += 1) {
+        const start = Math.floor(index * ratio);
+        const end = Math.min(consumed, Math.floor((index + 1) * ratio));
+        let total = 0;
+        for (let sourceIndex = start; sourceIndex < end; sourceIndex += 1) total += combined[sourceIndex];
+        output[index] = total / Math.max(1, end - start);
+      }
+      leftover = combined.slice(consumed);
+      return output;
+    },
+  };
+}
+
 export function float32ToPcm16Base64(samples: Float32Array): string {
   const bytes = new Uint8Array(samples.length * 2);
   const view = new DataView(bytes.buffer);

@@ -14,6 +14,7 @@ import {
 } from "../server/voiceMode.js";
 import {
   audioSampleRate,
+  createStreamingDownsampler,
   downsampleAudio,
   mergeTranscriptChunk,
 } from "../src/lib/voiceAudio.js";
@@ -289,6 +290,17 @@ test("transcript and PCM helpers avoid repeated revisions and preserve live audi
   assert.equal(mergeTranscriptChunk("This", "continues"), "This continues");
   assert.equal(downsampleAudio(new Float32Array(480), 48000, 16000).length, 160);
   assert.equal(audioSampleRate("audio/pcm;rate=24000"), 24000);
+
+  const streamed = createStreamingDownsampler(48000, 16000);
+  const first = streamed.push(new Float32Array(240));
+  const second = streamed.push(new Float32Array(240));
+  assert.equal(first.length + second.length, 160);
+  assert.equal(createStreamingDownsampler(48000, 16000).push(new Float32Array(480)).length, 160);
+
+  // Leftover samples must carry, otherwise 48 kHz capture silently runs fast.
+  const leftover = createStreamingDownsampler(48000, 16000);
+  assert.equal(leftover.push(new Float32Array(128)).length, 42);
+  assert.equal(leftover.push(new Float32Array(128)).length, 43);
 });
 
 test("server turn completion finalizes user and assistant separately in conversational order", () => {
@@ -351,6 +363,27 @@ test("interruption finalizes only received assistant output and preserves next u
     { role: "user", content: "Next user question" },
     { role: "assistant", content: "New answer" },
   ]);
+});
+
+test("Voice playback uses a worklet jitter buffer so late packets cannot punch holes in speech", async () => {
+  const [hook, playback, capture] = await Promise.all([
+    readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/lib/voicePlaybackWorklet.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/lib/voiceCaptureWorklet.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(playback, /VOICE_PLAYBACK_PROCESSOR_NAME = "exepts-voice-playback"/);
+  assert.match(playback, /this.queued < this.prebuffer/);
+  assert.match(playback, /output.fill\(0, filled\)/);
+  assert.match(playback, /postMessage\(\{ type: "drained" \}\)/);
+  assert.match(capture, /Math.floor\(combined.length \/ this.ratio\)/);
+  assert.match(capture, /this.leftover = combined.slice\(consumed\)/);
+  assert.doesNotMatch(capture, /this.phase \+= this.step/);
+  assert.match(hook, /VOICE_PLAYBACK_WORKLET_SOURCE/);
+  assert.match(hook, /base64Pcm16ToInt16\(data\)/);
+  assert.match(hook, /type: "push", samples: pcm, sampleRate: audioSampleRate\(mimeType\)/);
+  assert.match(hook, /playbackWorkletRef.current\?\.port.postMessage\(\{ type: "stop" \}\)/);
+  assert.match(hook, /createStreamingDownsampler\(context.sampleRate, VOICE_CAPTURE_TARGET_RATE\)/);
+  assert.doesNotMatch(hook, /playbackRate/);
 });
 
 test("Voice Mode lifecycle is separate from standard send and releases microphone, audio, animation, and socket resources", async () => {
