@@ -158,7 +158,7 @@ test("diagram markup is removed from generated documents while genuine content s
 
 test("draft model and thinking configuration remain unchanged and each path has one generation call", async () => {
   assert.equal(MODEL_CONFIGS["draft-generation"], "gemini-3.6-flash");
-  assert.equal(MODEL_THINKING_LEVELS["draft-generation"], "low");
+  assert.equal(MODEL_THINKING_LEVELS["draft-generation"], "minimal");
 
   const [deliverables, server] = await Promise.all([
     readFile("server/assistant/assistantDeliverables.ts", "utf8"),

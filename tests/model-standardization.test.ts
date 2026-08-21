@@ -29,7 +29,7 @@ const expectedThinkingLevels = {
   "classify-complexity": "minimal",
   "assistant-planner": "low",
   "assistant-memory": "minimal",
-  "draft-generation": "low",
+  "draft-generation": "minimal",
   "matter-intelligence": "medium",
   "client-assistant": "medium",
   "summarize-subquestion": "low",

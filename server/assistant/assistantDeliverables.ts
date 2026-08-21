@@ -152,7 +152,7 @@ export async function createAssistantDeliverable(input: {
   const generateDocumentContent = async () => {
     const result = await model("draft-generation", [{ role: "user", content: prompt }], {
       googleSearch: false,
-      thinkingLevel: input.plan.depth === "thorough" ? "medium" : "low",
+      thinkingLevel: "minimal",
       systemInstruction: LAWYER_ASSISTANT_CHARTER,
     });
     return cleanGeneratedWorkProductContent(result.text);
