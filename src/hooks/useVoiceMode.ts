@@ -169,11 +169,8 @@ export function initializeLiveHistory(
   history: unknown
 ): void {
   const turns = Array.isArray(history) ? history : [];
-  if (turns.length > 0) {
-    session.sendClientContent({ turns, turnComplete: true });
-    return;
-  }
-  session.sendClientContent({ turnComplete: true });
+  if (turns.length === 0) return;
+  session.sendClientContent({ turns, turnComplete: true });
 }
 
 export function shouldPlayVoiceAcknowledgement(
@@ -708,6 +705,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     for (const part of content.interrupted ? [] : content.modelTurn?.parts || []) {
       const inlineData = part.inlineData;
       if (inlineData?.data && inlineData.mimeType?.startsWith("audio/")) {
+        if (awaitingOpeningTurnRef.current) continue;
         scheduleAudio(inlineData.data, inlineData.mimeType);
         maybeStartVoiceDocumentCapability();
       }
@@ -725,8 +723,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       );
       scheduleTranscriptFlush();
     }
-    // The spoken opening line is a welcome, not part of the conversation, so it is
-    // heard but never accumulated into a transcript and never saved to the thread.
+    // Any unexpected opening audio is dropped, not transcribed, and never saved.
     if (content.outputTranscription?.text && !awaitingOpeningTurnRef.current) {
       transcriptRef.current.assistant = mergeTranscriptChunk(
         transcriptRef.current.assistant,

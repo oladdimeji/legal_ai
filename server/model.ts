@@ -30,7 +30,7 @@ export const MODEL_THINKING_LEVELS = {
   "classify-complexity": "minimal",
   "assistant-planner": "low",
   "assistant-memory": "minimal",
-  "draft-generation": "medium",
+  "draft-generation": "low",
   "matter-intelligence": "medium",
   "client-assistant": "medium",
   "summarize-subquestion": "low",

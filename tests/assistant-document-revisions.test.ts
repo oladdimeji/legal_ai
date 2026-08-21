@@ -43,7 +43,7 @@ test("Matter Work Product revision creates a separate child in the same authoriz
     } as any,
     model: (async (_task: string, _messages: unknown, options: Record<string, unknown>) => {
       assert.equal(options.googleSearch, false);
-      assert.equal(options.thinkingLevel, "high");
+      assert.equal(options.thinkingLevel, "medium");
       return { text: "# Advice â€” Revised\n\nFirmer terms." };
     }) as any,
   });

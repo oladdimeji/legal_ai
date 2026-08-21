@@ -81,7 +81,7 @@ test("document creation uses the canonical drafting prompt and saves to the curr
     model: (async (_task: string, messages: Array<{ content: string }>, options: Record<string, unknown>) => {
       prompt = messages[0].content;
       assert.equal(options.googleSearch, false);
-      assert.equal(options.thinkingLevel, "medium");
+      assert.equal(options.thinkingLevel, "low");
       return { text: "# Client Advice Letter\n\n## Advice\nProceed carefully." };
     }) as any,
   });

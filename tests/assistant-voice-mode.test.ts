@@ -71,16 +71,18 @@ test("Gemini Live configuration is centralized for native audio, transcription, 
   assert.doesNotMatch(String(config.systemInstruction), /you may give one short, natural acknowledgement/i);
 });
 
-test("the spoken opening line welcomes without describing capabilities and never reaches the conversation", async () => {
+test("Voice Mode stays silent on open, drops unexpected opening audio, and never saves it", async () => {
   const hook = await readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8");
   const instruction = String(liveConnectConfig().systemInstruction);
 
-  assert.match(instruction, /open with a single short, warm spoken line that simply welcomes the user/);
-  assert.match(instruction, /Do not describe, summarize, or enumerate your capabilities/);
-  assert.match(instruction, /If the user speaks first, answer the user instead and skip the opening line entirely/);
+  assert.match(instruction, /remain completely silent and wait for the user to speak/);
+  assert.match(instruction, /Do not greet, welcome, introduce yourself/);
+  assert.match(instruction, /If the user speaks first, answer the user directly/);
+  assert.doesNotMatch(instruction, /open with a single short, warm spoken line/);
 
   assert.match(hook, /const awaitingOpeningTurnRef = useRef\(false\)/);
   assert.match(hook, /awaitingOpeningTurnRef\.current = true/);
+  assert.match(hook, /if \(awaitingOpeningTurnRef\.current\) continue;/);
   assert.match(hook, /content\.outputTranscription\?\.text && !awaitingOpeningTurnRef\.current/);
   assert.match(hook, /content\.inputTranscription\?\.text\) \{\s*awaitingOpeningTurnRef\.current = false/);
   assert.match(hook, /content\.interrupted\) \{\s*awaitingOpeningTurnRef\.current = false/);
@@ -289,14 +291,13 @@ test("recent text and voice messages seed Live in role order within the characte
   assert.ok(history.reduce((total, turn) => total + turn.parts[0].text.length, 0) <= VOICE_MODE_CONFIG.historyCharacterLimit);
 });
 
-test("empty or malformed Live history completes initialization without sending empty turns", () => {
+test("empty or malformed Live history does not send a completed turn that would trigger speech", () => {
   for (const history of [[], undefined, null, { turns: [] }]) {
     const calls: unknown[] = [];
     initializeLiveHistory({
       sendClientContent: (params) => { calls.push(params); },
     }, history);
-    assert.deepEqual(calls, [{ turnComplete: true }]);
-    assert.equal(Object.hasOwn(calls[0] as object, "turns"), false);
+    assert.deepEqual(calls, []);
   }
 });
 
