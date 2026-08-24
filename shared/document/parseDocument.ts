@@ -1,6 +1,7 @@
 import { unified } from "unified";
 import remarkParse from "remark-parse";
 import remarkGfm from "remark-gfm";
+import { isDiagramCodeBlock, isDiagramMarkup } from "./diagramMarkup.js";
 import { documentDiagnostic, type DocumentDiagnostic } from "./documentDiagnostics.js";
 import { planTableLayout } from "./tableLayout.js";
 import type {
@@ -130,11 +131,82 @@ function plainAstText(node: AstNode): string {
   return (node.children ?? []).map(plainAstText).join("");
 }
 
+const TRAILING_ABBREVIATION = /(?:\b(?:Inc|Ltd|LLC|LLP|Co|Corp|No|Nos|Art|Arts|Sec|Sess|Mr|Ms|Mrs|Dr|vs|etc|al)|(?:\b[A-Z])|U\.S)\.$/i;
+
+function runInTitleLength(plain: string): number {
+  if (!/^\d+(?:\.\d+)+\s+\S/.test(plain)) return -1;
+  const pattern = /\.\s+[A-Z]/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(plain))) {
+    const titleEnd = match.index + 1;
+    const remainder = plain.slice(titleEnd).trim();
+    if (remainder.length < 25) continue;
+    const title = plain.slice(0, titleEnd);
+    const afterNumber = title.replace(/^\d+(?:\.\d+)+\s+/, "");
+    if (afterNumber.length > 80) continue;
+    if (TRAILING_ABBREVIATION.test(title)) continue;
+    return titleEnd;
+  }
+  return -1;
+}
+
+function inlineLength(node: InlineContent): number {
+  if (node.type === "text") return node.text.length;
+  if (node.type === "hyperlink") return inlinePlainText(node.content).length;
+  return 0;
+}
+
+function withBold(node: InlineContent): InlineContent {
+  if (node.type === "text") return { ...node, bold: true };
+  if (node.type === "hyperlink") return { ...node, content: node.content.map(withBold) };
+  return node;
+}
+
+function isFullyBold(node: InlineContent): boolean {
+  if (node.type === "text") return Boolean(node.bold);
+  if (node.type === "hyperlink") return node.content.every(isFullyBold);
+  return true;
+}
+
+function boldPrefix(content: InlineContent[], prefixLength: number): InlineContent[] {
+  if (prefixLength <= 0) return content;
+  let consumed = 0;
+  let prefixAllBold = true;
+  for (const node of content) {
+    const length = inlineLength(node);
+    if (consumed >= prefixLength) break;
+    if (Math.min(length, prefixLength - consumed) > 0 && !isFullyBold(node)) prefixAllBold = false;
+    consumed += length;
+  }
+  if (prefixAllBold) return content;
+  const result: InlineContent[] = [];
+  consumed = 0;
+  for (const node of content) {
+    const length = inlineLength(node);
+    if (consumed + length <= prefixLength) result.push(withBold(node));
+    else if (consumed >= prefixLength) result.push(node);
+    else if (node.type === "text") {
+      const offset = prefixLength - consumed;
+      if (offset > 0) result.push({ ...node, text: node.text.slice(0, offset), bold: true });
+      result.push({ ...node, text: node.text.slice(offset) });
+    } else {
+      result.push(withBold(node));
+    }
+    consumed += length;
+  }
+  return result;
+}
+
 function legalHeadingLevel(text: string): 1 | 2 | 3 | 4 | null {
   const value = text.trim();
   if (ATTACHMENT_HEADING.test(value) || SIGNATURE_HEADING.test(value) || ARTICLE_HEADING.test(value)) return 1;
   if (/^\d+\.\s+[A-Z][A-Z0-9 &'(),/\-–—]+$/.test(value)) return 2;
-  if (/^\d+(?:\.\d+)+\s+\S[\s\S]*$/.test(value)) return 4;
+  if (/^\d+(?:\.\d+)+\s+\S/.test(value)) {
+    if (runInTitleLength(value) >= 0) return null;
+    const rest = value.replace(/^\d+(?:\.\d+)+\s+/, "");
+    if (rest.length > 100) return null;
+    return 4;
+  }
   return null;
 }
 
@@ -345,8 +417,14 @@ export function parseDocument(markdown: string, diagnostics: DocumentDiagnostic[
       case "paragraph": {
         const content = inlineNodes(node.children ?? [], diagnostics);
         const text = inlinePlainText(content);
+        if (isDiagramMarkup(text)) break;
         const level = legalHeadingLevel(text);
-        blocks.push(level ? { type: "heading", level, text, content } : { type: "paragraph", content });
+        if (level) {
+          blocks.push({ type: "heading", level, text, content });
+        } else {
+          const titleLength = runInTitleLength(text);
+          blocks.push({ type: "paragraph", content: titleLength > 0 ? boldPrefix(content, titleLength) : content });
+        }
         break;
       }
       case "list": {
@@ -386,7 +464,7 @@ export function parseDocument(markdown: string, diagnostics: DocumentDiagnostic[
               marker: Number(legacyIndentedList[1]),
             }],
           });
-        } else {
+        } else if (!isDiagramCodeBlock(node.lang, node.value ?? "")) {
           blocks.push({ type: "codeBlock", text: node.value ?? "", ...(node.lang ? { language: node.lang } : {}) });
         }
         break;

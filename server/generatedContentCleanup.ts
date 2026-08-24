@@ -1,3 +1,6 @@
+import { isDiagramCodeBlock } from "../shared/document/diagramMarkup.js";
+import { stripInternalCitationsForWorkProduct } from "../src/lib/assistantCitations.js";
+
 const BOILERPLATE_PATTERNS = [
   /^(?:this\s+)?(?:response|answer|information)\s+is\s+for\s+informational\s+purposes\s+only\.?$/i,
   /^this\s+is\s+not\s+legal\s+advice\.?$/i,
@@ -29,17 +32,17 @@ export function cleanGeneratedBoilerplate(content: string): string {
   return paragraphs.join("\n\n").trim();
 }
 
-// Diagram markup is never legitimate content in a legal document and does not
-// survive export, so a fenced block in one of these notations is removed outright
-// rather than left to render as raw markup.
-const DIAGRAM_FENCE_LANGUAGE = /^(?:mermaid|graphviz|dot|plantuml|puml|uml|flow|flowchart|sequence|sequencediagram|statediagram|classdiagram|erdiagram|gantt|journey|mindmap|pie|quadrantchart|timeline|nomnoml|svgbob|ditaa|asciiflow|blockdiag|seqdiag|actdiag|nwdiag|wavedrom|vega|vegalite|plotly|chart|chartjs|diagram)$/i;
-
+// Diagram markup is never legitimate in a legal document. Strip labelled
+// diagram fences, unlabelled fences whose body is diagram syntax, and image
+// references. Ordinary code fences, tables, and prose are left untouched.
 export function stripGeneratedDiagramBlocks(content: string): string {
   return content
     .replace(
-      /^[ \t]{0,3}(`{3,}|~{3,})[ \t]*([A-Za-z][\w+#-]*)[^\n]*\n[\s\S]*?^[ \t]{0,3}\1[ \t]*$/gm,
-      (block, _fence: string, language: string) => (DIAGRAM_FENCE_LANGUAGE.test(language) ? "" : block)
+      /^[ \t]{0,3}(`{3,}|~{3,})[ \t]*([A-Za-z][\w+#-]*)?[^\n]*\n([\s\S]*?)^[ \t]{0,3}\1[ \t]*$/gm,
+      (block, _fence: string, language: string | undefined, body: string) =>
+        (isDiagramCodeBlock(language, body) ? "" : block)
     )
+    .replace(/!\[[^\]]*]\([^)]*\)/g, "")
     .replace(/\n{3,}/g, "\n\n");
 }
 
@@ -61,4 +64,3 @@ export function cleanClientAssistantContent(content: string): string {
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
-import { stripInternalCitationsForWorkProduct } from "../src/lib/assistantCitations.js";

@@ -138,6 +138,8 @@ test("headings cover H1-H6 and conservative legal headings without leaking marke
   assert.doesNotMatch(headings.map((block) => block.text).join("\n"), /#{1,6}/);
   const numberedSentence = parseMarkdownBlocks("1. First requirement.")[0];
   assert.equal(numberedSentence.type, "orderedList");
+  const runIn = parseMarkdownBlocks("2.1 Scope of Services. Studio shall perform the AI design, engineering, and implementation services described in this Agreement.")[0];
+  assert.equal(runIn.type, "paragraph");
 });
 
 test("list blocks restart independently, preserve starts, and clamp nested levels", () => {

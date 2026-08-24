@@ -98,6 +98,7 @@ test("legacy Work Product formats retain distinct instructions inside the shared
 test("no generated document may contain a diagram, chart, or other drawn illustration", () => {
   for (const prompt of [autonomousPrompt(), workProductPrompt("memo"), workProductPrompt("email"), workProductPrompt("summary")]) {
     assert.match(prompt, /Never include a diagram, flow chart, process illustration/);
+    assert.match(prompt, /visual card, callout box, infographic/);
     assert.match(prompt, /Mermaid, PlantUML, Graphviz or DOT/);
     assert.match(prompt, /box-drawing or arrow art, and text or ASCII art/);
     assert.match(prompt, /Express a sequence, process, structure, hierarchy, or decision path in words/);
@@ -154,6 +155,13 @@ test("diagram markup is removed from generated documents while genuine content s
   // An unterminated fence is ambiguous, so content is preserved rather than guessed at.
   const unterminated = `Intro.\n\n${fence}mermaid\ngraph TD`;
   assert.equal(stripGeneratedDiagramBlocks(unterminated), unterminated);
+
+  const unlabeled = `Intro.\n\n${fence}\ngraph TD\n  A[Start] --> B[Review]\n${fence}\n\nOutro.`;
+  assert.equal(cleanGeneratedWorkProductContent(unlabeled), "Intro.\n\nOutro.");
+  assert.equal(
+    stripGeneratedDiagramBlocks("Intro.\n\n![Process chart](https://example.com/chart.png)\n\nOutro."),
+    "Intro.\n\nOutro."
+  );
 });
 
 test("draft model and thinking configuration remain unchanged and each path has one generation call", async () => {

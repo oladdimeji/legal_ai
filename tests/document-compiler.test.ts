@@ -178,3 +178,41 @@ test("all exportable generation prompts share the exact export-safe rules", asyn
   assert.match(server, /Do not append generic legal-advice/);
   assert.match(server, /State uncertainty clearly/);
 });
+
+test("run-in numbered clauses stay body text with a bold title rather than a heading", () => {
+  const compiled = compileDocument("Services Agreement", [
+    "## 2. Services & Statements of Work",
+    "",
+    "2.1 Scope of Services. Studio shall perform the AI design, engineering, and implementation services described in this Agreement and in any Statement of Work (the \"**Services**\").",
+    "",
+    "2.1 U.S. Export Controls",
+  ].join("\n"));
+  const clause = compiled.blocks.find((block) => block.type === "paragraph");
+  assert.ok(clause && clause.type === "paragraph");
+  const title = clause.content.find((node) => node.type === "text" && node.text.startsWith("2.1 Scope of Services."));
+  const body = clause.content.find((node) => node.type === "text" && node.text.includes("Studio shall perform"));
+  const definedTerm = clause.content.find((node) => node.type === "text" && node.text === "Services");
+  assert.equal(title?.type === "text" && title.bold, true);
+  assert.equal(body?.type === "text" && body.bold, undefined);
+  assert.equal(definedTerm?.type === "text" && definedTerm.bold, true);
+  assert.equal(compiled.blocks.some((block) => block.type === "heading" && block.text === "2.1 U.S. Export Controls"), true);
+  assert.equal(compiled.blocks.some((block) => block.type === "heading" && block.text.includes("Studio shall perform")), false);
+});
+
+test("diagram code fences are omitted from compiled documents without touching tables or prose", () => {
+  const compiled = compileDocument("Agreement", [
+    "The parties agree as follows.",
+    "",
+    "```",
+    "graph TD",
+    "  A[Client] --> B[Studio]",
+    "```",
+    "",
+    "| Term | Value |",
+    "| --- | --- |",
+    "| Fee | 100 |",
+  ].join("\n"));
+  assert.equal(compiled.blocks.some((block) => block.type === "codeBlock"), false);
+  assert.equal(compiled.blocks.some((block) => block.type === "table"), true);
+  assert.match(JSON.stringify(compiled.blocks), /The parties agree as follows/);
+});
