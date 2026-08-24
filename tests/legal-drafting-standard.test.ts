@@ -7,7 +7,7 @@ import {
   stripGeneratedDiagramBlocks,
 } from "../server/generatedContentCleanup.js";
 import { TOP_TIER_LEGAL_DRAFTING_STANDARD } from "../server/legalDraftingStandard.js";
-import { MODEL_CONFIGS, MODEL_THINKING_LEVELS } from "../server/model.js";
+import { MODEL_CONFIGS, MODEL_THINKING_LEVELS, resolveModelForTask } from "../server/model.js";
 import { buildWorkProductDraftPrompt } from "../server/workProductDrafting.js";
 
 function autonomousPrompt(): string {
@@ -167,6 +167,8 @@ test("diagram markup is removed from generated documents while genuine content s
 test("draft model and thinking configuration remain unchanged and each path has one generation call", async () => {
   assert.equal(MODEL_CONFIGS["draft-generation"], "gemini-3.6-flash");
   assert.equal(MODEL_THINKING_LEVELS["draft-generation"], "minimal");
+  assert.equal(resolveModelForTask("draft-generation", undefined), "gemini-3.5-flash-lite");
+  assert.equal(resolveModelForTask("draft-generation", "normal"), "gemini-3.6-flash");
 
   const [deliverables, server] = await Promise.all([
     readFile("server/assistant/assistantDeliverables.ts", "utf8"),

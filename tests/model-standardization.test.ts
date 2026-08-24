@@ -6,8 +6,11 @@ import {
   buildGenerationConfig,
   EMBEDDING_DIMENSIONALITY,
   embedTextsWithClient,
+  FAST_DRAFT_MODEL,
+  generateContentWithClient,
   MODEL_CONFIGS,
   MODEL_THINKING_LEVELS,
+  resolveModelForTask,
 } from "../server/model.js";
 import { adaptiveAssistantThinkingLevel } from "../server/assistant/assistantPrompts.js";
 import type { AssistantIntent, AssistantPlan } from "../server/assistant/assistantTypes.js";
@@ -64,6 +67,58 @@ test("confirmed Gemini model assignments and thinking defaults are exact", () =>
   assert.deepEqual(MODEL_CONFIGS, expectedModels);
   assert.deepEqual(MODEL_THINKING_LEVELS, expectedThinkingLevels);
   assert.equal("embedding" in MODEL_THINKING_LEVELS, false);
+  assert.equal(FAST_DRAFT_MODEL, "gemini-3.5-flash-lite");
+  assert.equal(resolveModelForTask("draft-generation", undefined), FAST_DRAFT_MODEL);
+  assert.equal(resolveModelForTask("draft-generation", ""), FAST_DRAFT_MODEL);
+  assert.equal(resolveModelForTask("draft-generation", "fast"), FAST_DRAFT_MODEL);
+  assert.equal(resolveModelForTask("draft-generation", "normal"), "gemini-3.6-flash");
+  assert.equal(resolveModelForTask("draft-generation", " Normal "), "gemini-3.6-flash");
+  assert.equal(resolveModelForTask("chat", "normal"), "gemini-3.6-flash");
+  assert.equal(resolveModelForTask("assistant-planner", "normal"), "gemini-3.5-flash-lite");
+});
+
+test("draft generation calls Flash-Lite unless DRAFT_SPEED is normal", async (t) => {
+  const previous = process.env.DRAFT_SPEED;
+  t.after(() => {
+    if (previous === undefined) delete process.env.DRAFT_SPEED;
+    else process.env.DRAFT_SPEED = previous;
+  });
+
+  delete process.env.DRAFT_SPEED;
+  let fastModel = "";
+  await generateContentWithClient("draft-generation", [{ role: "user", content: "Draft" }], {}, {
+    models: {
+      generateContent: async (input) => {
+        fastModel = input.model;
+        return { text: "ok" };
+      },
+    },
+  });
+  assert.equal(fastModel, "gemini-3.5-flash-lite");
+
+  process.env.DRAFT_SPEED = "normal";
+  let normalModel = "";
+  await generateContentWithClient("draft-generation", [{ role: "user", content: "Draft" }], {}, {
+    models: {
+      generateContent: async (input) => {
+        normalModel = input.model;
+        return { text: "ok" };
+      },
+    },
+  });
+  assert.equal(normalModel, "gemini-3.6-flash");
+
+  process.env.DRAFT_SPEED = "normal";
+  let chatModel = "";
+  await generateContentWithClient("chat", [{ role: "user", content: "Hello" }], {}, {
+    models: {
+      generateContent: async (input) => {
+        chatModel = input.model;
+        return { text: "ok" };
+      },
+    },
+  });
+  assert.equal(chatModel, "gemini-3.6-flash");
 });
 
 test("generation config uses task defaults and permits explicit thinking overrides", () => {

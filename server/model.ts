@@ -36,6 +36,20 @@ export const MODEL_THINKING_LEVELS = {
   "summarize-subquestion": "low",
 } as const satisfies Partial<Record<ModelTaskType, ModelThinkingLevel>>;
 
+export const FAST_DRAFT_MODEL = "gemini-3.5-flash-lite";
+
+export function resolveModelForTask(
+  taskType: ModelTaskType,
+  draftSpeed: string | undefined = process.env.DRAFT_SPEED
+): string {
+  if (taskType !== "draft-generation") {
+    return MODEL_CONFIGS[taskType];
+  }
+  return String(draftSpeed ?? "").trim().toLowerCase() === "normal"
+    ? MODEL_CONFIGS["draft-generation"]
+    : FAST_DRAFT_MODEL;
+}
+
 export type CallModelOptions = {
   provider?: Provider;
   systemInstruction?: string;
@@ -251,7 +265,7 @@ export async function generateContentWithClient(
   options: CallModelOptions,
   client: GenerationClient
 ): Promise<ModelGenerationResult> {
-  const modelName = MODEL_CONFIGS[taskType];
+  const modelName = resolveModelForTask(taskType);
   const contents = messages.map((message) => ({
     role: message.role === "assistant" ? "model" : "user",
     parts: [{ text: message.content }],
@@ -385,7 +399,7 @@ export async function callModel(
 
   switch (provider) {
     case "gemini": {
-      const modelName = MODEL_CONFIGS[taskType];
+      const modelName = resolveModelForTask(taskType);
       try {
         if (taskType === "embedding") {
           const text = options.textToEmbed || (messages && messages[0]?.content) || "";
