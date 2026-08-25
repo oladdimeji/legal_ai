@@ -14,7 +14,7 @@ import {
 } from "../../src/lib/assistantCitations.js";
 import type { OwnershipContext } from "../db.js";
 import { cleanGeneratedBoilerplate } from "../generatedContentCleanup.js";
-import { callModel } from "../model.js";
+import { callModel, type DraftTextChunkHandler } from "../model.js";
 import { LAWYER_ASSISTANT_CHARTER } from "./assistantCharter.js";
 import {
   resolveLatestArtifactReference,
@@ -79,6 +79,7 @@ export async function completeAssistantResponse(input: {
   account: Account;
   ownership: OwnershipContext;
   generateSuggestions: SuggestionGenerator;
+  onDraftChunk?: DraftTextChunkHandler;
 }): Promise<AssistantCompletionResult> {
   const webResearch = normalizeWebResearch(input.webResearch);
   const toolRun: AssistantToolRunResult = {
@@ -128,6 +129,7 @@ export async function completeAssistantResponse(input: {
       instruction: input.instruction,
       pageContext: input.pageContext,
       conversationContext: input.conversationContext,
+      onDraftChunk: input.onDraftChunk,
     });
   }
 

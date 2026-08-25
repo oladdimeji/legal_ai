@@ -7,7 +7,9 @@ import {
   EMBEDDING_DIMENSIONALITY,
   embedTextsWithClient,
   FAST_DRAFT_MODEL,
+  generateContentStreamWithClient,
   generateContentWithClient,
+  mergeGeneratedTextChunk,
   MODEL_CONFIGS,
   MODEL_THINKING_LEVELS,
   resolveModelForTask,
@@ -119,6 +121,20 @@ test("draft generation calls Flash-Lite unless DRAFT_SPEED is normal", async (t)
     },
   });
   assert.equal(chatModel, "gemini-3.6-flash");
+});
+
+test("draft stream generation keeps the same model assignment as non-streaming generation", async () => {
+  assert.equal(mergeGeneratedTextChunk("A", "B"), "AB");
+  let streamModel = "";
+  await generateContentStreamWithClient("draft-generation", [{ role: "user", content: "Draft" }], {}, {
+    models: {
+      generateContent: async (input) => {
+        streamModel = input.model;
+        return { text: "ok" };
+      },
+    },
+  });
+  assert.equal(streamModel, resolveModelForTask("draft-generation"));
 });
 
 test("generation config uses task defaults and permits explicit thinking overrides", () => {

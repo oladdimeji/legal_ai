@@ -49,6 +49,7 @@ import { LAWYER_ASSISTANT_CHARTER } from "./server/assistant/assistantCharter.js
 import { buildAssistantSessionContext, sessionContextForPrompt } from "./server/assistant/assistantContext.js";
 import { planAssistantRequest } from "./server/assistant/assistantPlanner.js";
 import { completeAssistantResponse } from "./server/assistant/assistantCompletion.js";
+import { writeAssistantDraftNdjson } from "./server/assistant/assistantDraftStream.js";
 import { orchestrateAssistantRetrieval } from "./server/assistant/assistantOrchestrator.js";
 import { boundEvidence, temporaryAttachmentEvidence, wrapAuthorizedEvidence } from "./server/assistant/assistantEvidence.js";
 import { executeAssistantToolPlan } from "./server/assistant/assistantToolExecutor.js";
@@ -3487,6 +3488,15 @@ ${sourceText}`;
         account: (req as AuthenticatedRequest).auth!,
         ownership: requestOwnership,
         generateSuggestions: generateFollowUpSuggestions,
+        onDraftChunk: assistantPlan.deliverable.kind === "message"
+          ? undefined
+          : (event) => {
+            if (event.reset) {
+              writeAssistantDraftNdjson(res, { type: "draft_reset" });
+              return;
+            }
+            if (event.text) writeAssistantDraftNdjson(res, { type: "draft_delta", text: event.text });
+          },
       });
       if (completion.clarificationQuestion) {
         const assistantMessage = await db.addMessage(
@@ -3504,12 +3514,18 @@ ${sourceText}`;
             usedWeb: orchestration.webResearch.performed,
           }
         );
-        return res.status(201).json({
+        const payload = {
           userMessage: publicAssistantMessage(userMessage),
           assistantMessage: publicAssistantMessage(assistantMessage),
           assistantIntent: assistantPlan.intent,
-          deliverableKind: "message",
-        });
+          deliverableKind: "message" as const,
+        };
+        if (res.headersSent) {
+          writeAssistantDraftNdjson(res, { type: "complete", ...payload });
+          res.end();
+          return;
+        }
+        return res.status(201).json(payload);
       }
 
       const assistantMessage = await db.addMessage(
@@ -3521,15 +3537,29 @@ ${sourceText}`;
         completion.steps,
         completion.metadata
       );
-      return res.status(201).json({
+      const payload = {
         userMessage: publicAssistantMessage(userMessage),
         assistantMessage: publicAssistantMessage(assistantMessage),
         assistantIntent: assistantPlan.intent,
         deliverableKind: assistantPlan.deliverable.kind,
         ...(completion.document ? { document: completion.document } : {}),
-      });
+      };
+      if (res.headersSent) {
+        writeAssistantDraftNdjson(res, { type: "complete", ...payload });
+        res.end();
+        return;
+      }
+      return res.status(201).json(payload);
     } catch (err: any) {
       console.error("Error in assistant chat endpoint:", err);
+      if (res.headersSent) {
+        writeAssistantDraftNdjson(res, {
+          type: "error",
+          error: err.message || "The Assistant could not complete the request. Please try again.",
+        });
+        res.end();
+        return;
+      }
       res.status(500).json({ error: err.message });
     }
   });

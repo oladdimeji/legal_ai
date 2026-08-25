@@ -58,12 +58,15 @@ test("Assistant uses progressive working activities and completes designed respo
   assert.match(assistant, /activities=\{workingActivities\}[\s\S]*stageIndex=\{workingStageIndex\}/);
   assert.match(assistant, /activity\.isCompleted[\s\S]*<Check /);
   assert.match(assistant, /activity\.isCompleted[\s\S]*\? "text-zinc-500"[\s\S]*: "animate-pulse text-zinc-700 motion-reduce:animate-none"/);
-  assert.match(assistant, /\{loading && !streaming \? \(/);
+  assert.match(assistant, /\{loading && !streaming && draftStream === null \? \(/);
   assert.match(assistant, /role="status"[\s\S]*aria-live="polite"/);
   assert.match(assistant, /min-w-0 break-words/);
   assert.doesNotMatch(activityImplementation, /classificationReason|Classifier result|confidence score/i);
   assert.match(assistant, /const \[streaming, setStreaming\]/);
-  assert.match(assistant, /\{ \.\.\.savedAssistantMessage, content: "" \}/);
+  assert.match(assistant, /const \[draftStream, setDraftStream\]/);
+  assert.match(assistant, /consumeAssistantTurnResponse/);
+  assert.match(assistant, /id="assistant-draft-stream"/);
+  assert.match(assistant, /streamedResponse \? savedAssistantMessage\.content : ""/);
   assert.match(assistant, /content: revealedContent/);
   // The reveal is presentation only and runs after the answer has already arrived,
   // so it stays about a second rather than holding the response back for seconds.

@@ -35,6 +35,27 @@ const VOICE_PLAYBACK_LEAD_SECONDS = 0.32;
 // scheduling gap no longer flips the presence state back and forth.
 const VOICE_PLAYBACK_SETTLE_MS = 200;
 
+// Ephemeral Live tokens must start a session within one minute. Prefetch is only
+// reused inside this window so a hover cannot hand start() an expired credential.
+export const VOICE_TOKEN_PREFETCH_TTL_MS = 50_000;
+
+// 512 samples at 16 kHz is 32 ms, so 62 packets keep about two seconds of speech
+// spoken during connecting without flushing an unbounded pre-session queue.
+export const VOICE_STARTUP_BUFFER_PACKETS = 62;
+
+export function voicePrefetchStillValid(fetchedAt: number, now = Date.now()): boolean {
+  return now - fetchedAt >= 0 && now - fetchedAt < VOICE_TOKEN_PREFETCH_TTL_MS;
+}
+
+export function pushVoiceStartupPacket(
+  buffer: string[],
+  packet: string,
+  maxPackets = VOICE_STARTUP_BUFFER_PACKETS
+): void {
+  buffer.push(packet);
+  if (buffer.length > maxPackets) buffer.splice(0, buffer.length - maxPackets);
+}
+
 type VoiceCapture =
   | { kind: "worklet"; node: AudioWorkletNode }
   | { kind: "script"; node: ScriptProcessorNode };
@@ -237,6 +258,14 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   const acknowledgedTurnRef = useRef<number | null>(null);
   const acknowledgementAudioRef = useRef<VoiceAcknowledgementAudio | null>(null);
   const acknowledgementRequestRef = useRef<Promise<VoiceAcknowledgementAudio | null> | null>(null);
+  const tokenPrefetchRef = useRef<{
+    threadId: string;
+    pageContextKey: string;
+    fetchedAt: number;
+    promise: Promise<VoiceTokenResponse>;
+  } | null>(null);
+  const startupAudioBufferRef = useRef<string[]>([]);
+  const captureLiveRef = useRef(false);
   const assistantCapabilityPromisesRef = useRef(new Map<number, Promise<{
     ok: boolean;
     result: string;
@@ -368,6 +397,9 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     acknowledgedTurnRef.current = null;
     acknowledgementAudioRef.current = null;
     acknowledgementRequestRef.current = null;
+    tokenPrefetchRef.current = null;
+    startupAudioBufferRef.current = [];
+    captureLiveRef.current = false;
     clearWorking();
     turnBoundaryRef.current += 1;
     setLiveTranscripts({ user: "", assistant: "" });
@@ -507,6 +539,42 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     });
     return request;
   }, []);
+
+  const ensureVoiceToken = useCallback((threadId: string, pageContext: WorkspacePageContext) => {
+    const pageContextKey = JSON.stringify(pageContext);
+    const existing = tokenPrefetchRef.current;
+    if (
+      existing
+      && existing.threadId === threadId
+      && existing.pageContextKey === pageContextKey
+      && voicePrefetchStillValid(existing.fetchedAt)
+    ) {
+      return existing.promise;
+    }
+    const fetchedAt = Date.now();
+    const promise = (async () => {
+      const tokenResponse = await fetch(`/api/threads/${encodeURIComponent(threadId)}/voice/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pageContext }),
+      });
+      const tokenData = await tokenResponse.json().catch(() => ({})) as VoiceTokenResponse;
+      if (!tokenResponse.ok || !tokenData.token) {
+        throw new Error(tokenData.error || "Voice Mode could not connect. Please try again.");
+      }
+      return tokenData;
+    })();
+    tokenPrefetchRef.current = { threadId, pageContextKey, fetchedAt, promise };
+    void promise.catch(() => {
+      if (tokenPrefetchRef.current?.promise === promise) tokenPrefetchRef.current = null;
+    });
+    return promise;
+  }, []);
+
+  const prefetchToken = useCallback((threadId: string, pageContext: WorkspacePageContext) => {
+    if (!threadId) return;
+    void ensureVoiceToken(threadId, pageContext).catch(() => undefined);
+  }, [ensureVoiceToken]);
 
   const handleServerMessage = useCallback((message: LiveServerMessage) => {
     const threadId = sessionThreadRef.current;
@@ -772,48 +840,58 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     animationFrameRef.current = requestAnimationFrame(frame);
   }, [writeVoiceLevel]);
 
-  const start = useCallback(async (threadId: string, pageContext: WorkspacePageContext) => {
+  const start = useCallback(async (
+    threadIdOrPromise: string | Promise<string | undefined | void>,
+    pageContext: WorkspacePageContext
+  ) => {
     if (stateRef.current === "connecting" || stateRef.current === "listening" || stateRef.current === "speaking") return;
     const lifecycle = ++lifecycleRef.current;
     setError("");
     updateState("connecting");
-    sessionThreadRef.current = threadId;
     pageContextRef.current = pageContext;
     sessionIdRef.current = voiceSessionId();
     eventSequenceRef.current = { user: 0, assistant: 0 };
     transcriptRef.current = { user: "", assistant: "" };
     awaitingOpeningTurnRef.current = true;
+    captureLiveRef.current = false;
+    startupAudioBufferRef.current = [];
     liveDeliverableRef.current = null;
     setLiveDeliverable(null);
     setLiveTranscripts({ user: "", assistant: "" });
     try {
       if (!navigator.mediaDevices?.getUserMedia) throw new Error("A microphone is not available in this browser.");
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-      });
-      if (lifecycle !== lifecycleRef.current) {
-        stream.getTracks().forEach((track) => track.stop());
-        return;
-      }
-      streamRef.current = stream;
-      const tokenResponse = await fetch(`/api/threads/${encodeURIComponent(threadId)}/voice/token`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pageContext }),
-      });
-      const tokenData = await tokenResponse.json().catch(() => ({})) as VoiceTokenResponse;
-      if (!tokenResponse.ok || !tokenData.token) throw new Error(tokenData.error || "Voice Mode could not connect. Please try again.");
-      if (lifecycle !== lifecycleRef.current) return;
 
+      const threadPromise = Promise.resolve(threadIdOrPromise).then((threadId) => {
+        if (!threadId) throw new Error("Voice Mode could not start a conversation.");
+        if (lifecycle === lifecycleRef.current) sessionThreadRef.current = threadId;
+        return threadId;
+      });
+      const tokenPromise = threadPromise.then((threadId) => ensureVoiceToken(threadId, pageContext));
+      const mediaPromise = navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      }).then((stream) => {
+        if (lifecycle !== lifecycleRef.current) {
+          stream.getTracks().forEach((track) => track.stop());
+          return null;
+        }
+        streamRef.current = stream;
+        return stream;
+      });
       const context = new AudioContext();
       audioContextRef.current = context;
-      await context.resume();
-      const workletModuleUrl = await loadVoiceWorklets(context);
-      if (lifecycle !== lifecycleRef.current) {
-        if (workletModuleUrl) URL.revokeObjectURL(workletModuleUrl);
-        return;
-      }
-      workletModuleUrlRef.current = workletModuleUrl;
+      const workletsPromise = context.resume().then(() => loadVoiceWorklets(context)).then((workletModuleUrl) => {
+        if (lifecycle !== lifecycleRef.current) {
+          if (workletModuleUrl) URL.revokeObjectURL(workletModuleUrl);
+          return null;
+        }
+        workletModuleUrlRef.current = workletModuleUrl;
+        return workletModuleUrl;
+      });
+
+      const [stream, workletModuleUrl] = await Promise.all([mediaPromise, workletsPromise]);
+      if (lifecycle !== lifecycleRef.current) return;
+      if (!stream) throw new Error("A microphone is not available in this browser.");
+
       const microphoneSource = context.createMediaStreamSource(stream);
       const microphoneAnalyser = context.createAnalyser();
       microphoneAnalyser.fftSize = 256;
@@ -860,6 +938,45 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       processorRef.current = capture.node;
       silentGainRef.current = silentGain;
 
+      const sendOrBufferCapture = (data: string) => {
+        const liveSession = sessionRef.current;
+        if (captureLiveRef.current && liveSession) {
+          liveSession.sendRealtimeInput({
+            audio: { data, mimeType: "audio/pcm;rate=16000" },
+          });
+          return;
+        }
+        pushVoiceStartupPacket(startupAudioBufferRef.current, data);
+      };
+
+      if (capture.kind === "worklet") {
+        capture.node.port.onmessage = (event: MessageEvent<ArrayBuffer>) => {
+          if (lifecycle !== lifecycleRef.current) return;
+          sendOrBufferCapture(pcm16BufferToBase64(event.data));
+        };
+        releaseCaptureRef.current = () => { capture.node.port.onmessage = null; };
+      } else {
+        const downsampler = createStreamingDownsampler(context.sampleRate, VOICE_CAPTURE_TARGET_RATE);
+        captureDownsamplerRef.current = downsampler;
+        capture.node.onaudioprocess = (event) => {
+          if (lifecycle !== lifecycleRef.current) return;
+          const samples = downsampler.push(event.inputBuffer.getChannelData(0));
+          if (samples.length === 0) return;
+          sendOrBufferCapture(float32ToPcm16Base64(samples));
+        };
+        releaseCaptureRef.current = () => { capture.node.onaudioprocess = null; };
+      }
+      // Handler is already buffering, so connecting the microphone during token/Live
+      // setup keeps speech spoken on click instead of dropping it. Packets stay local
+      // until the session is live; they are not flushed into Gemini beforehand.
+      microphoneSource.connect(capture.node);
+      beginAmplitudeUpdates();
+
+      const tokenData = await tokenPromise;
+      if (lifecycle !== lifecycleRef.current) return;
+      const threadId = sessionThreadRef.current;
+      if (!threadId) throw new Error("Voice Mode could not start a conversation.");
+
       const ai = new GoogleGenAI({
         apiKey: tokenData.token,
         httpOptions: { apiVersion: tokenData.apiVersion },
@@ -883,39 +1000,23 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       sessionRef.current = session;
       initializeLiveHistory(session, tokenData.history);
       void prefetchAcknowledgement(threadId, lifecycle);
-      if (capture.kind === "worklet") {
-        capture.node.port.onmessage = (event: MessageEvent<ArrayBuffer>) => {
-          if (sessionRef.current !== session) return;
-          session.sendRealtimeInput({
-            audio: { data: pcm16BufferToBase64(event.data), mimeType: "audio/pcm;rate=16000" },
-          });
-        };
-        releaseCaptureRef.current = () => { capture.node.port.onmessage = null; };
-      } else {
-        const downsampler = createStreamingDownsampler(context.sampleRate, VOICE_CAPTURE_TARGET_RATE);
-        captureDownsamplerRef.current = downsampler;
-        capture.node.onaudioprocess = (event) => {
-          if (sessionRef.current !== session) return;
-          const samples = downsampler.push(event.inputBuffer.getChannelData(0));
-          if (samples.length === 0) return;
-          session.sendRealtimeInput({
-            audio: { data: float32ToPcm16Base64(samples), mimeType: "audio/pcm;rate=16000" },
-          });
-        };
-        releaseCaptureRef.current = () => { capture.node.onaudioprocess = null; };
+      for (const data of startupAudioBufferRef.current) {
+        session.sendRealtimeInput({
+          audio: { data, mimeType: "audio/pcm;rate=16000" },
+        });
       }
-      // Connected only once a handler is listening. A worklet port queues everything
-      // posted before that, which would flush pre-session audio into speech detection.
-      microphoneSource.connect(capture.node);
-      beginAmplitudeUpdates();
+      startupAudioBufferRef.current = [];
+      captureLiveRef.current = true;
+      tokenPrefetchRef.current = null;
       updateState("listening");
     } catch (startError) {
+      if (lifecycle !== lifecycleRef.current) return;
       const denied = startError instanceof DOMException && startError.name === "NotAllowedError";
       fail(denied
         ? "Microphone access was denied. Allow microphone access to use Voice Mode."
         : startError instanceof Error ? startError.message : "Voice Mode could not start.");
     }
-  }, [beginAmplitudeUpdates, fail, handleServerMessage, prefetchAcknowledgement, schedulePlaybackSettle, updateState]);
+  }, [beginAmplitudeUpdates, ensureVoiceToken, fail, handleServerMessage, prefetchAcknowledgement, schedulePlaybackSettle, updateState]);
 
   const stop = useCallback(() => {
     setError("");
@@ -944,5 +1045,6 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     stop,
     stopIfThreadChanged,
     updatePageContext,
+    prefetchToken,
   };
 }

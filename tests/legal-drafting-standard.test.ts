@@ -175,6 +175,8 @@ test("draft model and thinking configuration remain unchanged and each path has 
     readFile("server.ts", "utf8"),
   ]);
   assert.equal((deliverables.match(/model\("draft-generation"/g) ?? []).length, 1);
+  assert.match(deliverables, /callModelStream\)\("draft-generation"/);
+  assert.match(deliverables, /onDraftChunk/);
   const route = server.slice(
     server.indexOf('app.post("/api/drafts"'),
     server.indexOf('app.post("/api/drafts/:id/client-revision"')

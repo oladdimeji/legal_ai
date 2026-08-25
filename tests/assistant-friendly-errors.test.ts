@@ -23,6 +23,6 @@ test("temporary UI errors are calm, local-only, and do not trigger another reque
   assert.match(assistant, /m\.metadata\?\.error !== true/);
   const catchBlock = assistant.slice(assistant.indexOf("} catch (err: any)"), assistant.indexOf("} finally", assistant.indexOf("} catch (err: any)")));
   assert.doesNotMatch(catchBlock, /fetch\(/);
-  assert.match(assistant, /\{loading && !streaming \? \(/);
-  assert.match(assistant, /const res = await fetch[\s\S]*const data = await res\.json\(\)/);
+  assert.match(assistant, /\{loading && !streaming && draftStream === null \? \(/);
+  assert.match(assistant, /consumeAssistantTurnResponse/);
 });

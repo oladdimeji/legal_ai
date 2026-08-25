@@ -7,7 +7,7 @@ import type {
 } from "../../src/types.js";
 import { buildAssistantDraftPrompt, titleForAssistantDraft } from "../assistantDrafting.js";
 import { cleanGeneratedWorkProductContent } from "../generatedContentCleanup.js";
-import { callModel, type GenerationModelCall } from "../model.js";
+import { callModel, callModelStream, type DraftTextChunkHandler, type GenerationModelCall, type StreamingGenerationModelCall } from "../model.js";
 import { db } from "../db.js";
 import type { OwnershipContext } from "../db.js";
 import { LAWYER_ASSISTANT_CHARTER } from "./assistantCharter.js";
@@ -21,6 +21,7 @@ import type { AssistantWebResearchResult } from "./assistantWebResearch.js";
 
 type Database = typeof db;
 type Model = GenerationModelCall;
+type StreamModel = StreamingGenerationModelCall;
 
 export type AssistantDeliverableResult = {
   document: AssistantDocumentReference;
@@ -86,6 +87,8 @@ export async function createAssistantDeliverable(input: {
   conversationContext: string;
   database?: Database;
   model?: Model;
+  streamModel?: StreamModel;
+  onDraftChunk?: DraftTextChunkHandler;
 }): Promise<AssistantDeliverableResult> {
   if (input.plan.deliverable.kind === "message" || !input.plan.deliverable.documentAction) {
     throw new Error("The Assistant plan does not request a document deliverable");
@@ -150,17 +153,25 @@ export async function createAssistantDeliverable(input: {
     depth: input.plan.depth,
   });
   const generateDocumentContent = async () => {
-    const result = await model("draft-generation", [{ role: "user", content: prompt }], {
+    const messages = [{ role: "user", content: prompt }];
+    const options = {
       googleSearch: false,
-      thinkingLevel: "minimal",
+      thinkingLevel: "minimal" as const,
       systemInstruction: LAWYER_ASSISTANT_CHARTER,
-    });
+    };
+    const result = input.onDraftChunk
+      ? await (input.streamModel || callModelStream)("draft-generation", messages, options, input.onDraftChunk)
+      : await model("draft-generation", messages, options);
     return cleanGeneratedWorkProductContent(result.text);
   };
   // A thinking model can occasionally return a successful response that carries no
   // text. That is not a provider error, so the transient retry runner never covers
   // it, and the request would fail even though repeating it normally succeeds.
-  const content = (await generateDocumentContent()) || (await generateDocumentContent());
+  let content = await generateDocumentContent();
+  if (!content) {
+    input.onDraftChunk?.({ reset: true });
+    content = await generateDocumentContent();
+  }
   if (!content) throw new Error("The model did not return document content");
   const generatedTitle = titleForAssistantDraft(content, input.instruction, input.thread.title);
 

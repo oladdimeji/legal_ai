@@ -1,5 +1,14 @@
 # Compact Upgrade Progress
 
+## Voice Agent ready-on-click and display-only draft streaming
+
+- Voice Mode no longer waits for microphone, token, and audio worklets in series. Click starts those in parallel, hover prefetches a short-lived Live token when a conversation already exists, and speech captured during `connecting` is buffered locally then sent only after the Live session is up.
+- Empty conversations create the thread in parallel with Voice startup instead of blocking the microphone request. Silent-on-open, VAD, tool routing, transcript persistence, and the Voice working panel are unchanged.
+- Document drafting now streams the same `draft-generation` call as NDJSON display chunks. The working card yields to a throwaway preview, then the preview is discarded and the saved confirmation plus document card appear exactly as before.
+- Ordinary chat still uses JSON and the existing post-arrival reveal. Cleaning, title extraction, Work Product / Assistant Document save, empty-content retry, citations, and follow-up suggestions are unchanged. Partial drafts are not persisted.
+- No schema, migration, dependency, authentication, workspace-isolation, or Matter-isolation changes were made.
+- Verification: `npm run lint` passed, all 489 tests passed, and `npm run build` passed. The existing non-fatal large-chunk warning remains. Live Voice click-to-listen and long-document streaming were not exercised in a browser in this session.
+
 ## History keyword search
 
 - Added a debounced History search field that searches authorized conversation titles and message content while retaining the existing General Assistant and Matter `Show` filter, card layout, opening flow, and deletion behavior.

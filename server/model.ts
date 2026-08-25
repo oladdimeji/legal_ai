@@ -65,11 +65,27 @@ export type ModelGenerationResult = {
   groundingMetadata: GroundingMetadata | null;
 };
 
+export type DraftTextChunkHandler = (event: { text?: string; reset?: boolean }) => void;
+
 export type GenerationModelCall = (
   taskType: GenerationModelTaskType,
   messages: any[],
   options?: CallModelOptions
 ) => Promise<ModelGenerationResult>;
+
+export type StreamingGenerationModelCall = (
+  taskType: GenerationModelTaskType,
+  messages: any[],
+  options: CallModelOptions | undefined,
+  onChunk?: DraftTextChunkHandler
+) => Promise<ModelGenerationResult>;
+
+export function mergeGeneratedTextChunk(current: string, incoming: string): string {
+  if (!incoming) return current;
+  if (!current) return incoming;
+  if (incoming.startsWith(current)) return incoming;
+  return `${current}${incoming}`;
+}
 
 export function buildGenerationConfig(
   taskType: GenerationModelTaskType,
@@ -256,8 +272,25 @@ export type GenerationClient = {
       contents: Array<{ role: string; parts: Array<{ text: string }> }>;
       config: any;
     }) => Promise<any>;
+    generateContentStream?: (input: {
+      model: string;
+      contents: Array<{ role: string; parts: Array<{ text: string }> }>;
+      config: any;
+    }) => AsyncIterable<any> | Promise<AsyncIterable<any>>;
   };
 };
+
+function generationContents(messages: any[]) {
+  return messages.map((message) => ({
+    role: message.role === "assistant" ? "model" : "user",
+    parts: [{ text: message.content }],
+  }));
+}
+
+async function asAsyncIterable(value: AsyncIterable<any> | Promise<AsyncIterable<any>>): Promise<AsyncIterable<any>> {
+  const resolved = await value;
+  return resolved;
+}
 
 export async function generateContentWithClient(
   taskType: GenerationModelTaskType,
@@ -266,10 +299,7 @@ export async function generateContentWithClient(
   client: GenerationClient
 ): Promise<ModelGenerationResult> {
   const modelName = resolveModelForTask(taskType);
-  const contents = messages.map((message) => ({
-    role: message.role === "assistant" ? "model" : "user",
-    parts: [{ text: message.content }],
-  }));
+  const contents = generationContents(messages);
   const response = await client.models.generateContent({
     model: modelName,
     contents,
@@ -284,6 +314,48 @@ export async function generateContentWithClient(
     text: response.text || "",
     groundingMetadata: response.candidates?.[0]?.groundingMetadata || null,
   };
+}
+
+export async function generateContentStreamWithClient(
+  taskType: GenerationModelTaskType,
+  messages: any[],
+  options: CallModelOptions,
+  client: GenerationClient,
+  onChunk?: DraftTextChunkHandler
+): Promise<ModelGenerationResult> {
+  const generateContentStream = client.models.generateContentStream;
+  if (typeof generateContentStream !== "function") {
+    const result = await generateContentWithClient(taskType, messages, options, client);
+    if (result.text) onChunk?.({ text: result.text });
+    return result;
+  }
+  const modelName = resolveModelForTask(taskType);
+  const stream = await asAsyncIterable(generateContentStream({
+    model: modelName,
+    contents: generationContents(messages),
+    config: buildGenerationConfig(taskType, options),
+  }));
+  let text = "";
+  let usageMetadata: any;
+  let groundingMetadata: GroundingMetadata | null = null;
+  for await (const chunk of stream) {
+    const incoming = typeof chunk?.text === "string" ? chunk.text : "";
+    if (incoming) {
+      const next = mergeGeneratedTextChunk(text, incoming);
+      const delta = next.slice(text.length);
+      text = next;
+      if (delta) onChunk?.({ text: delta });
+    }
+    if (chunk?.usageMetadata) usageMetadata = chunk.usageMetadata;
+    const grounding = chunk?.candidates?.[0]?.groundingMetadata;
+    if (grounding) groundingMetadata = grounding;
+  }
+  captureGeminiGenerationUsage({
+    model: modelName,
+    taskType,
+    usageMetadata,
+  });
+  return { text, groundingMetadata };
 }
 
 function embeddingVectors(response: unknown, expectedCount: number): number[][] {
@@ -433,5 +505,44 @@ export async function callModel(
 
     default:
       throw new Error(`Unsupported model provider: ${provider}`);
+  }
+}
+
+export async function callModelStream(
+  taskType: GenerationModelTaskType,
+  messages: any[],
+  options: CallModelOptions = {},
+  onChunk?: DraftTextChunkHandler
+): Promise<ModelGenerationResult> {
+  const provider = options.provider || "gemini";
+  if (provider !== "gemini") throw new Error(`Unsupported model provider: ${provider}`);
+  const modelName = resolveModelForTask(taskType);
+  try {
+    let attempt = 0;
+    return await runWithTransientModelRetries(async () => {
+      attempt += 1;
+      if (attempt > 1) onChunk?.({ reset: true });
+      const ai = getAiClient();
+      return generateContentStreamWithClient(
+        taskType,
+        messages,
+        options,
+        ai as unknown as GenerationClient,
+        onChunk
+      );
+    }, {
+      onRetry: (details) => {
+        const status = details.statusCode ? ` status=${details.statusCode}` : "";
+        console.warn(
+          `[callModelStream] Transient Gemini failure for ${taskType}/${modelName}. ` +
+          `Retry ${details.retryNumber} of ${details.maxAttempts - 1} in ${details.delayMs}ms. ` +
+          `kind=${details.kind}${status}`
+        );
+      },
+    });
+  } catch (error) {
+    const safeError = new Error(friendlyModelErrorMessage(error));
+    (safeError as Error & { cause?: unknown }).cause = error;
+    throw safeError;
   }
 }

@@ -22,6 +22,10 @@ import {
   type WorkingActivity,
 } from "../lib/assistantWorkingActivities";
 import { useVoiceMode } from "../hooks/useVoiceMode";
+import {
+  consumeAssistantTurnResponse,
+  isAssistantNdjsonResponse,
+} from "../lib/assistantMessageResponse";
 
 type TemporaryFile = {
   id: string;
@@ -207,6 +211,7 @@ export default function AssistantView({
   const [inputValue, setInputValue] = useState("");
   const [loading, setLoading] = useState(false);
   const [streaming, setStreaming] = useState(false);
+  const [draftStream, setDraftStream] = useState<string | null>(null);
   const [workingActivities, setWorkingActivities] = useState<WorkingActivity[]>([]);
   const [workingStageIndex, setWorkingStageIndex] = useState(0);
   const [voiceWorkingStageIndex, setVoiceWorkingStageIndex] = useState(0);
@@ -430,12 +435,13 @@ export default function AssistantView({
   // instantly instead of restarting a smooth scroll animation on every chunk.
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: voiceMode.active ? "auto" : "smooth" });
-  }, [messages, voiceMode.liveTranscripts, voiceMode.liveDeliverable, loading, workingStageIndex, voiceMode.working, voiceWorkingStageIndex]);
+  }, [messages, voiceMode.liveTranscripts, voiceMode.liveDeliverable, loading, workingStageIndex, voiceMode.working, voiceWorkingStageIndex, draftStream]);
 
   useEffect(() => {
     if (
       !loading ||
       streaming ||
+      draftStream !== null ||
       workingActivities.length < 2 ||
       workingStageIndex >= workingActivities.length - 1
     ) return;
@@ -451,7 +457,7 @@ export default function AssistantView({
         workingActivityTimerRef.current = null;
       }
     };
-  }, [loading, streaming, workingActivities, workingStageIndex]);
+  }, [loading, streaming, draftStream, workingActivities, workingStageIndex]);
 
   useEffect(() => {
     if (!voiceMode.working) {
@@ -526,11 +532,11 @@ export default function AssistantView({
       voiceMode.stop();
       return;
     }
-    let threadId = activeThreadIdRef.current;
-    if (!threadId) {
-      threadId = await handleStartNewThread(pageContext, conversationVersionRef.current);
-    }
-    if (threadId) await voiceMode.start(threadId, pageContext);
+    const existingThreadId = activeThreadIdRef.current;
+    const threadPromise = existingThreadId
+      ? Promise.resolve(existingThreadId)
+      : handleStartNewThread(pageContext, conversationVersionRef.current);
+    await voiceMode.start(threadPromise, pageContext);
   };
 
   const handleSend = async (e?: React.FormEvent, customQuery?: string) => {
@@ -549,6 +555,7 @@ export default function AssistantView({
     setLoading(true);
     const submissionSequence = ++submissionSequenceRef.current;
     setStreaming(false);
+    setDraftStream(null);
     setWorkingStageIndex(0);
     const submittedPageContext = pageContext;
     const submittedConversationVersion = conversationVersionRef.current;
@@ -604,8 +611,24 @@ export default function AssistantView({
             .map(({ filename, text }) => ({ filename, text }))
         })
       });
+      const streamedResponse = isAssistantNdjsonResponse(res.headers.get("content-type"));
+      const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      const data = await consumeAssistantTurnResponse(res, {
+        onDraftDelta: (preview) => {
+          if (
+            !componentMountedRef.current ||
+            conversationVersionRef.current !== submittedConversationVersion ||
+            activeThreadIdRef.current !== currentThreadId ||
+            prefersReducedMotion
+          ) return;
+          setDraftStream(preview);
+        },
+        onDraftReset: () => {
+          if (prefersReducedMotion) return;
+          setDraftStream("");
+        },
+      });
       
-      const data = await res.json();
       if (typeof data.error === "string" && data.error.trim()) {
         throw new AssistantServerError(data.error);
       }
@@ -621,6 +644,9 @@ export default function AssistantView({
 
       const savedUserMessage = data.userMessage as Message;
       const savedAssistantMessage = data.assistantMessage as Message;
+      if (!savedUserMessage?.id || !savedAssistantMessage?.id) {
+        throw new AssistantServerError("The Assistant could not complete the request. Please try again.");
+      }
       const leadingWhitespace = savedAssistantMessage.content.match(/^\s*/)?.[0] || "";
       const streamTokens = savedAssistantMessage.content.slice(leadingWhitespace.length).match(/\S+\s*/g) || [];
       // The answer has already arrived, so the reveal is presentation only and must
@@ -633,19 +659,19 @@ export default function AssistantView({
       const streamDelay = Math.max(16, Math.round(targetDuration / Math.max(1, Math.ceil(wordCount / tokensPerStep))));
       let revealedTokenCount = 0;
 
+      setStreaming(true);
+      setDraftStream(null);
       setMessages((prev) => {
         const messagesWithoutSavedCopies = prev.filter((message) =>
           message.id !== savedUserMessage.id && message.id !== savedAssistantMessage.id
         );
         return [
           ...messagesWithoutSavedCopies.map((message) => message.id === tempUserMsg.id ? savedUserMessage : message),
-          { ...savedAssistantMessage, content: "" },
+          { ...savedAssistantMessage, content: streamedResponse ? savedAssistantMessage.content : "" },
         ];
       });
-      setStreaming(true);
 
-      const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      if (prefersReducedMotion || wordCount === 0) {
+      if (streamedResponse || prefersReducedMotion || wordCount === 0) {
         setMessages((prev) => prev.map((message) =>
           message.id === savedAssistantMessage.id ? savedAssistantMessage : message
         ));
@@ -696,6 +722,7 @@ export default function AssistantView({
       responseStreamResolveRef.current?.();
       responseStreamResolveRef.current = null;
       setStreaming(false);
+      setDraftStream(null);
       console.error("Error processing request:", err);
       if (
         conversationVersionRef.current !== submittedConversationVersion ||
@@ -718,6 +745,7 @@ export default function AssistantView({
         submissionSequenceRef.current === submissionSequence
       ) {
         setStreaming(false);
+        setDraftStream(null);
         setLoading(false);
       }
     }
@@ -1020,6 +1048,10 @@ export default function AssistantView({
               <button
                 type="button"
                 onClick={() => void handleVoiceToggle()}
+                onPointerEnter={() => {
+                  const threadId = activeThreadIdRef.current;
+                  if (threadId && !voiceMode.active) voiceMode.prefetchToken(threadId, pageContext);
+                }}
                 id="btn-voice-mode"
                 aria-label={voiceMode.active ? "Turn off Voice Agent" : "Start Voice Conversation"}
                 aria-pressed={voiceMode.active}
@@ -1355,7 +1387,7 @@ export default function AssistantView({
                 );
               })}
 
-              {loading && !streaming ? (
+              {loading && !streaming && draftStream === null ? (
                 <AssistantWorkingActivityPanel
                   activities={workingActivities}
                   stageIndex={workingStageIndex}
@@ -1365,6 +1397,21 @@ export default function AssistantView({
                   activities={VOICE_WORKING_ACTIVITIES}
                   stageIndex={voiceWorkingStageIndex}
                 />
+              ) : null}
+
+              {draftStream !== null ? (
+                <div className="w-full max-w-3xl mx-auto flex flex-col py-5" id="assistant-draft-stream" role="status" aria-live="polite">
+                  <div className="w-full text-sm leading-relaxed text-zinc-950">
+                    <div className="flex items-center gap-2 mb-2 select-none">
+                      <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-zinc-500">
+                        AI Legal Assistant
+                      </span>
+                    </div>
+                    <div className="font-sans font-normal leading-relaxed text-zinc-900">
+                      {draftStream ? <FormattedMarkdown content={draftStream} /> : null}
+                    </div>
+                  </div>
+                </div>
               ) : null}
 
               <div ref={messagesEndRef} />

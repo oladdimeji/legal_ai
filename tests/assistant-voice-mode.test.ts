@@ -22,9 +22,13 @@ import {
   finalizeVoiceTranscripts,
   initializeLiveHistory,
   looksLikeVoiceDocumentRequest,
+  pushVoiceStartupPacket,
   shouldPlayVoiceAcknowledgement,
   shouldAdvanceVoiceTurnBoundary,
   voiceAssistantInstruction,
+  voicePrefetchStillValid,
+  VOICE_STARTUP_BUFFER_PACKETS,
+  VOICE_TOKEN_PREFETCH_TTL_MS,
 } from "../src/hooks/useVoiceMode.js";
 
 function message(id: string, role: "user" | "assistant", content: string): Message {
@@ -429,7 +433,7 @@ test("Voice Mode lifecycle is separate from standard send and releases microphon
   ]);
   const voiceToggle = assistant.slice(assistant.indexOf("const handleVoiceToggle"), assistant.indexOf("const handleSend"));
   assert.doesNotMatch(voiceToggle, /handleSend/);
-  assert.match(voiceToggle, /voiceMode\.start\(threadId, pageContext\)/);
+  assert.match(voiceToggle, /voiceMode\.start\(threadPromise, pageContext\)/);
   assert.match(voiceToggle, /voiceMode\.stop\(\)/);
   assert.match(hook, /getUserMedia/);
   assert.match(hook, /sendRealtimeInput/);
@@ -574,9 +578,9 @@ test("Voice working state drives the existing Assistant activity panel through a
   assert.match(voiceEffect, /WORKING_ACTIVITY_DELAY_MS/);
   assert.match(voiceEffect, /window\.clearTimeout\(voiceWorkingActivityTimerRef\.current\)/);
   assert.doesNotMatch(voiceEffect, /setLoading|setStreaming|handleSend/);
-  assert.match(assistant, /loading && !streaming \? \([\s\S]*activities=\{workingActivities\}[\s\S]*\) : voiceMode\.working \? \([\s\S]*activities=\{VOICE_WORKING_ACTIVITIES\}[\s\S]*\) : null/);
+  assert.match(assistant, /loading && !streaming && draftStream === null \? \([\s\S]*activities=\{workingActivities\}[\s\S]*\) : voiceMode\.working \? \([\s\S]*activities=\{VOICE_WORKING_ACTIVITIES\}[\s\S]*\) : null/);
   assert.match(assistant, /function AssistantWorkingActivityPanel[\s\S]*role="status"[\s\S]*aria-live="polite"[\s\S]*visibleAssistantWorkingActivities\(activities, stageIndex\)/);
-  assert.match(assistant, /\[messages, voiceMode\.liveTranscripts, voiceMode\.liveDeliverable, loading, workingStageIndex, voiceMode\.working, voiceWorkingStageIndex\]/);
+  assert.match(assistant, /\[messages, voiceMode\.liveTranscripts, voiceMode\.liveDeliverable, loading, workingStageIndex, voiceMode\.working, voiceWorkingStageIndex, draftStream\]/);
   assert.match(assistant, /componentMountedRef\.current = false;[\s\S]*window\.clearTimeout\(voiceWorkingActivityTimerRef\.current\)/);
 });
 
@@ -706,4 +710,30 @@ test("live Voice transcriptions render as temporary messages and yield to saved 
   assert.match(assistant, /displayMessages\.map/);
   assert.match(assistant, /liveVoiceTranscript/);
   assert.doesNotMatch(assistant.slice(assistant.indexOf("const liveTranscriptMessages"), assistant.indexOf("// New docked side editor")), /handleSend|\/messages/);
+});
+
+test("Voice start overlaps microphone, token, and audio setup and buffers click-time speech", async () => {
+  const [assistant, hook] = await Promise.all([
+    readFile(new URL("../src/components/AssistantView.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8"),
+  ]);
+  const start = hook.slice(hook.indexOf("const start = useCallback"), hook.indexOf("const stop ="));
+  assert.match(start, /Promise\.all\(\[mediaPromise, workletsPromise\]\)/);
+  assert.match(start, /ensureVoiceToken\(threadId, pageContext\)/);
+  assert.match(start, /pushVoiceStartupPacket\(startupAudioBufferRef\.current, data\)/);
+  assert.match(start, /captureLiveRef\.current = true/);
+  assert.match(start, /microphoneSource\.connect\(capture\.node\)[\s\S]*const tokenData = await tokenPromise/);
+  assert.ok(start.indexOf("microphoneSource.connect(capture.node)") < start.indexOf("ai.live.connect"));
+  assert.match(assistant, /onPointerEnter/);
+  assert.match(assistant, /voiceMode\.prefetchToken\(threadId, pageContext\)/);
+  assert.match(assistant, /handleStartNewThread\(pageContext, conversationVersionRef\.current\)/);
+  assert.equal(VOICE_STARTUP_BUFFER_PACKETS, 62);
+  assert.equal(VOICE_TOKEN_PREFETCH_TTL_MS, 50_000);
+  assert.equal(voicePrefetchStillValid(0, 49_999), true);
+  assert.equal(voicePrefetchStillValid(0, 50_000), false);
+  const packets: string[] = [];
+  for (let index = 0; index < 70; index += 1) pushVoiceStartupPacket(packets, `p${index}`, 62);
+  assert.equal(packets.length, 62);
+  assert.equal(packets[0], "p8");
+  assert.equal(packets[61], "p69");
 });
