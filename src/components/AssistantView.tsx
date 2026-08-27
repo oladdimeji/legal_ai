@@ -14,6 +14,7 @@ import FormattedMarkdown from "./FormattedMarkdown";
 import FileSourcePicker from "./FileSourcePicker";
 import { browserFileIdentity, MAX_SELECTED_FILES } from "../hooks/useCumulativeFileSelection";
 import { stripAssistantInlineCitations } from "../lib/assistantCitations";
+import { isDocumentConfirmationContent } from "../lib/documentConfirmation";
 import { downloadDocx } from "../lib/downloadDocx";
 import {
   advanceWorkingActivityIndex,
@@ -1246,28 +1247,42 @@ export default function AssistantView({
                             <CollapsibleSteps steps={m.steps} />
                           )}
 
-                          {/* Body Text */}
-                          <div className="font-sans font-normal leading-relaxed text-zinc-900">
-                            {renderMessageTextWithCitations(m.content, m.citations)}
-                          </div>
-
-                          {documentReferenceForMessage(m) && (() => {
-                            const document = documentReferenceForMessage(m)!;
-                            const exportUrl = documentExportUrl(document);
+                          {(() => {
+                            const document = documentReferenceForMessage(m);
+                            const confirmationOnly = Boolean(document && isDocumentConfirmationContent(m.content));
                             return (
-                              <div className="mt-4 rounded-lg border border-zinc-200 bg-zinc-50 p-3" id={`assistant-document-card-${m.id}`}>
-                                <div className="flex min-w-0 items-start gap-2.5">
-                                  <FileText className="mt-0.5 h-4 w-4 shrink-0 text-zinc-500" />
-                                  <div className="min-w-0 flex-1">
-                                    <p className="truncate text-xs font-semibold text-zinc-900">{document.title}</p>
-                                    <p className="mt-0.5 text-[9px] font-mono uppercase text-zinc-400">{document.kind === "matterWorkProduct" ? "Matter Work Product" : "Private assistant document"}</p>
+                              <>
+                                {!confirmationOnly && (
+                                  <div className="font-sans font-normal leading-relaxed text-zinc-900">
+                                    {renderMessageTextWithCitations(m.content, m.citations)}
                                   </div>
-                                </div>
-                                <div className="mt-3 flex flex-wrap gap-2">
-                                  <button type="button" onClick={() => onOpenDocument(document)} className="rounded bg-zinc-950 px-3 py-1.5 text-[10px] font-mono font-bold uppercase text-white">Open</button>
-                                  <button type="button" onClick={() => void downloadDocx(exportUrl)} className="inline-flex items-center gap-1 rounded border border-zinc-300 bg-white px-3 py-1.5 text-[10px] font-mono font-bold uppercase text-zinc-800"><Download className="h-3.5 w-3.5" />Download .docx</button>
-                                </div>
-                              </div>
+                                )}
+
+                                {document && (() => {
+                                  const exportUrl = documentExportUrl(document);
+                                  return (
+                                    <div className={`${confirmationOnly ? "" : "mt-4 "}rounded-lg border border-zinc-200 bg-zinc-50 p-3`} id={`assistant-document-card-${m.id}`}>
+                                      <div className="flex min-w-0 items-start gap-2.5">
+                                        <FileText className="mt-0.5 h-4 w-4 shrink-0 text-zinc-500" />
+                                        <div className="min-w-0 flex-1">
+                                          {confirmationOnly ? (
+                                            <div className="font-sans font-normal leading-relaxed text-zinc-900">
+                                              {renderMessageTextWithCitations(m.content, m.citations)}
+                                            </div>
+                                          ) : (
+                                            <p className="truncate text-xs font-semibold text-zinc-900">{document.title}</p>
+                                          )}
+                                          <p className="mt-0.5 text-[9px] font-mono uppercase text-zinc-400">{document.kind === "matterWorkProduct" ? "Matter Work Product" : "Private assistant document"}</p>
+                                        </div>
+                                      </div>
+                                      <div className="mt-3 flex flex-wrap gap-2">
+                                        <button type="button" onClick={() => onOpenDocument(document)} className="rounded bg-zinc-950 px-3 py-1.5 text-[10px] font-mono font-bold uppercase text-white">Open</button>
+                                        <button type="button" onClick={() => void downloadDocx(exportUrl)} className="inline-flex items-center gap-1 rounded border border-zinc-300 bg-white px-3 py-1.5 text-[10px] font-mono font-bold uppercase text-zinc-800"><Download className="h-3.5 w-3.5" />Download .docx</button>
+                                      </div>
+                                    </div>
+                                  );
+                                })()}
+                              </>
                             );
                           })()}
 

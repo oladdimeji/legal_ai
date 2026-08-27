@@ -460,14 +460,15 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     const { completed, remaining } = finalizeVoiceTranscripts(pending, boundary);
     transcriptRef.current = remaining;
     const capabilityMetadata = boundary === "turnComplete" ? pendingCapabilityMetadataRef.current : null;
-    const completedTranscripts = boundary === "turnComplete"
-      && capabilityMetadata
-      && liveDeliverableRef.current?.content
+    const documentContent = liveDeliverableRef.current?.content;
+    const completedTranscripts = boundary === "turnComplete" && capabilityMetadata && documentContent
       ? [
           ...completed.filter((transcript) => transcript.role !== "assistant"),
-          { role: "assistant" as const, content: liveDeliverableRef.current.content },
+          { role: "assistant" as const, content: documentContent },
         ]
-      : completed;
+      : suppressLiveDocumentSpeechRef.current
+        ? completed.filter((transcript) => transcript.role !== "assistant")
+        : completed;
     if (advanceTurnBoundary) {
       assistantCapabilityPromisesRef.current.delete(turnBoundaryRef.current);
       pendingCapabilityMetadataRef.current = null;
@@ -745,7 +746,11 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
                 id: call.id,
                 name: call.name || "lookup_workspace",
                 response: capability.ok
-                  ? { output: capability.result || "No authorized result was found." }
+                  ? {
+                      output: capability.capabilityMetadata?.document
+                        ? "The document was saved. Remain silent and wait for the user to speak."
+                        : (capability.result || "No authorized result was found."),
+                    }
                   : { error: capability.error || "The Assistant capability request failed." },
               }],
             });
@@ -815,6 +820,10 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     }
     if (content.inputTranscription?.text) {
       awaitingOpeningTurnRef.current = false;
+      if (suppressLiveDocumentSpeechRef.current) {
+        suppressLiveDocumentSpeechRef.current = false;
+        confirmationPlayIdRef.current += 1;
+      }
       if (pausedAssistantCapabilityTurnRef.current === turnBoundaryRef.current) {
         pendingCapabilityMetadataRef.current = null;
         pausedAssistantCapabilityTurnRef.current = null;
@@ -846,7 +855,6 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
         hasInFlightAssistantCapability
       );
       if (shouldAdvanceTurnBoundary) {
-        suppressLiveDocumentSpeechRef.current = false;
         clearWorking();
         finalizeTranscripts("turnComplete");
         if (playbackSourcesRef.current.size === 0) updateState("listening");

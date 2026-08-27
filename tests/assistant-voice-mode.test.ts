@@ -279,10 +279,22 @@ test("Voice document completion keeps one card result and speaks that line after
   assert.match(toolHandler, /voice\/confirmation/);
   assert.match(toolHandler, /suppressLiveDocumentSpeechRef\.current/);
   assert.match(toolHandler, /if \(!suppressLiveDocumentSpeechRef\.current\) \{\s*scheduleAudio\(inlineData\.data/);
+  assert.match(toolHandler, /capability\.capabilityMetadata\?\.document[\s\S]*Remain silent and wait for the user to speak/);
   assert.match(hook, /completed\.filter\(\(transcript\) => transcript\.role !== "assistant"\)/);
-  assert.match(hook, /content: liveDeliverableRef\.current\.content/);
+  assert.match(hook, /content: documentContent/);
+  assert.match(hook, /suppressLiveDocumentSpeechRef\.current[\s\S]*completed\.filter\(\(transcript\) => transcript\.role !== "assistant"\)/);
   assert.match(hook, /content\.interrupted[\s\S]*confirmationPlayIdRef\.current \+= 1/);
+  assert.match(hook, /content\.inputTranscription\?\.text[\s\S]*suppressLiveDocumentSpeechRef\.current = false/);
+  assert.doesNotMatch(
+    hook.slice(hook.indexOf('if (content.turnComplete)'), hook.indexOf("  }, [clearWorking", hook.indexOf('if (content.turnComplete)'))),
+    /suppressLiveDocumentSpeechRef\.current = false/
+  );
   assert.doesNotMatch(toolHandler, /persistFinalTranscript|voice\/messages/);
+
+  const assistant = await readFile(new URL("../src/components/AssistantView.tsx", import.meta.url), "utf8");
+  assert.match(assistant, /confirmationOnly = Boolean\(document && isDocumentConfirmationContent\(m\.content\)\)/);
+  assert.match(assistant, /!confirmationOnly && \(/);
+  assert.match(assistant, /confirmationOnly \? \([\s\S]*renderMessageTextWithCitations\(m\.content/);
 });
 
 test("Voice heavy calls keep the normal working lifecycle without any progress heartbeat", async () => {

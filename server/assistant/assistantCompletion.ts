@@ -32,21 +32,15 @@ import {
 import type { AssistantSessionContext, AssistantPlan } from "./assistantTypes.js";
 import type { AssistantToolRunResult } from "./assistantToolExecutor.js";
 import type { AssistantWebResearchResult } from "./assistantWebResearch.js";
+import { assistantDocumentConfirmationContent } from "../../src/lib/documentConfirmation.js";
+
+export { assistantDocumentConfirmationContent } from "../../src/lib/documentConfirmation.js";
 
 type SuggestionGenerator = (
   history: Message[],
   answer: string,
   documentContext?: { title: string; kind: string; action: "create" | "revise" }
 ) => Promise<string[]>;
-
-export function assistantDocumentConfirmationContent(
-  documentAction: "create" | "revise" | undefined,
-  title: string
-): string {
-  return documentAction === "revise"
-    ? `I have created a revised version of **${title}**.`
-    : `I have created the **${title}**.`;
-}
 
 export type AssistantCompletionResult = {
   content: string;

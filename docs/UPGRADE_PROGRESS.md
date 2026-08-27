@@ -4,6 +4,7 @@
 
 - After a Voice draft or revision finishes, the visible result is the document card with `I have created the [Document Name].` or `I have created a revised version of [Document Name].` Typed chat uses the same card line.
 - Live no longer speaks a separate confirmation. The existing Kore TTS path reads that exact card line after `/voice/assistant` returns, so draft time is unchanged. Fail-open if TTS is unavailable. Unique titles are not stored in the acknowledgement cache.
+- The confirmation sentence is shown only on the card, not as a second chat line. Live follow-up speech after a document is dropped until the user speaks again, and the document tool response tells Live to remain silent so a speech-only message cannot be saved.
 - Acknowledgement phrase, trigger, prefetch, lookup, ordinary spoken answers, and document creation itself are unchanged.
 - No schema, migration, dependency, authentication, workspace-isolation, or Matter-isolation changes were made.
 - Verification: `npm run lint` passed, all 490 tests passed, and `npm run build` passed. The existing non-fatal large-chunk warning remains. Live Voice draft completion was not exercised in a browser in this session.

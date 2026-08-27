@@ -2,6 +2,10 @@ import { createHash } from "node:crypto";
 import { Modality, StartSensitivity, EndSensitivity, ThinkingLevel } from "@google/genai";
 import type { Message } from "../src/types.js";
 import { getAiClient } from "./model.js";
+import {
+  DOCUMENT_CONFIRMATION_MAX_CHARS,
+  documentConfirmationSpeech,
+} from "../src/lib/documentConfirmation.js";
 
 export const VOICE_MODE_CONFIG = {
   model: "gemini-3.1-flash-live-preview",
@@ -38,13 +42,10 @@ Use lookup_workspace as the fast path for straightforward authorized retrieval: 
 When the user asks you to create, draft, write, prepare, generate, or revise a document, call use_assistant_capabilities immediately as your first action in the turn, before producing any spoken audio. Do not announce the task, ask for permission, or speak a filler line first. After that function returns, remain silent. Do not speak a confirmation or read the document aloud.
 Treat both functions as your own internal actions. When either returns a verified result, report it as your own completed work in the first person, naturally and directly. Never mention function names, tools, capabilities, delegation, or another Assistant; do not say you asked anyone else, or hedge about what you can or cannot do directly. Before saying authenticated workspace information is unavailable, use the appropriate function. If a function finds no matching evidence, say naturally that it could not be found. Never fabricate progress or claim a particular stage is occurring unless the application actually supplied that stage. Do not repeatedly announce function use. When a function returns a result, preserve its facts and speak it naturally without inventing additional workspace evidence. Never invent private Matter or document facts, and never claim a function was used unless you actually used it. Do not proactively mention or enumerate Voice Mode's capability limitations. Do not provide definitive legal advice or invent facts.`;
 
-export const VOICE_DOCUMENT_CONFIRMATION_MAX_CHARS = 300;
+export const VOICE_DOCUMENT_CONFIRMATION_MAX_CHARS = DOCUMENT_CONFIRMATION_MAX_CHARS;
 
 export function voiceDocumentConfirmationSpeech(content: string): string | null {
-  const spoken = content.replace(/\*\*/g, "").replace(/\s+/g, " ").trim();
-  if (!spoken || spoken.length > VOICE_DOCUMENT_CONFIRMATION_MAX_CHARS || /[\r\n]/.test(spoken)) return null;
-  if (!/^I have created (?:a revised version of )?(?:the )?.+\.$/.test(spoken)) return null;
-  return spoken;
+  return documentConfirmationSpeech(content);
 }
 
 function voiceAcknowledgementRequestFor(acknowledgement: VoiceAcknowledgement) {
