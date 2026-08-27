@@ -22,15 +22,22 @@ export const VOICE_MODE_ACKNOWLEDGEMENT = {
   model: "gemini-3.1-flash-tts-preview",
 } as const;
 
+export const VOICE_MODE_DOCUMENT_CONFIRMATION = {
+  text: "I have created the document for you.",
+  model: VOICE_MODE_ACKNOWLEDGEMENT.model,
+} as const;
+
+export const VOICE_MODE_REVISION_CONFIRMATION = {
+  text: "I have created a revised version for you.",
+  model: VOICE_MODE_ACKNOWLEDGEMENT.model,
+} as const;
+
 export type VoiceAcknowledgementAudio = {
   data: string;
   mimeType: string;
 };
 
 const voiceAcknowledgementAudioCache = new Map<string, Promise<VoiceAcknowledgementAudio>>();
-const VOICE_CONFIRMATION_AUDIO_CACHE_LIMIT = 8;
-const voiceConfirmationAudioCache = new Map<string, Promise<VoiceAcknowledgementAudio>>();
-const voiceConfirmationAudioReady = new Map<string, VoiceAcknowledgementAudio>();
 
 type VoiceAcknowledgement = {
   text: string;
@@ -110,45 +117,18 @@ export function getVoiceAcknowledgementAudio(): Promise<VoiceAcknowledgementAudi
   return getVoiceAcknowledgementAudioFor(VOICE_MODE_ACKNOWLEDGEMENT);
 }
 
-function trimVoiceConfirmationAudioCache() {
-  while (voiceConfirmationAudioCache.size > VOICE_CONFIRMATION_AUDIO_CACHE_LIMIT) {
-    const oldest = voiceConfirmationAudioCache.keys().next().value;
-    if (oldest === undefined) break;
-    voiceConfirmationAudioCache.delete(oldest);
-    voiceConfirmationAudioReady.delete(oldest);
-  }
+export function getVoiceConfirmationAudio(): Promise<VoiceAcknowledgementAudio> {
+  return getVoiceAcknowledgementAudioFor(VOICE_MODE_DOCUMENT_CONFIRMATION);
 }
 
-export function getVoiceConfirmationAudio(text: string): Promise<VoiceAcknowledgementAudio> {
-  const spoken = voiceDocumentConfirmationSpeech(text);
-  if (!spoken) return Promise.reject(new Error("Voice confirmation text is invalid."));
-  const cached = voiceConfirmationAudioCache.get(spoken);
-  if (cached) return cached;
-
-  const generation = generateVoiceSpeechAudio(spoken);
-  voiceConfirmationAudioCache.set(spoken, generation);
-  trimVoiceConfirmationAudioCache();
-  void generation.then((audio) => {
-    if (voiceConfirmationAudioCache.get(spoken) === generation) {
-      voiceConfirmationAudioReady.set(spoken, audio);
-    }
-  }).catch(() => {
-    if (voiceConfirmationAudioCache.get(spoken) === generation) {
-      voiceConfirmationAudioCache.delete(spoken);
-      voiceConfirmationAudioReady.delete(spoken);
-    }
-  });
-  return generation;
+export function getVoiceRevisionConfirmationAudio(): Promise<VoiceAcknowledgementAudio> {
+  return getVoiceAcknowledgementAudioFor(VOICE_MODE_REVISION_CONFIRMATION);
 }
 
-export function prefetchVoiceConfirmationAudio(text: string): void {
-  void getVoiceConfirmationAudio(text).catch(() => undefined);
-}
-
-export function peekReadyVoiceConfirmationAudio(text: string): VoiceAcknowledgementAudio | null {
-  const spoken = voiceDocumentConfirmationSpeech(text);
-  if (!spoken) return null;
-  return voiceConfirmationAudioReady.get(spoken) ?? null;
+export function warmupVoiceSpeechAudio(): void {
+  void getVoiceAcknowledgementAudio().catch(() => undefined);
+  void getVoiceConfirmationAudio().catch(() => undefined);
+  void getVoiceRevisionConfirmationAudio().catch(() => undefined);
 }
 
 export function normalizeFirmLibraryTitle(value: string): string {

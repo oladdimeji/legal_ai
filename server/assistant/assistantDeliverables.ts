@@ -5,9 +5,9 @@ import type {
   Thread,
   WorkspacePageContext,
 } from "../../src/types.js";
-import { buildAssistantDraftPrompt, extractedAssistantDraftTitle, titleForAssistantDraft } from "../assistantDrafting.js";
+import { buildAssistantDraftPrompt, titleForAssistantDraft } from "../assistantDrafting.js";
 import { cleanGeneratedWorkProductContent } from "../generatedContentCleanup.js";
-import { callModel, callModelStream, mergeGeneratedTextChunk, type DraftTextChunkHandler, type GenerationModelCall, type StreamingGenerationModelCall } from "../model.js";
+import { callModel, callModelStream, type DraftTextChunkHandler, type GenerationModelCall, type StreamingGenerationModelCall } from "../model.js";
 import { db } from "../db.js";
 import type { OwnershipContext } from "../db.js";
 import { LAWYER_ASSISTANT_CHARTER } from "./assistantCharter.js";
@@ -89,7 +89,6 @@ export async function createAssistantDeliverable(input: {
   model?: Model;
   streamModel?: StreamModel;
   onDraftChunk?: DraftTextChunkHandler;
-  onDraftTitle?: (title: string) => void;
 }): Promise<AssistantDeliverableResult> {
   if (input.plan.deliverable.kind === "message" || !input.plan.deliverable.documentAction) {
     throw new Error("The Assistant plan does not request a document deliverable");
@@ -153,12 +152,6 @@ export async function createAssistantDeliverable(input: {
     webResearchPerformed: input.webResearch.performed,
     depth: input.plan.depth,
   });
-  let announcedDraftTitle: string | null = null;
-  const announceDraftTitle = (title: string) => {
-    if (!input.onDraftTitle || title === announcedDraftTitle) return;
-    announcedDraftTitle = title;
-    input.onDraftTitle(title);
-  };
   const generateDocumentContent = async () => {
     const messages = [{ role: "user", content: prompt }];
     const options = {
@@ -166,30 +159,8 @@ export async function createAssistantDeliverable(input: {
       thinkingLevel: "minimal" as const,
       systemInstruction: LAWYER_ASSISTANT_CHARTER,
     };
-    const onChunk = input.onDraftTitle
-      ? (() => {
-          let streamedText = "";
-          return (event: { text?: string; reset?: boolean }) => {
-            input.onDraftChunk?.(event);
-            if (event.reset) {
-              streamedText = "";
-              announcedDraftTitle = null;
-              return;
-            }
-            if (!event.text) return;
-            streamedText = mergeGeneratedTextChunk(streamedText, event.text);
-            const extracted = extractedAssistantDraftTitle(streamedText);
-            if (!extracted) return;
-            announceDraftTitle(
-              input.plan.deliverable.documentAction === "revise" && sourceArtifact
-                ? revisedTitle(extracted, sourceArtifact.title)
-                : extracted
-            );
-          };
-        })()
-      : input.onDraftChunk;
-    const result = onChunk
-      ? await (input.streamModel || callModelStream)("draft-generation", messages, options, onChunk)
+    const result = input.onDraftChunk
+      ? await (input.streamModel || callModelStream)("draft-generation", messages, options, input.onDraftChunk)
       : await model("draft-generation", messages, options);
     return cleanGeneratedWorkProductContent(result.text);
   };
@@ -199,16 +170,10 @@ export async function createAssistantDeliverable(input: {
   let content = await generateDocumentContent();
   if (!content) {
     input.onDraftChunk?.({ reset: true });
-    announcedDraftTitle = null;
     content = await generateDocumentContent();
   }
   if (!content) throw new Error("The model did not return document content");
   const generatedTitle = titleForAssistantDraft(content, input.instruction, input.thread.title);
-  announceDraftTitle(
-    input.plan.deliverable.documentAction === "revise" && sourceArtifact
-      ? revisedTitle(generatedTitle, sourceArtifact.title)
-      : generatedTitle
-  );
 
   if (sourceArtifact?.kind === "matterWorkProduct") {
     const title = revisedTitle(generatedTitle, sourceArtifact.title);

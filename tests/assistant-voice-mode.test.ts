@@ -6,6 +6,8 @@ import { assistantDocumentConfirmationContent } from "../server/assistant/assist
 import {
   VOICE_MODE_ACKNOWLEDGEMENT,
   VOICE_MODE_CONFIG,
+  VOICE_MODE_DOCUMENT_CONFIRMATION,
+  VOICE_MODE_REVISION_CONFIRMATION,
   boundedVoiceHistory,
   liveConnectConfig,
   resolveFirmLibraryTitle,
@@ -28,6 +30,7 @@ import {
   shouldPlayVoiceAcknowledgement,
   shouldAdvanceVoiceTurnBoundary,
   shouldHoldVoiceCapture,
+  usesVoiceRevisionConfirmation,
   voiceAssistantInstruction,
   voicePrefetchStillValid,
   VOICE_STARTUP_BUFFER_PACKETS,
@@ -108,6 +111,10 @@ test("Voice acknowledgement TTS reuses the configured Voice Agent identity and f
     VOICE_MODE_CONFIG.voiceName
   );
   assert.equal(VOICE_MODE_CONFIG.voiceName, "Kore");
+  assert.equal(VOICE_MODE_DOCUMENT_CONFIRMATION.text, "I have created the document for you.");
+  assert.equal(VOICE_MODE_REVISION_CONFIRMATION.text, "I have created a revised version for you.");
+  assert.equal(VOICE_MODE_DOCUMENT_CONFIRMATION.model, VOICE_MODE_ACKNOWLEDGEMENT.model);
+  assert.equal(VOICE_MODE_REVISION_CONFIRMATION.model, VOICE_MODE_ACKNOWLEDGEMENT.model);
 });
 
 test("Voice acknowledgement eligibility is heavy-call-only and once per existing turn boundary", () => {
@@ -189,7 +196,7 @@ test("Voice acknowledgement is cached, isolated, fail-open, prefetched, and clea
   ]);
   const route = server.slice(
     server.indexOf('app.get("/api/threads/:id/voice/acknowledgement"'),
-    server.indexOf('app.post("/api/threads/:id/voice/confirmation"')
+    server.indexOf('app.get("/api/threads/:id/voice/confirmation"')
   );
   assert.match(route, /db\.getThreadById\(req\.params\.id, ownership\(req\)\)/);
   assert.match(route, /getVoiceAcknowledgementAudio\(\)/);
@@ -199,7 +206,7 @@ test("Voice acknowledgement is cached, isolated, fail-open, prefetched, and clea
   assert.match(voiceMode, /getVoiceAcknowledgementAudioFor/);
   assert.equal((voiceMode.match(/models\.generateContent/g) ?? []).length, 1);
 
-  const prefetch = hook.slice(hook.indexOf("const prefetchAcknowledgement"), hook.indexOf("const handleServerMessage"));
+  const prefetch = hook.slice(hook.indexOf("const prefetchAcknowledgement"), hook.indexOf("const prefetchConfirmation"));
   assert.match(prefetch, /voice\/acknowledgement/);
   assert.match(prefetch, /acknowledgementRequestRef\.current/);
   assert.equal((prefetch.match(/\.catch\(\(\) => null\);/g) ?? []).length, 1);
@@ -215,16 +222,20 @@ test("Voice acknowledgement is cached, isolated, fail-open, prefetched, and clea
 
   const start = hook.slice(hook.indexOf("const start"), hook.indexOf("const stop ="));
   assert.match(start, /sessionRef\.current = session;[\s\S]*prefetchAcknowledgement\(threadId, lifecycle\)/);
+  assert.match(start, /prefetchConfirmation\(threadId, lifecycle\)/);
   const cleanup = hook.slice(hook.indexOf("const releaseResources"), hook.indexOf("const fail"));
   assert.match(cleanup, /stopPlayback\(\)/);
   assert.match(cleanup, /acknowledgedTurnRef\.current = null/);
   assert.match(cleanup, /acknowledgementAudioRef\.current = null/);
   assert.match(cleanup, /acknowledgementRequestRef\.current = null/);
+  assert.match(cleanup, /confirmationAudioRef\.current = null/);
+  assert.match(cleanup, /revisionConfirmationAudioRef\.current = null/);
+  assert.match(cleanup, /confirmationRequestRef\.current = null/);
   assert.doesNotMatch(hook, /speechSynthesis|SpeechSynthesisUtterance|webkitSpeechRecognition|SpeechRecognition/);
   assert.doesNotMatch(hook, /playbackRate/);
 });
 
-test("Voice document completion keeps one card result and speaks that line when the draft returns", async () => {
+test("Voice document completion keeps one card result and speaks a cached confirmation clip", async () => {
   const [server, hook, voiceMode, completion] = await Promise.all([
     readFile(new URL("../server.ts", import.meta.url), "utf8"),
     readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8"),
@@ -250,39 +261,37 @@ test("Voice document completion keeps one card result and speaks that line when 
   assert.equal(voiceDocumentConfirmationSpeech("Absolutely — give me a moment, I’m working on that now."), null);
   assert.equal(voiceDocumentConfirmationSpeech("Please read this advice aloud."), null);
   assert.match(completion, /assistantDocumentConfirmationContent\(input\.plan\.deliverable\.documentAction, deliverable\.document\.title\)/);
-  assert.match(completion, /onDraftTitle: input\.onDraftTitle/);
+  assert.doesNotMatch(completion, /onDraftTitle/);
+
+  assert.equal(usesVoiceRevisionConfirmation({ assistantIntent: "document_creation" }), false);
+  assert.equal(usesVoiceRevisionConfirmation({ assistantIntent: "document_revision" }), true);
+  assert.equal(usesVoiceRevisionConfirmation({ sourceDocument: { id: "doc_1" } }), true);
 
   const confirmationRoute = server.slice(
-    server.indexOf('app.post("/api/threads/:id/voice/confirmation"'),
+    server.indexOf('app.get("/api/threads/:id/voice/confirmation"'),
     server.indexOf('app.post("/api/threads/:id/voice/lookup"')
   );
   assert.match(confirmationRoute, /db\.getThreadById\(req\.params\.id, ownership\(req\)\)/);
-  assert.match(confirmationRoute, /voiceDocumentConfirmationSpeech/);
-  assert.match(confirmationRoute, /getVoiceConfirmationAudio\(spoken\)/);
+  assert.match(confirmationRoute, /getVoiceConfirmationAudio\(\)/);
+  assert.match(confirmationRoute, /getVoiceRevisionConfirmationAudio\(\)/);
   assert.match(confirmationRoute, /status\(502\)/);
-  assert.doesNotMatch(confirmationRoute, /db\.addMessage|db\.addVoiceMessage|voice\/messages/);
+  assert.doesNotMatch(confirmationRoute, /db\.addMessage|db\.addVoiceMessage|voice\/messages|req\.body\.text/);
 
   const assistantRoute = server.slice(
     server.indexOf('app.post("/api/threads/:id/voice/assistant"'),
     server.indexOf('app.post("/api/threads/:id/voice/messages"')
   );
-  assert.match(assistantRoute, /onDraftTitle/);
-  assert.match(assistantRoute, /prefetchVoiceConfirmationAudio/);
-  assert.match(assistantRoute, /peekReadyVoiceConfirmationAudio\(completion\.content\)/);
-  assert.match(assistantRoute, /confirmationAudio/);
+  assert.doesNotMatch(assistantRoute, /onDraftTitle|prefetchVoiceConfirmationAudio|peekReadyVoiceConfirmationAudio|confirmationAudio/);
   assert.doesNotMatch(assistantRoute, /voice\/confirmation/);
-  assert.doesNotMatch(assistantRoute, /voiceAcknowledgementAudioCache/);
 
-  assert.match(voiceMode, /getVoiceConfirmationAudio/);
-  assert.match(voiceMode, /prefetchVoiceConfirmationAudio/);
-  assert.match(voiceMode, /peekReadyVoiceConfirmationAudio/);
-  assert.match(voiceMode, /voiceConfirmationAudioCache = new Map/);
-  assert.match(voiceMode, /generateVoiceSpeechAudio\(spoken\)/);
-  assert.doesNotMatch(
-    voiceMode.slice(voiceMode.indexOf("export function getVoiceConfirmationAudio")),
-    /voiceAcknowledgementAudioCache/
-  );
+  assert.match(voiceMode, /getVoiceConfirmationAudio\(\)/);
+  assert.match(voiceMode, /getVoiceRevisionConfirmationAudio\(\)/);
+  assert.match(voiceMode, /warmupVoiceSpeechAudio/);
+  assert.match(voiceMode, /getVoiceAcknowledgementAudioFor\(VOICE_MODE_DOCUMENT_CONFIRMATION\)/);
+  assert.match(voiceMode, /getVoiceAcknowledgementAudioFor\(VOICE_MODE_REVISION_CONFIRMATION\)/);
+  assert.doesNotMatch(voiceMode, /voiceConfirmationAudioCache|peekReadyVoiceConfirmationAudio|prefetchVoiceConfirmationAudio\(/);
   assert.equal((voiceMode.match(/models\.generateContent/g) ?? []).length, 1);
+  assert.match(server, /warmupVoiceSpeechAudio\(\)/);
 
   const toolHandler = hook.slice(hook.indexOf("const handleServerMessage"), hook.indexOf("const beginAmplitudeUpdates"));
   const assistantFetch = toolHandler.slice(
@@ -290,13 +299,13 @@ test("Voice document completion keeps one card result and speaks that line when 
     toolHandler.indexOf("session.sendToolResponse")
   );
   assert.match(assistantFetch, /setLiveDeliverable\(deliverable\)/);
-  assert.match(assistantFetch, /data\.confirmationAudio/);
-  assert.match(assistantFetch, /scheduleAudio\(data\.confirmationAudio\.data/);
-  assert.match(assistantFetch, /playDocumentConfirmation\(data\.result/);
-  assert.ok(assistantFetch.indexOf("setLiveDeliverable(deliverable)") < assistantFetch.indexOf("data.confirmationAudio"));
-  assert.ok(assistantFetch.indexOf("scheduleAudio(data.confirmationAudio.data") < assistantFetch.indexOf("playDocumentConfirmation"));
+  assert.match(assistantFetch, /playDocumentConfirmation\(data\.capabilityMetadata\)/);
+  assert.ok(assistantFetch.indexOf("setLiveDeliverable(deliverable)") < assistantFetch.indexOf("playDocumentConfirmation"));
   assert.ok(assistantFetch.indexOf("playDocumentConfirmation") < assistantFetch.indexOf("return {"));
-  assert.match(toolHandler, /voice\/confirmation/);
+  assert.match(toolHandler, /usesVoiceRevisionConfirmation\(metadata\)/);
+  assert.match(toolHandler, /prefetchConfirmation/);
+  assert.match(hook, /const prefetchConfirmation/);
+  assert.match(hook, /voice\/confirmation/);
   assert.match(toolHandler, /suppressLiveDocumentSpeechRef\.current/);
   assert.match(toolHandler, /if \(!suppressLiveDocumentSpeechRef\.current\) \{\s*scheduleAudio\(inlineData\.data/);
   assert.match(toolHandler, /capability\.capabilityMetadata\?\.document[\s\S]*Remain silent and wait for the user to speak/);
@@ -723,7 +732,7 @@ test("Voice Assistant capability routing reuses the owned Assistant pipeline wit
   assert.match(route, /const conversationMessages = \[\.\.\.priorHistory, syntheticUserMessage\]/);
   assert.doesNotMatch(route, /db\.addMessage|db\.addVoiceMessage|\/api\/threads\/.*\/messages|GEMINI_API_KEY/);
   assert.doesNotMatch(route, /voice\/confirmation/);
-  assert.match(route, /prefetchVoiceConfirmationAudio|peekReadyVoiceConfirmationAudio/);
+  assert.doesNotMatch(route, /prefetchVoiceConfirmationAudio|peekReadyVoiceConfirmationAudio|onDraftTitle/);
   assert.doesNotMatch(route, /req\.body\.(?:matterId|documentId|userId|workspaceId|scope)/);
 
   const toolHandler = hook.slice(hook.indexOf("const handleServerMessage"), hook.indexOf("const beginAmplitudeUpdates"));

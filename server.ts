@@ -48,7 +48,7 @@ import {
 import { LAWYER_ASSISTANT_CHARTER } from "./server/assistant/assistantCharter.js";
 import { buildAssistantSessionContext, sessionContextForPrompt } from "./server/assistant/assistantContext.js";
 import { planAssistantRequest } from "./server/assistant/assistantPlanner.js";
-import { completeAssistantResponse, assistantDocumentConfirmationContent } from "./server/assistant/assistantCompletion.js";
+import { completeAssistantResponse } from "./server/assistant/assistantCompletion.js";
 import { writeAssistantDraftNdjson } from "./server/assistant/assistantDraftStream.js";
 import { orchestrateAssistantRetrieval } from "./server/assistant/assistantOrchestrator.js";
 import { boundEvidence, temporaryAttachmentEvidence, wrapAuthorizedEvidence } from "./server/assistant/assistantEvidence.js";
@@ -69,10 +69,9 @@ import {
   createVoiceModeCredential,
   getVoiceAcknowledgementAudio,
   getVoiceConfirmationAudio,
-  peekReadyVoiceConfirmationAudio,
-  prefetchVoiceConfirmationAudio,
+  getVoiceRevisionConfirmationAudio,
   resolveFirmLibraryTitle,
-  voiceDocumentConfirmationSpeech,
+  warmupVoiceSpeechAudio,
   voiceMessageId,
 } from "./server/voiceMode.js";
 import {
@@ -2946,15 +2945,19 @@ ${sourceText}`;
     }
   });
 
-  app.post("/api/threads/:id/voice/confirmation", async (req, res) => {
-    const spoken = voiceDocumentConfirmationSpeech(typeof req.body.text === "string" ? req.body.text : "");
-    if (!spoken) return res.status(400).json({ error: "A document confirmation line is required." });
+  app.get("/api/threads/:id/voice/confirmation", async (req, res) => {
     try {
       const thread = await db.getThreadById(req.params.id, ownership(req));
       if (!thread) return res.status(404).json({ error: "Thread not found" });
-      const audio = await getVoiceConfirmationAudio(spoken);
+      const [createResult, reviseResult] = await Promise.allSettled([
+        getVoiceConfirmationAudio(),
+        getVoiceRevisionConfirmationAudio(),
+      ]);
+      const create = createResult.status === "fulfilled" ? createResult.value : null;
+      const revise = reviseResult.status === "fulfilled" ? reviseResult.value : null;
+      if (!create && !revise) throw new Error("Voice confirmation audio is unavailable.");
       res.setHeader("Cache-Control", "no-store");
-      return res.json(audio);
+      return res.json({ create, revise });
     } catch {
       console.error("Voice confirmation generation failed.");
       return res.status(502).json({ error: "Voice confirmation audio is unavailable." });
@@ -3157,15 +3160,6 @@ ${sourceText}`;
         // Voice speaks the answer and never renders follow-up pills, so the
         // suggestion model call would only add latency to a spoken reply.
         generateSuggestions: async () => [],
-        ...(assistantPlan.deliverable.kind === "document"
-          ? {
-              onDraftTitle: (title: string) => {
-                prefetchVoiceConfirmationAudio(
-                  assistantDocumentConfirmationContent(assistantPlan.deliverable.documentAction, title)
-                );
-              },
-            }
-          : {}),
       });
       if (completion.clarificationQuestion) {
         return res.json({
@@ -3176,12 +3170,6 @@ ${sourceText}`;
           },
         });
       }
-      if (assistantPlan.deliverable.kind === "document" && completion.document) {
-        prefetchVoiceConfirmationAudio(completion.content);
-      }
-      const confirmationAudio = assistantPlan.deliverable.kind === "document" && completion.document
-        ? peekReadyVoiceConfirmationAudio(completion.content)
-        : null;
       return res.json({
         result: completion.content,
         capabilityMetadata: {
@@ -3190,7 +3178,6 @@ ${sourceText}`;
           ...(completion.document ? { document: completion.document } : {}),
           ...(completion.sourceDocument ? { sourceDocument: completion.sourceDocument } : {}),
         },
-        ...(confirmationAudio ? { confirmationAudio } : {}),
       });
     } catch (error) {
       if (error instanceof VoicePageContextError) {
@@ -3911,6 +3898,7 @@ ${sourceText}`;
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
+    warmupVoiceSpeechAudio();
   });
 }
 

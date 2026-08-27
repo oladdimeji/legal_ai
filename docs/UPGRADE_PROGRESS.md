@@ -1,5 +1,13 @@
 # Compact Upgrade Progress
 
+## Voice document confirmation uses a cached Kore clip
+
+- The card still shows `I have created the [Document Name].` Voice now speaks a fixed Kore line, `I have created the document for you.` (or `I have created a revised version for you.` for revisions), using the same process-level TTS cache as the acknowledgement.
+- Both clips are warmed after the server starts listening and prefetched when a Voice session connects, so playback can start as soon as the card appears. If a clip is not ready yet, the in-flight generation is reused rather than starting a new one.
+- Per-title confirmation TTS, draft-heading prefetch, and `/voice/assistant` audio payloads were removed. Live silence after a document, acknowledgement, mic-hold, lookup, and document save are unchanged.
+- No schema, migration, dependency, authentication, workspace-isolation, or Matter-isolation changes were made.
+- Verification: `npm run lint` passed, all 491 tests passed, and `npm run build` passed. The existing non-fatal large-chunk warning remains. Live Voice draft completion was not exercised in a browser in this session.
+
 ## Voice holds the microphone while the agent is speaking or working
 
 - Microphone packets are no longer forwarded to Gemini Live while Voice is `speaking` or a Voice function call is in flight. Accidental speech, echo, and background noise cannot barge in and drop a live draft card or cut off an answer.

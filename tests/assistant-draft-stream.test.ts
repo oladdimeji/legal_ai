@@ -96,53 +96,6 @@ test("document streaming uses the same save path and only forwards display chunk
   ]);
 });
 
-test("opening draft heading announces the saved title before the document is stored", async () => {
-  const titles: string[] = [];
-  let titlesBeforeSave: string[] = [];
-  const result = await createAssistantDeliverable({
-    plan: {
-      intent: "document_creation",
-      depth: "standard",
-      needsWorkspace: false,
-      needsCurrentPage: false,
-      needsWeb: false,
-      needsClarification: false,
-      deliverable: { kind: "document", documentAction: "create" },
-      referencedArtifactIds: [],
-      referencedResearchSourceIds: [],
-      toolCalls: [],
-    },
-    thread: { id: "thread_1", title: "Advice", scope: "general", case_id: null } as any,
-    currentMatter: null,
-    conversationState: emptyState,
-    evidence: [],
-    webResearch: { performed: false, report: "", citations: [], questions: [] },
-    ownership: { userId: "user_1", firmId: "firm_1" },
-    account: {
-      user: { id: "user_1", email: "lawyer@example.test", name: "Lawyer" },
-      firm: { id: "firm_1", name: "Example LLP" },
-    } as any,
-    instruction: "Create a policy.",
-    pageContext: { routeKind: "history", pageTitle: "Assistant" },
-    conversationContext: "",
-    database: {
-      createAssistantDocument: async (_threadId: string, title: string) => {
-        titlesBeforeSave = [...titles];
-        return { id: "assistant_document_new", title };
-      },
-    } as any,
-    streamModel: (async (_task, _messages, _options, onChunk) => {
-      onChunk?.({ text: "# Privacy Policy\n\n" });
-      onChunk?.({ text: "## Scope\nThis policy applies." });
-      return { text: "# Privacy Policy\n\n## Scope\nThis policy applies." };
-    }) as any,
-    onDraftTitle: (title) => titles.push(title),
-  });
-  assert.deepEqual(titlesBeforeSave, ["Privacy Policy"]);
-  assert.deepEqual(titles, ["Privacy Policy"]);
-  assert.equal(result.document.title, "Privacy Policy");
-});
-
 test("document draft streaming leaves the saved Assistant turn and Work Product path unchanged", async () => {
   const [server, assistant, deliverables] = await Promise.all([
     readFile("server.ts", "utf8"),
