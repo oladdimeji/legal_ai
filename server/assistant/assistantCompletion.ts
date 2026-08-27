@@ -83,6 +83,7 @@ export async function completeAssistantResponse(input: {
   ownership: OwnershipContext;
   generateSuggestions: SuggestionGenerator;
   onDraftChunk?: DraftTextChunkHandler;
+  onDraftTitle?: (title: string) => void;
 }): Promise<AssistantCompletionResult> {
   const webResearch = normalizeWebResearch(input.webResearch);
   const toolRun: AssistantToolRunResult = {
@@ -133,6 +134,7 @@ export async function completeAssistantResponse(input: {
       pageContext: input.pageContext,
       conversationContext: input.conversationContext,
       onDraftChunk: input.onDraftChunk,
+      onDraftTitle: input.onDraftTitle,
     });
   }
 

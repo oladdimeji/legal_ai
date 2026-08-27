@@ -1,5 +1,13 @@
 # Compact Upgrade Progress
 
+## Voice document confirmation speech arrives with the card
+
+- Voice still shows the document card as soon as `/voice/assistant` returns. Kore TTS for `I have created the [Document Name].` now starts as soon as the opening draft heading is known, during generation rather than after the card is on screen.
+- If that clip is already ready, it is returned with the card payload and played immediately. If it is not, the existing `/voice/confirmation` fetch remains the fail-open fallback and reuses the in-flight clip. Unique titles stay out of the acknowledgement cache.
+- Typed chat streaming, Live silence after a document, acknowledgement prefetch, lookup, VAD, and document save are unchanged.
+- No schema, migration, dependency, authentication, workspace-isolation, or Matter-isolation changes were made.
+- Verification: `npm run lint` passed, all 491 tests passed, and `npm run build` passed. The existing non-fatal large-chunk warning remains. Live Voice draft completion was not exercised in a browser in this session.
+
 ## Voice document card as the single completion result
 
 - After a Voice draft or revision finishes, the visible result is the document card with `I have created the [Document Name].` or `I have created a revised version of [Document Name].` Typed chat uses the same card line.

@@ -660,6 +660,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
           const data = await response.json().catch(() => ({})) as {
             result?: string;
             capabilityMetadata?: VoiceCapabilityMetadata;
+            confirmationAudio?: VoiceAcknowledgementAudio;
             error?: string;
           };
           if (response.ok && turnBoundary === turnBoundaryRef.current) {
@@ -672,7 +673,12 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
               liveDeliverableRef.current = deliverable;
               setLiveDeliverable(deliverable);
               suppressLiveDocumentSpeechRef.current = true;
-              playDocumentConfirmation(data.result || "");
+              if (data.confirmationAudio?.data && data.confirmationAudio.mimeType) {
+                confirmationPlayIdRef.current += 1;
+                scheduleAudio(data.confirmationAudio.data, data.confirmationAudio.mimeType);
+              } else {
+                playDocumentConfirmation(data.result || "");
+              }
             }
           }
           return {

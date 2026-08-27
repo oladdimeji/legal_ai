@@ -68,13 +68,18 @@ Drafting rules:
 ${EXPORT_SAFE_DOCUMENT_MARKDOWN_RULES}`;
 }
 
+export function extractedAssistantDraftTitle(generatedContent: string): string | null {
+  const extracted = extractGeneratedSubject(generatedContent) || extractSummaryHeading(generatedContent);
+  return extracted ? extracted.slice(0, 300) : null;
+}
+
 export function titleForAssistantDraft(
   generatedContent: string,
   instruction: string,
   threadTitle: string
 ): string {
-  const extracted = extractGeneratedSubject(generatedContent) || extractSummaryHeading(generatedContent);
-  if (extracted) return extracted.slice(0, 300);
+  const extracted = extractedAssistantDraftTitle(generatedContent);
+  if (extracted) return extracted;
 
   const instructionLabel = instruction
     .replace(/^\s*(?:please\s+)?(?:draft|create|prepare|write|generate)\s+(?:me\s+)?(?:an?\s+)?/i, "")
