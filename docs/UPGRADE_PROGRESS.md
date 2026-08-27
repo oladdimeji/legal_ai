@@ -1,5 +1,13 @@
 # Compact Upgrade Progress
 
+## Voice holds the microphone while the agent is speaking or working
+
+- Microphone packets are no longer forwarded to Gemini Live while Voice is `speaking` or a Voice function call is in flight. Accidental speech, echo, and background noise cannot barge in and drop a live draft card or cut off an answer.
+- Held capture is dropped, not queued, so it cannot flush as the next user turn when playback ends. Gemini `content.interrupted` still stops playback, clears working, and finalizes a partial assistant line if interruption does occur.
+- VAD, Live connection, acknowledgement, confirmation speech, lookup, and document save are unchanged. The microphone remains open for visualisation; only the send path is gated.
+- No schema, migration, dependency, authentication, workspace-isolation, or Matter-isolation changes were made.
+- Verification: `npm run lint` passed, all 492 tests passed, and `npm run build` passed. The existing non-fatal large-chunk warning remains. Live Voice barge-in was not exercised in a browser in this session.
+
 ## Voice document confirmation speech arrives with the card
 
 - Voice still shows the document card as soon as `/voice/assistant` returns. Kore TTS for `I have created the [Document Name].` now starts as soon as the opening draft heading is known, during generation rather than after the card is on screen.

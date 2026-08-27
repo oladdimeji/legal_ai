@@ -27,6 +27,7 @@ import {
   pushVoiceStartupPacket,
   shouldPlayVoiceAcknowledgement,
   shouldAdvanceVoiceTurnBoundary,
+  shouldHoldVoiceCapture,
   voiceAssistantInstruction,
   voicePrefetchStillValid,
   VOICE_STARTUP_BUFFER_PACKETS,
@@ -500,6 +501,25 @@ test("interruption finalizes only received assistant output and preserves next u
     { role: "user", content: "Next user question" },
     { role: "assistant", content: "New answer" },
   ]);
+});
+
+test("Voice holds microphone capture while speaking or working and still stops playback on Gemini interruption", async () => {
+  assert.equal(shouldHoldVoiceCapture("speaking", false), true);
+  assert.equal(shouldHoldVoiceCapture("listening", true), true);
+  assert.equal(shouldHoldVoiceCapture("speaking", true), true);
+  assert.equal(shouldHoldVoiceCapture("listening", false), false);
+  assert.equal(shouldHoldVoiceCapture("connecting", false), false);
+  assert.equal(shouldHoldVoiceCapture("off", false), false);
+
+  const hook = await readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8");
+  const send = hook.slice(hook.indexOf("const sendOrBufferCapture"), hook.indexOf("if (capture.kind === \"worklet\")"));
+  assert.match(send, /shouldHoldVoiceCapture\(stateRef\.current, workingCallIdsRef\.current\.size > 0\)/);
+  assert.ok(send.indexOf("shouldHoldVoiceCapture") < send.indexOf("sendRealtimeInput"));
+  assert.ok(send.indexOf("if (shouldHoldVoiceCapture") < send.indexOf("sendRealtimeInput"));
+  assert.ok(send.indexOf("return;") < send.indexOf("sendRealtimeInput"));
+  assert.match(hook, /content\.interrupted[\s\S]*stopPlayback\(\)/);
+  assert.match(hook, /content\.interrupted[\s\S]*finalizeTranscripts\("interrupted"\)/);
+  assert.match(hook, /content\.interrupted[\s\S]*clearWorking\(\)/);
 });
 
 test("Voice playback uses a worklet jitter buffer so late packets cannot punch holes in speech", async () => {

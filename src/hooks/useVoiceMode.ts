@@ -216,6 +216,13 @@ export function shouldAdvanceVoiceTurnBoundary(
   return boundary === "interrupted" || !hasInFlightAssistantCapability;
 }
 
+export function shouldHoldVoiceCapture(
+  state: VoiceModeState,
+  hasInFlightWork: boolean
+): boolean {
+  return state === "speaking" || hasInFlightWork;
+}
+
 export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   const [state, setState] = useState<VoiceModeState>("off");
   const [error, setError] = useState("");
@@ -995,6 +1002,9 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       const sendOrBufferCapture = (data: string) => {
         const liveSession = sessionRef.current;
         if (captureLiveRef.current && liveSession) {
+          // Drop capture instead of buffering it: flushing held speech after
+          // playback would replay the barge-in as the next user turn.
+          if (shouldHoldVoiceCapture(stateRef.current, workingCallIdsRef.current.size > 0)) return;
           liveSession.sendRealtimeInput({
             audio: { data, mimeType: "audio/pcm;rate=16000" },
           });
