@@ -61,3 +61,28 @@ test("Docker deployment is production-only and checks the existing health route"
   assert.match(dockerignore, /^node_modules$/m);
   assert.match(dockerignore, /^tests$/m);
 });
+
+test("VPN guidance keeps the existing browser Live path and does not add a proxy", async () => {
+  const [readme, envExample, hook, server, voiceMode] = await Promise.all([
+    readFile("README.md", "utf8"),
+    readFile(".env.example", "utf8"),
+    readFile("src/hooks/useVoiceMode.ts", "utf8"),
+    readFile("server.ts", "utf8"),
+    readFile("server/voiceMode.ts", "utf8"),
+  ]);
+
+  assert.match(readme, /## VPN and split tunneling/);
+  assert.match(readme, /generativelanguage\.googleapis\.com/);
+  assert.match(readme, /exepts\.com/);
+  assert.match(readme, /Do not run `npm run dev` behind a full-tunnel client VPN/);
+  assert.match(readme, /Do not add a Live proxy/);
+  assert.match(envExample, /generativelanguage\.googleapis\.com/);
+  assert.match(envExample, /split-tunnel/);
+
+  assert.match(hook, /ai\.live\.connect\(/);
+  assert.doesNotMatch(hook, /GEMINI_API_KEY|VITE_.*GEMINI/);
+  assert.match(server, /createVoiceModeCredential\(\)/);
+  assert.doesNotMatch(server, /ai\.live\.connect|BidiGenerateContent|live\.connect\(/);
+  assert.match(voiceMode, /authTokens\.create/);
+  assert.doesNotMatch(voiceMode, /ai\.live\.connect|BidiGenerateContent/);
+});

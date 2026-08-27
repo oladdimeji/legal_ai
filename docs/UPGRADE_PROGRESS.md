@@ -1,5 +1,12 @@
 # Compact Upgrade Progress
 
+## VPN uses split-tunnel so the existing paths stay unchanged
+
+- Voice, typed chat, Live, retries, VAD, and server Gemini/Supabase calls were not modified. The browser still opens Gemini Live directly; the server still mints ephemeral tokens and never proxies the Live socket.
+- Operator guidance now states the requirement that matches the current A-to-Z path: split-tunnel (or disable) the public origin, `generativelanguage.googleapis.com`, and related Google hosts; do not run local Node or the production host behind a full-tunnel client VPN.
+- No schema, migration, dependency, authentication, workspace-isolation, Matter-isolation, or runtime behavior changes were made.
+- Verification: `npm run lint` passed, all 492 tests passed, and `npm run build` passed. The existing non-fatal large-chunk warning remains. No Live Voice or VPN network path was exercised in a browser in this session.
+
 ## Voice document confirmation uses a cached Kore clip
 
 - The card still shows `I have created the [Document Name].` Voice now speaks a fixed Kore line, `I have created the document for you.` (or `I have created a revised version for you.` for revisions), using the same process-level TTS cache as the acknowledgement.

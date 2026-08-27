@@ -20,6 +20,8 @@ cp .env.example .env
 
 Fill in `GEMINI_API_KEY` and `SUPABASE_DB_URL`, set `NODE_ENV=development`, and keep `SEED_DEMO_DATA=false`. The server loads `.env` from the project directory through `dotenv`.
 
+Do not run `npm run dev` behind a full-tunnel client VPN. The local Node process uses Gemini, Supabase, and Brevo on the same machine; a tunnel on that path is what makes ordinary requests stall. Use split tunneling (see below) or turn the VPN off while developing.
+
 ```bash
 npm run dev
 ```
@@ -52,7 +54,7 @@ docker compose up -d
 docker compose ps
 ```
 
-The Compose service builds a deterministic multi-stage Node 22 image, loads `.env`, publishes `PORT` (default `3000`), and checks `/api/health`. It does not include a database; use the external Supabase/PostgreSQL service.
+The Compose service builds a deterministic multi-stage Node 22 image, loads `.env`, publishes `PORT` (default `3000`), and checks `/api/health`. It does not include a database; use the external Supabase/PostgreSQL service. Do not place the production host on a client VPN; the container already publishes only on `127.0.0.1`.
 
 Before every production update, take and verify a database backup. Retain the previously deployed image or release, fetch the intended source revision, review `.env`, run `npm ci` and `npm run verify`, build the new image, then run `docker compose up -d`. Confirm the health check and review `docker compose logs app`. If validation fails, redeploy the retained release and investigate before retrying.
 
@@ -93,6 +95,18 @@ To configure private preview:
 
 An unset, empty, or malformed allowlist fails closed while the lock is enabled. To reverse the change, set `SITE_LOCKED=false` explicitly, then rebuild and restart the application. No database rollback, account change, or session reset is required.
 
+## VPN and split tunneling
+
+Exepts does not proxy Gemini Live through the application server. Voice still opens a browser WebSocket to Google; typed chat, drafts, lookup, and stored clips already go browser to Exepts, then Exepts to Gemini and Supabase. That is the path that already works without a VPN. A full-tunnel VPN sits on those sockets; the application is not changed to compensate.
+
+Keep VPN and non-VPN on that same path by split-tunneling (excluding) at least:
+
+- the public application host (`exepts.com`, or the host in `APP_URL`)
+- `generativelanguage.googleapis.com` (Voice Live, and local Node Gemini calls)
+- for Google sign-in and Drive: `accounts.google.com`, `apis.google.com`, `www.googleapis.com`
+
+For local `npm run dev`, also exclude the Postgres/Supabase host from `SUPABASE_DB_URL` and `api.brevo.com`, or disable the VPN while the server is running.
+
 ## Troubleshooting
 
 - Missing Gemini key: set `GEMINI_API_KEY` in `.env` and restart.
@@ -100,3 +114,5 @@ An unset, empty, or malformed allowlist fails closed while the lock is enabled. 
 - pgvector permission failure: have the database administrator enable pgvector or grant the deployment user permission to run `CREATE EXTENSION IF NOT EXISTS vector`.
 - Startup migration failure: stop the rollout, inspect the server log, verify database permissions and connectivity, and restore from the pre-update backup if required. Do not edit migration history manually.
 - Development mode in production: use `npm start` or the provided container. Do not run `node dist/server.cjs` directly without explicitly setting `NODE_ENV=production`.
+- Voice transcription, spoken replies, or Live disconnects only while a VPN is on: split-tunnel the hosts in **VPN and split tunneling**. Do not add a Live proxy.
+- Local typed chat or drafts stall only while a VPN is on: the Node process is tunneled; exclude Gemini and the database host, or turn the VPN off for development.
