@@ -75,8 +75,9 @@ jobs:
             export HOME=/home/exepts
             cd /home/exepts/exepts-app
 
-            echo "Pulling latest main branch..."
-            git pull --ff-only origin main
+            echo "Syncing local main to origin/main..."
+            git fetch origin main
+            git reset --hard origin/main
 
             echo "Building and starting Exepts..."
             docker compose -f compose.yaml up -d --build
