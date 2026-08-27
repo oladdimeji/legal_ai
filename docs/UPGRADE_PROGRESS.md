@@ -1,5 +1,13 @@
 # Compact Upgrade Progress
 
+## Voice document card as the single completion result
+
+- After a Voice draft or revision finishes, the visible result is the document card with `I have created the [Document Name].` or `I have created a revised version of [Document Name].` Typed chat uses the same card line.
+- Live no longer speaks a separate confirmation. The existing Kore TTS path reads that exact card line after `/voice/assistant` returns, so draft time is unchanged. Fail-open if TTS is unavailable. Unique titles are not stored in the acknowledgement cache.
+- Acknowledgement phrase, trigger, prefetch, lookup, ordinary spoken answers, and document creation itself are unchanged.
+- No schema, migration, dependency, authentication, workspace-isolation, or Matter-isolation changes were made.
+- Verification: `npm run lint` passed, all 490 tests passed, and `npm run build` passed. The existing non-fatal large-chunk warning remains. Live Voice draft completion was not exercised in a browser in this session.
+
 ## Voice Agent ready-on-click and display-only draft streaming
 
 - Voice Mode no longer waits for microphone, token, and audio worklets in series. Click starts those in parallel, hover prefetches a short-lived Live token when a conversation already exists, and speech captured during `connecting` is buffered locally then sent only after the Live session is up.

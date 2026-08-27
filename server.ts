@@ -68,7 +68,9 @@ import {
   boundedVoiceHistory,
   createVoiceModeCredential,
   getVoiceAcknowledgementAudio,
+  getVoiceConfirmationAudio,
   resolveFirmLibraryTitle,
+  voiceDocumentConfirmationSpeech,
   voiceMessageId,
 } from "./server/voiceMode.js";
 import {
@@ -2939,6 +2941,21 @@ ${sourceText}`;
     } catch {
       console.error("Voice acknowledgement generation failed.");
       return res.status(502).json({ error: "Voice acknowledgement audio is unavailable." });
+    }
+  });
+
+  app.post("/api/threads/:id/voice/confirmation", async (req, res) => {
+    const spoken = voiceDocumentConfirmationSpeech(typeof req.body.text === "string" ? req.body.text : "");
+    if (!spoken) return res.status(400).json({ error: "A document confirmation line is required." });
+    try {
+      const thread = await db.getThreadById(req.params.id, ownership(req));
+      if (!thread) return res.status(404).json({ error: "Thread not found" });
+      const audio = await getVoiceConfirmationAudio(spoken);
+      res.setHeader("Cache-Control", "no-store");
+      return res.json(audio);
+    } catch {
+      console.error("Voice confirmation generation failed.");
+      return res.status(502).json({ error: "Voice confirmation audio is unavailable." });
     }
   });
 

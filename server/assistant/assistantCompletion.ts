@@ -39,6 +39,15 @@ type SuggestionGenerator = (
   documentContext?: { title: string; kind: string; action: "create" | "revise" }
 ) => Promise<string[]>;
 
+export function assistantDocumentConfirmationContent(
+  documentAction: "create" | "revise" | undefined,
+  title: string
+): string {
+  return documentAction === "revise"
+    ? `I have created a revised version of **${title}**.`
+    : `I have created the **${title}**.`;
+}
+
 export type AssistantCompletionResult = {
   content: string;
   citations: Citation[];
@@ -136,7 +145,7 @@ export async function completeAssistantResponse(input: {
   const citations = assistantCitationsForEvidence(toolRun.evidence, webResearch.citations);
   let content: string;
   if (input.plan.deliverable.kind === "document" && deliverable) {
-    content = `${input.plan.deliverable.documentAction === "revise" ? "Created a revised version of" : "Created"} **${deliverable.document.title}**.`;
+    content = assistantDocumentConfirmationContent(input.plan.deliverable.documentAction, deliverable.document.title);
   } else {
     const evidence = evidenceWithAssistantCitationIds(toolRun.evidence, citations);
     const generatedDocumentContext = deliverable
