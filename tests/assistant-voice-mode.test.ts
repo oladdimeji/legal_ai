@@ -28,6 +28,7 @@ import {
   looksLikeVoiceDocumentRequest,
   pushVoiceStartupPacket,
   shouldPlayVoiceAcknowledgement,
+  shouldUseVoiceAssistantCapability,
   shouldAdvanceVoiceTurnBoundary,
   shouldHoldVoiceCapture,
   usesVoiceRevisionConfirmation,
@@ -66,7 +67,8 @@ test("Gemini Live configuration is centralized for native audio, transcription, 
   assert.match(String(config.systemInstruction), /Do not proactively mention or enumerate Voice Mode's capability limitations/);
   assert.match(String(config.systemInstruction), /Ordinary authorized read-only retrieval is an internal step and does not require separate permission/);
   assert.match(String(config.systemInstruction), /Use lookup_workspace as the fast path for straightforward authorized retrieval/);
-  assert.match(String(config.systemInstruction), /Use use_assistant_capabilities only for genuinely heavier Assistant tasks/);
+  assert.match(String(config.systemInstruction), /Use use_assistant_capabilities only when the user asks you to create, draft, write, prepare, generate, or revise a document/);
+  assert.match(String(config.systemInstruction), /answer the user directly without calling any function/);
   assert.match(String(config.systemInstruction), /named Firm Library documents even when they are not currently open/);
   assert.match(String(config.systemInstruction), /Before saying authenticated workspace information is unavailable, use the appropriate function/);
   assert.match(String(config.systemInstruction), /measured conversational pace/);
@@ -117,12 +119,15 @@ test("Voice acknowledgement TTS reuses the configured Voice Agent identity and f
   assert.equal(VOICE_MODE_REVISION_CONFIRMATION.model, VOICE_MODE_ACKNOWLEDGEMENT.model);
 });
 
-test("Voice acknowledgement eligibility is heavy-call-only and once per existing turn boundary", () => {
-  assert.equal(shouldPlayVoiceAcknowledgement("use_assistant_capabilities", 7, null), true);
-  assert.equal(shouldPlayVoiceAcknowledgement("use_assistant_capabilities", 7, 6), true);
-  assert.equal(shouldPlayVoiceAcknowledgement("use_assistant_capabilities", 7, 7), false);
-  assert.equal(shouldPlayVoiceAcknowledgement("lookup_workspace", 7, null), false);
-  assert.equal(shouldPlayVoiceAcknowledgement(undefined, 7, null), false);
+test("Voice acknowledgement eligibility is document-capability-only and once per existing turn boundary", () => {
+  assert.equal(shouldPlayVoiceAcknowledgement("use_assistant_capabilities", "Draft an NDA.", 7, null), true);
+  assert.equal(shouldPlayVoiceAcknowledgement("use_assistant_capabilities", "Draft an NDA.", 7, 6), true);
+  assert.equal(shouldPlayVoiceAcknowledgement("use_assistant_capabilities", "Draft an NDA.", 7, 7), false);
+  assert.equal(shouldPlayVoiceAcknowledgement("use_assistant_capabilities", "What is the limitation period?", 7, null), false);
+  assert.equal(shouldPlayVoiceAcknowledgement("lookup_workspace", "Draft an NDA.", 7, null), false);
+  assert.equal(shouldPlayVoiceAcknowledgement(undefined, "Draft an NDA.", 7, null), false);
+  assert.equal(shouldUseVoiceAssistantCapability("Revise the agreement."), true);
+  assert.equal(shouldUseVoiceAssistantCapability("Research the latest case law."), false);
 });
 
 test("Voice capability metadata waits through contentless completion but remains discarded after interruption", async () => {
@@ -213,7 +218,9 @@ test("Voice acknowledgement is cached, isolated, fail-open, prefetched, and clea
   assert.doesNotMatch(prefetch, /setError|fail\(|transcriptRef|setLiveTranscripts|persistFinalTranscript/);
 
   const toolHandler = hook.slice(hook.indexOf("const handleServerMessage"), hook.indexOf("const beginAmplitudeUpdates"));
-  assert.match(toolHandler, /shouldPlayVoiceAcknowledgement\(call\.name, turnBoundary, acknowledgedTurnRef\.current\)/);
+  assert.match(toolHandler, /shouldPlayVoiceAcknowledgement\(call\.name, request, turnBoundary, acknowledgedTurnRef\.current\)/);
+  assert.match(toolHandler, /shouldUseVoiceAssistantCapability\(request\)/);
+  assert.match(toolHandler, /VOICE_DIRECT_ANSWER_TOOL_RESPONSE/);
   assert.ok(toolHandler.indexOf("scheduleAudio(acknowledgementAudio.data") < toolHandler.indexOf("await fetch("));
   assert.match(toolHandler, /voice\/assistant/);
   assert.match(toolHandler, /voice\/lookup/);
@@ -355,8 +362,8 @@ test("Live tool declarations expose named Firm Library lookup and keep routine r
   assert.ok(Object.hasOwn(lookup.parametersJsonSchema.properties, "firmLibraryDocumentTitle"));
   assert.match(lookup.description, /even when that document is not currently open/);
   assert.match(lookup.description, /routine direct document reading/);
-  assert.match(assistant.description, /Call it immediately before speaking when the user asks to create or revise a document/);
-  assert.match(assistant.description, /Do not use it for a routine direct read/);
+  assert.match(assistant.description, /Create or revise a saved document only/);
+  assert.match(assistant.description, /Do not use it for lookups, analysis, research, planning/);
 });
 
 test("Firm Library title resolution is normalized, deterministic, and refuses ambiguity", () => {

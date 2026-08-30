@@ -194,12 +194,22 @@ export function initializeLiveHistory(
   session.sendClientContent({ turns, turnComplete: true });
 }
 
+export const VOICE_DIRECT_ANSWER_TOOL_RESPONSE =
+  "This request does not require document creation or revision. Answer the user directly from your knowledge and any conversation context already available. Do not call any function.";
+
+export function shouldUseVoiceAssistantCapability(request: string): boolean {
+  return looksLikeVoiceDocumentRequest(request);
+}
+
 export function shouldPlayVoiceAcknowledgement(
   functionName: string | undefined,
+  request: string,
   turnBoundary: number,
   acknowledgedTurn: number | null
 ): boolean {
-  return functionName === "use_assistant_capabilities" && acknowledgedTurn !== turnBoundary;
+  return functionName === "use_assistant_capabilities"
+    && shouldUseVoiceAssistantCapability(request)
+    && acknowledgedTurn !== turnBoundary;
 }
 
 /**
@@ -668,8 +678,8 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       });
     };
 
-    const playAcknowledgement = (turnBoundary: number) => {
-      if (!shouldPlayVoiceAcknowledgement("use_assistant_capabilities", turnBoundary, acknowledgedTurnRef.current)) return;
+    const playAcknowledgement = (request: string, turnBoundary: number) => {
+      if (!shouldPlayVoiceAcknowledgement("use_assistant_capabilities", request, turnBoundary, acknowledgedTurnRef.current)) return;
       acknowledgedTurnRef.current = turnBoundary;
       const acknowledgementAudio = acknowledgementAudioRef.current;
       if (acknowledgementAudio) {
@@ -701,7 +711,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
           error: "The Assistant capability request failed.",
         });
       }
-      playAcknowledgement(turnBoundary);
+      playAcknowledgement(request, turnBoundary);
       const workingCallId = `voice_assistant_${turnBoundary}`;
       workingCallIdsRef.current.add(workingCallId);
       const inFlightCount = inFlightAssistantCapabilityTurnsRef.current.get(turnBoundary) || 0;
@@ -777,7 +787,8 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
               )
             : (typeof call.args?.query === "string" ? call.args.query.trim() : "");
           const turnBoundary = turnBoundaryRef.current;
-          if (shouldPlayVoiceAcknowledgement(call.name, turnBoundary, acknowledgedTurnRef.current)) {
+          const isDocumentCapability = isAssistantCapability && shouldUseVoiceAssistantCapability(request);
+          if (shouldPlayVoiceAcknowledgement(call.name, request, turnBoundary, acknowledgedTurnRef.current)) {
             acknowledgedTurnRef.current = turnBoundary;
             const acknowledgementAudio = acknowledgementAudioRef.current;
             if (acknowledgementAudio) {
@@ -797,6 +808,16 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
             }
           }
           if (isAssistantCapability) {
+            if (!isDocumentCapability) {
+              session.sendToolResponse({
+                functionResponses: [{
+                  id: call.id,
+                  name: call.name || "use_assistant_capabilities",
+                  response: { output: VOICE_DIRECT_ANSWER_TOOL_RESPONSE },
+                }],
+              });
+              return;
+            }
             const capability = await ensureAssistantCapability(request, turnBoundary);
             session.sendToolResponse({
               functionResponses: [{
