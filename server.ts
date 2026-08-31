@@ -3130,6 +3130,7 @@ ${sourceText}`;
       if (validated.selectedEvidence) orchestration.toolRun.evidence.push(validated.selectedEvidence);
 
       const clarificationQuestion = resolveAssistantClarification({
+        plan: assistantPlan,
         plannerNeedsClarification: assistantPlan.needsClarification,
         plannerClarificationQuestion: assistantPlan.clarificationQuestion,
         toolClarificationQuestion: orchestration.toolRun.clarificationQuestion,
@@ -3467,6 +3468,7 @@ ${sourceText}`;
       orchestration.toolRun.evidence.push(...temporaryAttachmentEvidence(temporaryFiles));
 
       const clarificationQuestion = resolveAssistantClarification({
+        plan: assistantPlan,
         plannerNeedsClarification: assistantPlan.needsClarification,
         plannerClarificationQuestion: assistantPlan.clarificationQuestion,
         toolClarificationQuestion: orchestration.toolRun.clarificationQuestion,

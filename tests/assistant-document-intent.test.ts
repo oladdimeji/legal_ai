@@ -265,3 +265,20 @@ test("direct reconciliation removes revision fields from explicit message-only p
   const result = reconcileAssistantDocumentIntent(revisionPlan, detectAssistantDocumentIntent(revisionInput), revisionInput);
   assert.deepEqual(result.deliverable, { kind: "message" });
 });
+
+test("planner document create plans proceed without clarification even when the hint is none", () => {
+  const plannerCreate = messagePlan({
+    intent: "document_creation",
+    needsClarification: true,
+    clarificationQuestion: "What client name should appear in the agreement?",
+    deliverable: { kind: "document", documentAction: "create" },
+  });
+  const reconciled = reconcileAssistantDocumentIntent(
+    plannerCreate,
+    detectAssistantDocumentIntent(input("Put together a client engagement letter.")),
+    input("Put together a client engagement letter.")
+  );
+  assert.equal(reconciled.needsClarification, false);
+  assert.equal(reconciled.clarificationQuestion, undefined);
+  assert.deepEqual(reconciled.deliverable, { kind: "document", documentAction: "create" });
+});

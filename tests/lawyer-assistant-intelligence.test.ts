@@ -164,26 +164,31 @@ test("temporary attachment clarification guard is narrow, case-insensitive, and 
     assert.equal(isFalseTemporaryAttachmentClarification(falseClarification, true), true);
   }
   assert.equal(resolveAssistantClarification({
+    plan: toolPlan([]),
     plannerNeedsClarification: true,
     plannerClarificationQuestion: "I do not have access to the attached file.",
     hasTemporaryFiles: true,
   }), undefined);
   assert.equal(resolveAssistantClarification({
+    plan: toolPlan([]),
     plannerNeedsClarification: true,
     plannerClarificationQuestion: "Which jurisdiction should govern the requested analysis?",
     hasTemporaryFiles: true,
   }), "Which jurisdiction should govern the requested analysis?");
   assert.equal(resolveAssistantClarification({
+    plan: toolPlan([]),
     plannerNeedsClarification: true,
     plannerClarificationQuestion: "Which agreement should the attachment be compared against?",
     hasTemporaryFiles: true,
   }), "Which agreement should the attachment be compared against?");
   assert.equal(resolveAssistantClarification({
+    plan: toolPlan([]),
     plannerNeedsClarification: true,
     plannerClarificationQuestion: "Please provide the document library containing the attachment.",
     hasTemporaryFiles: false,
   }), "Please provide the document library containing the attachment.");
   assert.equal(resolveAssistantClarification({
+    plan: toolPlan([]),
     plannerNeedsClarification: true,
     plannerClarificationQuestion: "Upload or place the file in the Firm Library.",
     toolClarificationQuestion: "Which external Matter do you want searched?",
@@ -193,6 +198,29 @@ test("temporary attachment clarification guard is narrow, case-insensitive, and 
     `${"x".repeat(500)} I cannot access the attached file.`,
     true
   ), false);
+});
+
+test("document create deliverables skip planner and tool clarifications", () => {
+  const createPlan = {
+    ...toolPlan([]),
+    intent: "document_creation" as const,
+    needsClarification: true,
+    clarificationQuestion: "What are the party names?",
+    deliverable: { kind: "document" as const, documentAction: "create" as const },
+  };
+  assert.equal(resolveAssistantClarification({
+    plan: createPlan,
+    plannerNeedsClarification: true,
+    plannerClarificationQuestion: "What are the party names?",
+    toolClarificationQuestion: "I found more than one matching Matter: A, B. Which Matter do you mean?",
+    hasTemporaryFiles: false,
+  }), undefined);
+  assert.equal(resolveAssistantClarification({
+    plan: toolPlan([]),
+    plannerNeedsClarification: true,
+    plannerClarificationQuestion: "Which Matter do you mean?",
+    hasTemporaryFiles: false,
+  }), "Which Matter do you mean?");
 });
 
 test("temporary attachment evidence preserves filename, source identity, and extracted text", () => {

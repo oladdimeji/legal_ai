@@ -1,3 +1,6 @@
+import { assistantPlanRequestsDocumentCreate } from "./assistantDocumentIntent.js";
+import type { AssistantPlan } from "./assistantTypes.js";
+
 const MAX_CLARIFICATION_MATCH_CHARS = 500;
 
 const FALSE_ATTACHMENT_ACCESS_PATTERNS = [
@@ -21,11 +24,14 @@ export function isFalseTemporaryAttachmentClarification(
 }
 
 export function resolveAssistantClarification(input: {
+  plan: AssistantPlan;
   plannerNeedsClarification: boolean;
   plannerClarificationQuestion?: string;
   toolClarificationQuestion?: string;
   hasTemporaryFiles: boolean;
 }): string | undefined {
+  if (assistantPlanRequestsDocumentCreate(input.plan)) return undefined;
+
   const plannerQuestion = input.plannerNeedsClarification
     ? input.plannerClarificationQuestion?.trim()
     : undefined;

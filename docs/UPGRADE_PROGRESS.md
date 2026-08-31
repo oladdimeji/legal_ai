@@ -1,5 +1,12 @@
 # Compact Upgrade Progress
 
+## Document create skips pre-draft clarification
+
+- Document create deliverables now clear planner `needsClarification` during reconciliation and bypass both planner and tool clarification gates before drafting begins.
+- Genuine revision ambiguity, informational requests, chat-only instructions, and attachment-access clarification guards are unchanged.
+- Voice document create/revise instructions now tell Live to call `use_assistant_capabilities` without asking for missing names or deal terms first.
+- No schema, migration, dependency, authentication, workspace-isolation, or Matter-isolation changes were made.
+
 ## Voice document creation skips public web research
 
 - `/api/threads/:id/voice/assistant` now passes `skipWebResearch: true` into `orchestrateAssistantRetrieval`, so Voice document create and revise requests no longer run the public web research pipeline before drafting.

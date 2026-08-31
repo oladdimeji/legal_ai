@@ -141,16 +141,33 @@ function forceMessage(plan: AssistantPlan): AssistantPlan {
   return { ...plan, deliverable: { kind: "message" } };
 }
 
+export function assistantPlanRequestsDocumentCreate(plan: AssistantPlan): boolean {
+  return plan.intent === "document_creation"
+    && plan.deliverable.documentAction === "create"
+    && plan.deliverable.kind !== "message";
+}
+
+function withoutDocumentCreateClarification(plan: AssistantPlan): AssistantPlan {
+  if (!assistantPlanRequestsDocumentCreate(plan)) return plan;
+  const { clarificationQuestion: _removed, ...rest } = plan;
+  return {
+    ...rest,
+    needsClarification: false,
+  };
+}
+
 export function reconcileAssistantDocumentIntent(
   plan: AssistantPlan,
   hint: AssistantDocumentIntentHint,
   input: AssistantPlannerInput
 ): AssistantPlan {
   if (hint.kind === "explicit_message_only" || hint.kind === "informational_message") return forceMessage(plan);
-  if (hint.kind === "none") return plan;
+  if (hint.kind === "none") return withoutDocumentCreateClarification(plan);
 
   if (hint.kind === "explicit_create") {
-    if (plan.deliverable.documentAction === "create" && plan.deliverable.kind !== "message") return plan;
+    if (plan.deliverable.documentAction === "create" && plan.deliverable.kind !== "message") {
+      return withoutDocumentCreateClarification(plan);
+    }
     return {
       ...plan,
       intent: "document_creation",
@@ -161,7 +178,9 @@ export function reconcileAssistantDocumentIntent(
   }
 
   if (hint.kind === "accepted_document_offer") {
-    if (plan.deliverable.documentAction === "create" && plan.deliverable.kind === "document") return plan;
+    if (plan.deliverable.documentAction === "create" && plan.deliverable.kind === "document") {
+      return withoutDocumentCreateClarification(plan);
+    }
     return {
       ...plan,
       intent: "document_creation",
