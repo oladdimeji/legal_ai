@@ -35,6 +35,7 @@ import {
   shouldBeginVoiceDocumentSpeechSuppression,
   shouldFinalizeVoiceDocumentImmediately,
   shouldAdvanceVoiceTurnBoundary,
+  hasPendingVoiceDocumentDelivery,
   shouldHoldVoiceCapture,
   voiceCaptureAwaitingFinalize,
   voiceAcknowledgementSpeechFromRequest,
@@ -184,7 +185,7 @@ test("Voice capability metadata waits through contentless completion but remains
   assert.equal(capabilityTurnBoundary === currentTurnBoundary, false);
 
   const completion = hook.slice(hook.indexOf("if (content.turnComplete)"), hook.indexOf("  }, [clearWorking", hook.indexOf("if (content.turnComplete)")));
-  assert.match(completion, /inFlightAssistantCapabilityTurnsRef/);
+  assert.match(completion, /pendingVoiceDocumentDeliveryTurnsRef/);
   assert.match(completion, /shouldAdvanceVoiceTurnBoundary/);
   assert.match(completion, /finalizeTranscripts\("turnComplete", false\)/);
   assert.match(hook, /finalizePendingVoiceDocument/);
@@ -199,12 +200,19 @@ test("a completed turn cannot retire an Assistant capability boundary while its 
   // The model routinely speaks a short filler line before the deliverable arrives.
   // Treating that as a finished turn orphaned the capability metadata, so the
   // returned document never reached the saved assistant message as a card.
+  assert.equal(hasPendingVoiceDocumentDelivery({ inFlightCapabilityCount: 1, pendingDocumentDelivery: false }), true);
+  assert.equal(hasPendingVoiceDocumentDelivery({ inFlightCapabilityCount: 0, pendingDocumentDelivery: true }), true);
+  assert.equal(hasPendingVoiceDocumentDelivery({ inFlightCapabilityCount: 0, pendingDocumentDelivery: false }), false);
   assert.equal(shouldAdvanceVoiceTurnBoundary("turnComplete", true), false);
   assert.equal(shouldAdvanceVoiceTurnBoundary("turnComplete", false), true);
   assert.equal(shouldAdvanceVoiceTurnBoundary("interrupted", true), true);
   assert.equal(shouldAdvanceVoiceTurnBoundary("interrupted", false), true);
 
-  assert.match(hook, /shouldAdvanceVoiceTurnBoundary\(\s*"turnComplete",\s*hasInFlightAssistantCapability\s*\)/);
+  assert.match(hook, /hasPendingVoiceDocumentDelivery/);
+  assert.match(hook, /shouldAdvanceVoiceTurnBoundary\(\s*"turnComplete",\s*hasPendingDocumentDelivery\s*\)/);
+  assert.match(hook, /completeVoiceDocumentDelivery/);
+  assert.match(hook, /sendClientContent/);
+  assert.match(hook, /voiceDocumentConfirmationClientPrompt/);
   assert.doesNotMatch(hook, /shouldAdvanceVoiceTurnBoundary\([^)]*transcriptRef/);
 });
 
@@ -323,8 +331,12 @@ test("Voice document completion keeps one card result and speaks an informationa
   assert.match(voiceMode, /generateVoiceSpeechAudio/);
   assert.doesNotMatch(voiceMode, /warmupVoiceSpeechAudio|VOICE_MODE_DOCUMENT_CONFIRMATION/);
 
+  assert.match(hook, /completeVoiceDocumentDelivery/);
+  assert.match(hook, /VOICE_DOCUMENT_SAVED_TOOL_ACK/);
+  assert.match(hook, /sendClientContent/);
+  assert.match(hook, /voiceDocumentConfirmationClientPrompt/);
   const toolHandler = hook.slice(hook.indexOf("const handleServerMessage"), hook.indexOf("const ensureVoiceToken"));
-  assert.match(toolHandler, /capability\.toolResponse/);
+  assert.match(toolHandler, /completeVoiceDocumentDelivery/);
   assert.match(toolHandler, /finalizePendingVoiceDocument\(\)/);
   assert.match(toolHandler, /suppressDocumentTranscriptRef\.current = true/);
   assert.doesNotMatch(toolHandler, /playDocumentConfirmation\(/);

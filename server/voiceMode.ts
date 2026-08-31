@@ -7,6 +7,16 @@ import {
   documentConfirmationSpeech,
 } from "../src/lib/documentConfirmation.js";
 import { voiceAcknowledgementSpeech as buildVoiceAcknowledgementSpeech } from "../src/lib/voiceAcknowledgement.js";
+import {
+  voiceDocumentConfirmationClientPrompt,
+  voiceDocumentSavedToolResponse,
+} from "../src/lib/voiceDocumentConfirmation.js";
+
+export {
+  VOICE_DOCUMENT_SAVED_TOOL_ACK,
+  voiceDocumentConfirmationClientPrompt,
+  voiceDocumentSavedToolResponse,
+} from "../src/lib/voiceDocumentConfirmation.js";
 
 export const VOICE_MODE_CONFIG = {
   model: "gemini-3.1-flash-live-preview",
@@ -106,15 +116,6 @@ export async function generateVoiceDocumentReviewSpeech(input: {
     console.warn("Voice document review generation failed; using structural fallback.", error);
   }
   return voiceInformationalConfirmationSpeech(input);
-}
-
-export function voiceDocumentSavedToolResponse(confirmationSpeech: string): string {
-  const spoken = confirmationSpeech.replace(/\s+/g, " ").trim();
-  return [
-    "The document was saved successfully.",
-    `Speak to the user: first confirm the document was created or revised, then give a brief review in your own words. Use this guidance but do not read or quote any document text aloud: ${spoken}`,
-    "After speaking, remain silent until the user speaks.",
-  ].join(" ");
 }
 
 function voiceSpeechRequest(text: string, model: string) {

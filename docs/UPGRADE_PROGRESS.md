@@ -2185,6 +2185,13 @@ Status: Implementation complete; focused-phase verification recorded below.
 - Fixed document cards appearing above the user request by persisting the pending user transcript before the assistant document in `finalizePendingVoiceDocument`, preserving normal request-then-response order.
 - Changed files: `server/voiceMode.ts`, `server.ts`, `src/hooks/useVoiceMode.ts`, `tests/assistant-voice-mode.test.ts`.
 
+### Voice Mode immediate confirmation delivery
+
+- Fixed confirmations playing on the next user turn instead of right after document creation. Long draft runs closed the Live tool turn before `sendToolResponse` returned, so confirmation speech was deferred until the follow-up question.
+- Document delivery now holds the turn until confirmation is delivered, sends a minimal tool acknowledgement when the draft completes, then triggers confirmation speech through a dedicated `sendClientContent` turn with `voiceDocumentConfirmationClientPrompt` so Live speaks immediately in audio without waiting for another user utterance.
+- Deferred card persistence until after confirmation delivery completes; added `pendingVoiceDocumentDeliveryTurnsRef` and `completeVoiceDocumentDelivery`.
+- Changed files: `src/lib/voiceDocumentConfirmation.ts`, `server/voiceMode.ts`, `src/hooks/useVoiceMode.ts`, `tests/assistant-voice-mode.test.ts`.
+
 - Voice and typed drafting already shared the same Assistant planner, retrieval, and `createAssistantDeliverable` path. Voice was slower because Gemini Live sat in front of that path: it often spoke before calling `use_assistant_capabilities`, the spoken user instruction could be paraphrased, and the document card waited until Live finished speaking the result.
 - Spoken create/revise instructions now start that existing `/voice/assistant` pipeline as soon as Live begins responding, using the user's transcript rather than a Live paraphrase. The same in-flight request is reused if Live later calls the tool, so drafting is not duplicated.
 - The document card is shown as soon as the existing Assistant pipeline returns, instead of waiting for Live's spoken confirmation. Persistence, ownership validation, interruption, acknowledgement audio, lookup, microphone, playback, and typed Assistant behavior are unchanged.
