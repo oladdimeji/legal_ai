@@ -134,7 +134,7 @@ export type VoiceLiveDeliverable = {
   metadata: VoiceCapabilityMetadata;
 };
 
-const VOICE_DOCUMENT_DELIVERABLE = String.raw`document|email|letter|memo|memorandum|agreement|contract|policy|brief|report|notice|checklist|nda|non-disclosure`;
+const VOICE_DOCUMENT_DELIVERABLE = String.raw`document|email|letter|memo|memorandum|agreement|contract|policy|brief|report|notice|checklist|nda|non-disclosure|statement of work|sow`;
 const VOICE_DOCUMENT_CREATE = new RegExp(
   String.raw`\b(?:draft|prepare|write|compose|create|generate|produce|make)\b[\s\S]{0,120}\b(?:${VOICE_DOCUMENT_DELIVERABLE})\b`
 );
@@ -142,7 +142,7 @@ const VOICE_DOCUMENT_CONVERT = new RegExp(
   String.raw`\b(?:turn into|turn to|convert into|convert to|return as|provide as|put into|format as|save as)\b[\s\S]{0,100}\b(?:${VOICE_DOCUMENT_DELIVERABLE})\b`
 );
 const VOICE_DOCUMENT_REVISE = new RegExp(
-  String.raw`\b(?:revise|rewrite|update|amend|shorten|expand)\b[\s\S]{0,120}\b(?:it|that|document|draft|memo|letter|agreement|contract|report|policy|brief|email)\b`
+  String.raw`\b(?:revise|rewrite|update|amend|shorten|expand|regenerat(?:e|ing)|redo)\b[\s\S]{0,120}\b(?:it|that|one|document|draft|memo|letter|agreement|contract|report|policy|brief|email|(?:${VOICE_DOCUMENT_DELIVERABLE}))\b`
 );
 
 export function looksLikeVoiceDocumentRequest(content: string): boolean {
@@ -821,10 +821,11 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
             : (typeof call.args?.query === "string" ? call.args.query.trim() : "");
           const turnBoundary = turnBoundaryRef.current;
           const isDocumentCapability = isAssistantCapability && shouldUseVoiceAssistantCapability(request);
-          const deferDocumentCapability = isDocumentCapability && awaitingOpeningTurnRef.current;
+          const deferAssistantCapability = isAssistantCapability && awaitingOpeningTurnRef.current;
           if (
             shouldPlayVoiceAcknowledgement(call.name, request, turnBoundary, acknowledgedTurnRef.current)
-            && !deferDocumentCapability
+            && !deferAssistantCapability
+            && isDocumentCapability
           ) {
             acknowledgedTurnRef.current = turnBoundary;
             const acknowledgementAudio = acknowledgementAudioRef.current;
@@ -845,17 +846,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
             }
           }
           if (isAssistantCapability) {
-            if (!isDocumentCapability) {
-              session.sendToolResponse({
-                functionResponses: [{
-                  id: call.id,
-                  name: call.name || "use_assistant_capabilities",
-                  response: { output: VOICE_DIRECT_ANSWER_TOOL_RESPONSE },
-                }],
-              });
-              return;
-            }
-            if (deferDocumentCapability) {
+            if (deferAssistantCapability) {
               session.sendToolResponse({
                 functionResponses: [{
                   id: call.id,

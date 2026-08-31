@@ -1,5 +1,11 @@
 # Compact Upgrade Progress
 
+## Voice routes every use_assistant_capabilities call to the backend
+
+- Live `use_assistant_capabilities` tool calls now always reach `/voice/assistant` once the user has spoken in the session, instead of being blocked by a narrow client regex that told the model to answer directly without saving a document.
+- Voice document phrase detection now includes statement of work, SOW, and regenerate/redo requests for acknowledgement and the spoken fallback path. Typed chat, lookup, streaming, save, opening-turn deferral, and transcript persistence are unchanged.
+- No schema, migration, dependency, authentication, workspace-isolation, or Matter-isolation changes were made.
+
 ## Voice defers document capability until the user speaks
 
 - Reopening Voice on a conversation whose history includes a prior document request no longer auto-starts drafting. Live `use_assistant_capabilities` document calls are deferred until the first `inputTranscription` in the current session.

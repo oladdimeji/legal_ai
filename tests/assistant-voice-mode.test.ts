@@ -105,7 +105,7 @@ test("Voice Mode stays silent on open, drops unexpected opening audio, and never
     /awaitingOpeningTurnRef\.current = false/
   );
   assert.match(hook, /VOICE_AWAIT_USER_SPEECH_TOOL_RESPONSE/);
-  assert.match(hook, /deferDocumentCapability[\s\S]*VOICE_AWAIT_USER_SPEECH_TOOL_RESPONSE/);
+  assert.match(hook, /deferAssistantCapability[\s\S]*VOICE_AWAIT_USER_SPEECH_TOOL_RESPONSE/);
 });
 
 test("Voice acknowledgement TTS reuses the configured Voice Agent identity and fixed phrase", () => {
@@ -180,6 +180,8 @@ test("spoken document instructions start the Assistant draft path without waitin
   assert.equal(looksLikeVoiceDocumentRequest("Draft an NDA for the Acme engagement."), true);
   assert.equal(looksLikeVoiceDocumentRequest("Please write a client advice letter."), true);
   assert.equal(looksLikeVoiceDocumentRequest("Revise the agreement to add a termination clause."), true);
+  assert.equal(looksLikeVoiceDocumentRequest("Generate a statement of work for this studio."), true);
+  assert.equal(looksLikeVoiceDocumentRequest("You should regenerate another one for me to see now."), true);
   assert.equal(looksLikeVoiceDocumentRequest("How should I draft a memorandum?"), false);
   assert.equal(looksLikeVoiceDocumentRequest("What is the limitation period?"), false);
   assert.equal(voiceAssistantInstruction("Draft an NDA.", "Please create a document"), "Draft an NDA.");
@@ -227,7 +229,8 @@ test("Voice acknowledgement is cached, isolated, fail-open, prefetched, and clea
   const toolHandler = hook.slice(hook.indexOf("const handleServerMessage"), hook.indexOf("const beginAmplitudeUpdates"));
   assert.match(toolHandler, /shouldPlayVoiceAcknowledgement\(call\.name, request, turnBoundary, acknowledgedTurnRef\.current\)/);
   assert.match(toolHandler, /shouldUseVoiceAssistantCapability\(request\)/);
-  assert.match(toolHandler, /VOICE_DIRECT_ANSWER_TOOL_RESPONSE/);
+  assert.match(toolHandler, /if \(isAssistantCapability\) \{[\s\S]*await ensureAssistantCapability\(request, turnBoundary\)/);
+  assert.doesNotMatch(toolHandler, /VOICE_DIRECT_ANSWER_TOOL_RESPONSE/);
   assert.ok(toolHandler.indexOf("scheduleAudio(acknowledgementAudio.data") < toolHandler.indexOf("await fetch("));
   assert.match(toolHandler, /voice\/assistant/);
   assert.match(toolHandler, /voice\/lookup/);
