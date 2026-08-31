@@ -74,9 +74,9 @@ test("Gemini Live configuration is centralized for native audio, transcription, 
   assert.match(String(config.systemInstruction), /Do not proactively mention Voice Mode limitations/);
   assert.match(String(config.systemInstruction), /Do not call any function for lookups/);
   assert.match(String(config.systemInstruction), /Answer ordinary conversation[\s\S]*directly and immediately/);
-  assert.match(String(config.systemInstruction), /speak exactly one short, specific, tailored sentence immediately/);
-  assert.match(String(config.systemInstruction), /In the same turn, call use_assistant_capabilities as your very next action without waiting for the user to speak again/);
-  assert.match(String(config.systemInstruction), /speak the confirmation guidance it gives you as a brief review/);
+  assert.match(String(config.systemInstruction), /Rotate naturally among these acknowledgement styles/);
+  assert.match(String(config.systemInstruction), /Understood\. I'll prepare the \[document type\] now\./);
+  assert.match(String(config.systemInstruction), /first confirm the document was created or revised/);
   assert.match(String(config.systemInstruction), /Never read or quote text from the document/);
   assert.match(String(config.systemInstruction), /measured conversational pace/);
   assert.match(String(config.systemInstruction), /Never fabricate progress/);
@@ -120,9 +120,11 @@ test("Voice acknowledgement and confirmation speech are request-aware and use Ko
     VOICE_MODE_CONFIG.voiceName
   );
   assert.equal(VOICE_MODE_CONFIG.voiceName, "Kore");
-  assert.equal(voiceAcknowledgementSpeech("Draft an NDA for Acme."), "I'm drafting that NDA for you now.");
-  assert.equal(voiceAcknowledgementSpeech("Revise the agreement."), "I'm revising that Agreement for you now.");
-  assert.equal(voiceAcknowledgementSpeechFromRequest("Prepare a memo."), "I'm drafting that Memo for you now.");
+  assert.equal(voiceAcknowledgementSpeech("Draft an NDA for Acme.", 0), "Understood. I'll prepare the NDA now.");
+  assert.equal(voiceAcknowledgementSpeech("Draft an NDA for Acme.", 1), "Got it. I'll put together the NDA for you.");
+  assert.equal(voiceAcknowledgementSpeech("Draft an NDA for Acme.", 2), "Absolutely. I'll prepare the NDA based on your instructions.");
+  assert.equal(voiceAcknowledgementSpeech("Revise the agreement.", 0), "Understood. I'll revise the Agreement now.");
+  assert.equal(voiceAcknowledgementSpeechFromRequest("Prepare a memo.", 1), "Got it. I'll put together the Memo for you.");
   assert.match(
     voiceInformationalConfirmationSpeech({
       title: "Acme NDA",
@@ -313,11 +315,13 @@ test("Voice document completion keeps one card result and speaks an informationa
   assert.equal(usesVoiceRevisionConfirmation({ sourceDocument: { id: "doc_1" } }), true);
 
   assert.match(server, /generateVoiceDocumentReviewSpeech/);
+  assert.match(voiceMode, /Start with a clear confirmation that the document has been created or revised/);
+  assert.match(voiceMode, /first confirm the document was created or revised/);
   assert.match(server, /voiceDocumentSavedToolResponse/);
   assert.match(server, /toolResponse/);
   assert.doesNotMatch(server, /voice\/acknowledgement|voice\/confirmation|voice\/lookup/);
   assert.match(voiceMode, /generateVoiceSpeechAudio/);
-  assert.doesNotMatch(voiceMode, /warmupVoiceSpeechAudio|VOICE_MODE_DOCUMENT_CONFIRMATION|Absolutely/);
+  assert.doesNotMatch(voiceMode, /warmupVoiceSpeechAudio|VOICE_MODE_DOCUMENT_CONFIRMATION/);
 
   const toolHandler = hook.slice(hook.indexOf("const handleServerMessage"), hook.indexOf("const ensureVoiceToken"));
   assert.match(toolHandler, /capability\.toolResponse/);

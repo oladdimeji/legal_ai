@@ -26,6 +26,9 @@ import {
   VOICE_PLAYBACK_PROCESSOR_NAME,
   VOICE_PLAYBACK_WORKLET_SOURCE,
 } from "../lib/voicePlaybackWorklet";
+import { voiceAcknowledgementSpeech as voiceAcknowledgementSpeechFromRequest } from "../lib/voiceAcknowledgement.js";
+
+export { voiceAcknowledgementSpeechFromRequest };
 
 // Fallback-only lead used when AudioWorklet playback is unavailable. The worklet
 // path uses a ring buffer instead, so a late packet is silence rather than a
@@ -240,21 +243,6 @@ export function shouldPlayVoiceAcknowledgement(
   return functionName === "use_assistant_capabilities"
     && shouldUseVoiceAssistantCapability(request)
     && acknowledgedTurn !== turnBoundary;
-}
-
-export function voiceAcknowledgementSpeechFromRequest(request: string): string {
-  const text = request.replace(/\s+/g, " ").trim();
-  const lower = text.toLocaleLowerCase();
-  const revise = /\b(?:revise|rewrite|update|amend|shorten|expand|regenerat(?:e|ing)|redo)\b/.test(lower);
-  const typeMatch = text.match(
-    /\b(nda|non-disclosure(?: agreement)?|statement of work|sow|memorandum|memo|agreement|contract|policy|brief|report|notice|checklist|email|letter|document)\b/i
-  );
-  const rawType = typeMatch?.[1] || "document";
-  const docType = /^(nda|sow)$/i.test(rawType)
-    ? rawType.toLocaleUpperCase()
-    : rawType.replace(/\b\w/g, (char) => char.toLocaleUpperCase());
-  if (revise) return `I'm revising that ${docType} for you now.`;
-  return `I'm drafting that ${docType} for you now.`;
 }
 
 /**
