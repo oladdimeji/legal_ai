@@ -107,11 +107,6 @@ type VoiceTokenResponse = {
   error?: string;
 };
 
-type VoiceAcknowledgementAudio = {
-  data: string;
-  mimeType: string;
-};
-
 type UseVoiceModeOptions = {
   onTranscript: (message: Message) => void;
 };
@@ -214,9 +209,23 @@ export function shouldRouteVoiceAssistantCapability(
   return explicit.length > 0 && shouldUseVoiceAssistantCapability(explicit);
 }
 
-export function shouldBeginVoiceDocumentSpeechSuppression(userTranscript: string): boolean {
+export function shouldApplyVoiceDraftUpdate(
+  turnBoundary: number,
+  currentTurnBoundary: number,
+  pausedCapabilityTurn: number | null,
+  hasInFlightPromise: boolean
+): boolean {
+  if (turnBoundary === currentTurnBoundary) return true;
+  if (pausedCapabilityTurn === turnBoundary) return true;
+  if (hasInFlightPromise) return true;
+  return false;
+}
+
+export function shouldBeginVoiceDocumentTranscriptSuppression(userTranscript: string): boolean {
   return looksLikeVoiceDocumentRequest(userTranscript);
 }
+
+export const shouldBeginVoiceDocumentSpeechSuppression = shouldBeginVoiceDocumentTranscriptSuppression;
 
 export function shouldPlayVoiceAcknowledgement(
   functionName: string | undefined,
@@ -330,9 +339,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   const turnBoundaryRef = useRef(0);
   const awaitingOpeningTurnRef = useRef(false);
   const acknowledgedTurnRef = useRef<number | null>(null);
-  const suppressLiveDocumentSpeechRef = useRef(false);
-  const confirmationPlayIdRef = useRef(0);
-  const documentConfirmationTurnRef = useRef<number | null>(null);
+  const suppressDocumentTranscriptRef = useRef(false);
   const tokenPrefetchRef = useRef<{
     threadId: string;
     pageContextKey: string;
@@ -345,10 +352,10 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     ok: boolean;
     result: string;
     capabilityMetadata: VoiceCapabilityMetadata | null;
+    toolResponse?: string;
     error?: string;
   }>>());
   const liveDeliverableRef = useRef<VoiceLiveDeliverable | null>(null);
-  const draftBodyForConfirmationRef = useRef<string>("");
   const onTranscriptRef = useRef(onTranscript);
   onTranscriptRef.current = onTranscript;
 
@@ -471,10 +478,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     setLiveDeliverable(null);
     awaitingOpeningTurnRef.current = false;
     acknowledgedTurnRef.current = null;
-    suppressLiveDocumentSpeechRef.current = false;
-    documentConfirmationTurnRef.current = null;
-    confirmationPlayIdRef.current += 1;
-    draftBodyForConfirmationRef.current = "";
+    suppressDocumentTranscriptRef.current = false;
     tokenPrefetchRef.current = null;
     startupAudioBufferRef.current = [];
     captureLiveRef.current = false;
@@ -543,7 +547,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
           ...completed.filter((transcript) => transcript.role !== "assistant"),
           { role: "assistant" as const, content: documentContent },
         ]
-      : suppressLiveDocumentSpeechRef.current
+      : suppressDocumentTranscriptRef.current
         ? completed.filter((transcript) => transcript.role !== "assistant")
         : completed;
     if (advanceTurnBoundary) {
@@ -616,27 +620,263 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     source.start(startAt);
   }, [cancelPlaybackSettle, schedulePlaybackSettle, updateState]);
 
-  const fetchVoiceSpeech = useCallback((threadId: string, text: string, lifecycle: number) => {
-    const spoken = text.replace(/\s+/g, " ").trim();
-    if (!spoken) return Promise.resolve(null);
-    return fetch(`/api/threads/${encodeURIComponent(threadId)}/voice/speak`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: spoken }),
-    })
-      .then(async (response) => {
-        if (!response.ok) return null;
-        const audio = await response.json().catch(() => null) as VoiceAcknowledgementAudio | null;
-        return audio?.data && audio.mimeType ? audio : null;
-      })
-      .then((audio) => {
-        if (audio && lifecycle === lifecycleRef.current && sessionThreadRef.current === threadId) {
-          return audio;
+  const handleServerMessage = useCallback((message: LiveServerMessage) => {
+    const threadId = sessionThreadRef.current;
+    const pageContext = pageContextRef.current;
+    const session = sessionRef.current;
+
+    const ensureAssistantCapability = (request: string, turnBoundary: number) => {
+      const existing = assistantCapabilityPromisesRef.current.get(turnBoundary);
+      if (existing) return existing;
+      if (!threadId || !pageContext || !request) {
+        return Promise.resolve({
+          ok: false,
+          result: "",
+          capabilityMetadata: null as VoiceCapabilityMetadata | null,
+          toolResponse: undefined as string | undefined,
+          error: "The Assistant capability request failed.",
+        });
+      }
+      if (shouldUseVoiceAssistantCapability(request)) {
+        suppressDocumentTranscriptRef.current = true;
+      }
+      const workingCallId = `voice_assistant_${turnBoundary}`;
+      workingCallIdsRef.current.add(workingCallId);
+      const inFlightCount = inFlightAssistantCapabilityTurnsRef.current.get(turnBoundary) || 0;
+      inFlightAssistantCapabilityTurnsRef.current.set(turnBoundary, inFlightCount + 1);
+      setWorking(true);
+      const promise = (async () => {
+        try {
+          const response = await fetch(`/api/threads/${encodeURIComponent(threadId)}/voice/assistant`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ request, pageContext }),
+          });
+          const shouldApplyDraft = () => shouldApplyVoiceDraftUpdate(
+            turnBoundary,
+            turnBoundaryRef.current,
+            pausedAssistantCapabilityTurnRef.current,
+            assistantCapabilityPromisesRef.current.has(turnBoundary)
+          );
+          const data = await consumeVoiceAssistantCapabilityResponse(response, {
+            onDraftReset: () => {
+              if (!shouldApplyDraft()) return;
+              const metadata = liveDeliverableRef.current?.metadata || {
+                assistantIntent: "document_creation",
+                deliverableKind: "document",
+              };
+              liveDeliverableRef.current = { content: "", metadata };
+              setLiveDeliverable({ content: "", metadata });
+            },
+            onDraftDelta: (preview) => {
+              if (!shouldApplyDraft()) return;
+              const metadata = liveDeliverableRef.current?.metadata || {
+                assistantIntent: "document_creation",
+                deliverableKind: "document",
+              };
+              const deliverable = { content: preview, metadata };
+              liveDeliverableRef.current = deliverable;
+              setLiveDeliverable(deliverable);
+            },
+            onDraftStarted: () => {
+              if (!shouldApplyDraft()) return;
+              const metadata = liveDeliverableRef.current?.metadata || {
+                assistantIntent: "document_creation",
+                deliverableKind: "document",
+              };
+              if (liveDeliverableRef.current) return;
+              liveDeliverableRef.current = { content: "", metadata };
+              setLiveDeliverable({ content: "", metadata });
+            },
+          });
+          if (data.error) {
+            if (shouldApplyDraft()) {
+              pendingCapabilityMetadataRef.current = null;
+              liveDeliverableRef.current = null;
+              setLiveDeliverable(null);
+              suppressDocumentTranscriptRef.current = false;
+            }
+            return {
+              ok: false,
+              result: "",
+              capabilityMetadata: null,
+              toolResponse: undefined,
+              error: data.error,
+            };
+          }
+          if (response.ok && data.capabilityMetadata?.document) {
+            pendingCapabilityMetadataRef.current = (data.capabilityMetadata || null) as VoiceCapabilityMetadata | null;
+            const deliverable = {
+              content: data.result || "",
+              metadata: data.capabilityMetadata as VoiceCapabilityMetadata,
+            };
+            liveDeliverableRef.current = deliverable;
+            setLiveDeliverable(deliverable);
+            suppressDocumentTranscriptRef.current = true;
+            finalizePendingVoiceDocument();
+          } else if (response.ok && shouldApplyDraft()) {
+            suppressDocumentTranscriptRef.current = false;
+            liveDeliverableRef.current = null;
+            setLiveDeliverable(null);
+          }
+          return {
+            ok: response.ok,
+            result: data.result || "",
+            capabilityMetadata: (data.capabilityMetadata || null) as VoiceCapabilityMetadata | null,
+            toolResponse: typeof data.toolResponse === "string" ? data.toolResponse : undefined,
+            error: data.error,
+          };
+        } catch {
+          if (shouldApplyVoiceDraftUpdate(
+            turnBoundary,
+            turnBoundaryRef.current,
+            pausedAssistantCapabilityTurnRef.current,
+            assistantCapabilityPromisesRef.current.has(turnBoundary)
+          )) {
+            pendingCapabilityMetadataRef.current = null;
+            liveDeliverableRef.current = null;
+            setLiveDeliverable(null);
+            suppressDocumentTranscriptRef.current = false;
+          }
+          return {
+            ok: false,
+            result: "",
+            capabilityMetadata: null,
+            toolResponse: undefined,
+            error: "The Assistant capability request failed.",
+          };
+        } finally {
+          workingCallIdsRef.current.delete(workingCallId);
+          const currentCount = inFlightAssistantCapabilityTurnsRef.current.get(turnBoundary) || 0;
+          if (currentCount <= 1) inFlightAssistantCapabilityTurnsRef.current.delete(turnBoundary);
+          else inFlightAssistantCapabilityTurnsRef.current.set(turnBoundary, currentCount - 1);
+          setWorking(workingCallIdsRef.current.size > 0);
         }
-        return null;
-      })
-      .catch(() => null);
-  }, []);
+      })();
+      assistantCapabilityPromisesRef.current.set(turnBoundary, promise);
+      return promise;
+    };
+
+    if (message.toolCall?.functionCalls?.length) {
+      if (threadId && pageContext && session) {
+        void Promise.all(message.toolCall.functionCalls.map(async (call) => {
+          if (call.name !== "use_assistant_capabilities") {
+            session.sendToolResponse({
+              functionResponses: [{
+                id: call.id,
+                name: call.name || "use_assistant_capabilities",
+                response: { output: VOICE_DIRECT_ANSWER_TOOL_RESPONSE },
+              }],
+            });
+            return;
+          }
+          const explicitToolRequest = typeof call.args?.request === "string" ? call.args.request : "";
+          const request = voiceAssistantInstruction(
+            transcriptRef.current.user,
+            explicitToolRequest
+          );
+          const turnBoundary = turnBoundaryRef.current;
+          if (awaitingOpeningTurnRef.current) {
+            session.sendToolResponse({
+              functionResponses: [{
+                id: call.id,
+                name: call.name || "use_assistant_capabilities",
+                response: { output: VOICE_AWAIT_USER_SPEECH_TOOL_RESPONSE },
+              }],
+            });
+            return;
+          }
+          suppressDocumentTranscriptRef.current = true;
+          const capability = await ensureAssistantCapability(request, turnBoundary);
+          session.sendToolResponse({
+            functionResponses: [{
+              id: call.id,
+              name: call.name || "use_assistant_capabilities",
+              response: capability.ok
+                ? {
+                    output: capability.toolResponse
+                      || (capability.capabilityMetadata?.document
+                        ? "The document was saved successfully. Remain silent until the user speaks."
+                        : (capability.result || "Answer the user directly.")),
+                  }
+                : { error: capability.error || "The Assistant capability request failed." },
+            }],
+          });
+        }));
+      }
+    }
+    const content = message.serverContent;
+    if (!content) return;
+    if (content.interrupted) {
+      awaitingOpeningTurnRef.current = false;
+      const hasInFlightDocument = inFlightAssistantCapabilityTurnsRef.current.size > 0
+        || assistantCapabilityPromisesRef.current.size > 0;
+      if (!hasInFlightDocument) {
+        liveDeliverableRef.current = null;
+        setLiveDeliverable(null);
+        suppressDocumentTranscriptRef.current = false;
+      }
+      clearWorking();
+      stopPlayback();
+      updateState("listening");
+    }
+    for (const part of content.interrupted ? [] : content.modelTurn?.parts || []) {
+      const inlineData = part.inlineData;
+      if (inlineData?.data && inlineData.mimeType?.startsWith("audio/")) {
+        if (awaitingOpeningTurnRef.current) continue;
+        scheduleAudio(inlineData.data, inlineData.mimeType);
+      }
+    }
+    if (content.inputTranscription?.text) {
+      awaitingOpeningTurnRef.current = false;
+      transcriptRef.current.user = mergeTranscriptChunk(
+        transcriptRef.current.user,
+        content.inputTranscription.text
+      );
+      const userTranscript = transcriptRef.current.user.trim();
+      if (shouldBeginVoiceDocumentTranscriptSuppression(userTranscript)) {
+        suppressDocumentTranscriptRef.current = true;
+      } else if (
+        suppressDocumentTranscriptRef.current
+        && !(inFlightAssistantCapabilityTurnsRef.current.get(turnBoundaryRef.current) || 0)
+        && !liveDeliverableRef.current
+      ) {
+        suppressDocumentTranscriptRef.current = false;
+      }
+      if (pausedAssistantCapabilityTurnRef.current === turnBoundaryRef.current) {
+        finalizePendingVoiceDocument();
+      }
+      scheduleTranscriptFlush();
+    }
+    // Any unexpected opening audio is dropped, not transcribed, and never saved.
+    if (content.outputTranscription?.text && !awaitingOpeningTurnRef.current) {
+      if (!suppressDocumentTranscriptRef.current) {
+        transcriptRef.current.assistant = mergeTranscriptChunk(
+          transcriptRef.current.assistant,
+          content.outputTranscription.text
+        );
+        scheduleTranscriptFlush();
+      }
+    }
+    if (content.interrupted) finalizeTranscripts("interrupted");
+    if (content.turnComplete) {
+      const hasInFlightAssistantCapability = (inFlightAssistantCapabilityTurnsRef.current.get(turnBoundaryRef.current) || 0) > 0;
+      const shouldAdvanceTurnBoundary = shouldAdvanceVoiceTurnBoundary(
+        "turnComplete",
+        hasInFlightAssistantCapability
+      );
+      if (shouldAdvanceTurnBoundary) {
+        clearWorking();
+        finalizeTranscripts("turnComplete");
+        if (playbackSourcesRef.current.size === 0 && !playbackActiveRef.current) {
+          updateState("listening");
+        }
+      } else {
+        pausedAssistantCapabilityTurnRef.current = turnBoundaryRef.current;
+        finalizeTranscripts("turnComplete", false);
+      }
+    }
+  }, [clearWorking, finalizePendingVoiceDocument, finalizeTranscripts, scheduleAudio, scheduleTranscriptFlush, stopPlayback, updateState]);
 
   const ensureVoiceToken = useCallback((threadId: string, pageContext: WorkspacePageContext) => {
     const pageContextKey = JSON.stringify(pageContext);
@@ -673,367 +913,6 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     if (!threadId) return;
     void ensureVoiceToken(threadId, pageContext).catch(() => undefined);
   }, [ensureVoiceToken]);
-
-  const handleServerMessage = useCallback((message: LiveServerMessage) => {
-    const threadId = sessionThreadRef.current;
-    const pageContext = pageContextRef.current;
-    const session = sessionRef.current;
-
-    const playDocumentConfirmation = (
-      metadata: VoiceCapabilityMetadata,
-      turnBoundary: number,
-      draftContent: string
-    ) => {
-      if (!threadId || documentConfirmationTurnRef.current === turnBoundary) return;
-      documentConfirmationTurnRef.current = turnBoundary;
-      stopPlayback();
-      const confirmationId = ++confirmationPlayIdRef.current;
-      const confirmationLifecycle = lifecycleRef.current;
-      const revised = usesVoiceRevisionConfirmation(metadata);
-      const title = typeof metadata.document === "object" && metadata.document && "title" in metadata.document
-        ? String((metadata.document as { title?: string }).title || "document")
-        : "document";
-      const spoken = (() => {
-        const cleaned = draftContent
-          .replace(/\r/g, "")
-          .replace(/^#{1,6}\s+/gm, "")
-          .replace(/\*\*/g, "")
-          .replace(/^[-*]\s+/gm, "")
-          .replace(/\s+/g, " ")
-          .trim();
-        const sentence = cleaned
-          .split(/(?<=[.!?])\s+/)
-          .map((part) => part.trim())
-          .find((part) => part.length >= 28 && !/^table of contents\b/i.test(part));
-        const snippet = sentence
-          ? sentence.slice(0, 200).replace(/\s+\S*$/, "").replace(/[.,;:]+$/, "")
-          : "";
-        const lead = revised
-          ? `I've finished the revised ${title}.`
-          : `I've finished drafting ${title}.`;
-        return snippet ? `${lead} ${snippet}.` : lead;
-      })();
-      void fetchVoiceSpeech(threadId, spoken, confirmationLifecycle).then((audio) => {
-        if (
-          audio
-          && confirmationId === confirmationPlayIdRef.current
-          && confirmationLifecycle === lifecycleRef.current
-        ) {
-          scheduleAudio(audio.data, audio.mimeType);
-        }
-      });
-    };
-
-    const playAcknowledgement = (request: string, turnBoundary: number) => {
-      if (!shouldPlayVoiceAcknowledgement("use_assistant_capabilities", request, turnBoundary, acknowledgedTurnRef.current)) return;
-      acknowledgedTurnRef.current = turnBoundary;
-      if (!threadId) return;
-      const acknowledgementLifecycle = lifecycleRef.current;
-      void fetchVoiceSpeech(
-        threadId,
-        voiceAcknowledgementSpeechFromRequest(request),
-        acknowledgementLifecycle
-      ).then((audio) => {
-        if (
-          audio
-          && acknowledgementLifecycle === lifecycleRef.current
-          && turnBoundary === turnBoundaryRef.current
-          && acknowledgedTurnRef.current === turnBoundary
-        ) {
-          scheduleAudio(audio.data, audio.mimeType);
-        }
-      });
-    };
-
-    const ensureAssistantCapability = (request: string, turnBoundary: number) => {
-      const existing = assistantCapabilityPromisesRef.current.get(turnBoundary);
-      if (existing) return existing;
-      if (!threadId || !pageContext || !request) {
-        return Promise.resolve({
-          ok: false,
-          result: "",
-          capabilityMetadata: null as VoiceCapabilityMetadata | null,
-          error: "The Assistant capability request failed.",
-        });
-      }
-      if (shouldUseVoiceAssistantCapability(request)) {
-        suppressLiveDocumentSpeechRef.current = true;
-        documentConfirmationTurnRef.current = null;
-        confirmationPlayIdRef.current += 1;
-        stopPlayback();
-        playAcknowledgement(request, turnBoundary);
-      }
-      const workingCallId = `voice_assistant_${turnBoundary}`;
-      workingCallIdsRef.current.add(workingCallId);
-      const inFlightCount = inFlightAssistantCapabilityTurnsRef.current.get(turnBoundary) || 0;
-      inFlightAssistantCapabilityTurnsRef.current.set(turnBoundary, inFlightCount + 1);
-      setWorking(true);
-      const promise = (async () => {
-        try {
-          const response = await fetch(`/api/threads/${encodeURIComponent(threadId)}/voice/assistant`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ request, pageContext }),
-          });
-          const data = await consumeVoiceAssistantCapabilityResponse(response, {
-            onDraftReset: () => {
-              if (turnBoundary !== turnBoundaryRef.current) return;
-              draftBodyForConfirmationRef.current = "";
-              const metadata = liveDeliverableRef.current?.metadata || {
-                assistantIntent: "document_creation",
-                deliverableKind: "document",
-              };
-              liveDeliverableRef.current = { content: "", metadata };
-              setLiveDeliverable({ content: "", metadata });
-            },
-            onDraftDelta: (preview) => {
-              if (turnBoundary !== turnBoundaryRef.current) return;
-              draftBodyForConfirmationRef.current = preview;
-              const metadata = liveDeliverableRef.current?.metadata || {
-                assistantIntent: "document_creation",
-                deliverableKind: "document",
-              };
-              const deliverable = { content: preview, metadata };
-              liveDeliverableRef.current = deliverable;
-              setLiveDeliverable(deliverable);
-            },
-            onDraftStarted: () => {
-              if (turnBoundary !== turnBoundaryRef.current) return;
-              const metadata = liveDeliverableRef.current?.metadata || {
-                assistantIntent: "document_creation",
-                deliverableKind: "document",
-              };
-              if (liveDeliverableRef.current) return;
-              liveDeliverableRef.current = { content: "", metadata };
-              setLiveDeliverable({ content: "", metadata });
-            },
-          });
-          if (data.error) {
-            if (turnBoundary === turnBoundaryRef.current) {
-              pendingCapabilityMetadataRef.current = null;
-              liveDeliverableRef.current = null;
-              setLiveDeliverable(null);
-              draftBodyForConfirmationRef.current = "";
-              suppressLiveDocumentSpeechRef.current = false;
-            }
-            return {
-              ok: false,
-              result: "",
-              capabilityMetadata: null,
-              error: data.error,
-            };
-          }
-          // Prefer the captured turn over a moved boundary so a saved document always gets a card.
-          const stillCurrent = turnBoundary === turnBoundaryRef.current
-            || pausedAssistantCapabilityTurnRef.current === turnBoundary;
-          if (response.ok && stillCurrent) {
-            pendingCapabilityMetadataRef.current = (data.capabilityMetadata || null) as VoiceCapabilityMetadata | null;
-            if (data.capabilityMetadata?.document) {
-              const draftBody = typeof data.draftContent === "string" && data.draftContent.trim()
-                ? data.draftContent
-                : draftBodyForConfirmationRef.current;
-              const deliverable = {
-                content: data.result || "",
-                metadata: data.capabilityMetadata as VoiceCapabilityMetadata,
-              };
-              liveDeliverableRef.current = deliverable;
-              setLiveDeliverable(deliverable);
-              suppressLiveDocumentSpeechRef.current = true;
-              playDocumentConfirmation(
-                data.capabilityMetadata as VoiceCapabilityMetadata,
-                turnBoundary,
-                draftBody
-              );
-              // Persist the card as soon as the deliverable is ready — do not wait for UI chrome.
-              finalizePendingVoiceDocument();
-            } else {
-              suppressLiveDocumentSpeechRef.current = false;
-              liveDeliverableRef.current = null;
-              setLiveDeliverable(null);
-            }
-          }
-          return {
-            ok: response.ok,
-            result: data.result || "",
-            capabilityMetadata: (data.capabilityMetadata || null) as VoiceCapabilityMetadata | null,
-            error: data.error,
-          };
-        } catch {
-          if (turnBoundary === turnBoundaryRef.current) {
-            pendingCapabilityMetadataRef.current = null;
-            liveDeliverableRef.current = null;
-            setLiveDeliverable(null);
-            suppressLiveDocumentSpeechRef.current = false;
-          }
-          return {
-            ok: false,
-            result: "",
-            capabilityMetadata: null,
-            error: "The Assistant capability request failed.",
-          };
-        } finally {
-          workingCallIdsRef.current.delete(workingCallId);
-          const currentCount = inFlightAssistantCapabilityTurnsRef.current.get(turnBoundary) || 0;
-          if (currentCount <= 1) inFlightAssistantCapabilityTurnsRef.current.delete(turnBoundary);
-          else inFlightAssistantCapabilityTurnsRef.current.set(turnBoundary, currentCount - 1);
-          setWorking(workingCallIdsRef.current.size > 0);
-        }
-      })();
-      assistantCapabilityPromisesRef.current.set(turnBoundary, promise);
-      return promise;
-    };
-
-    const maybeStartVoiceDocumentCapability = () => {
-      if (awaitingOpeningTurnRef.current) return;
-      const userTranscript = transcriptRef.current.user.trim();
-      if (!looksLikeVoiceDocumentRequest(userTranscript)) return;
-      suppressLiveDocumentSpeechRef.current = true;
-      confirmationPlayIdRef.current += 1;
-      stopPlayback();
-      void ensureAssistantCapability(userTranscript, turnBoundaryRef.current);
-    };
-
-    if (message.toolCall?.functionCalls?.length) {
-      maybeStartVoiceDocumentCapability();
-      if (threadId && pageContext && session) {
-        void Promise.all(message.toolCall.functionCalls.map(async (call) => {
-          if (call.name !== "use_assistant_capabilities") {
-            session.sendToolResponse({
-              functionResponses: [{
-                id: call.id,
-                name: call.name || "use_assistant_capabilities",
-                response: { output: VOICE_DIRECT_ANSWER_TOOL_RESPONSE },
-              }],
-            });
-            return;
-          }
-          const explicitToolRequest = typeof call.args?.request === "string" ? call.args.request : "";
-          const request = voiceAssistantInstruction(
-            transcriptRef.current.user,
-            explicitToolRequest
-          );
-          const turnBoundary = turnBoundaryRef.current;
-          const shouldRouteAssistantCapability = shouldRouteVoiceAssistantCapability(
-            request,
-            explicitToolRequest
-          );
-          const deferAssistantCapability = awaitingOpeningTurnRef.current;
-          if (deferAssistantCapability) {
-            session.sendToolResponse({
-              functionResponses: [{
-                id: call.id,
-                name: call.name || "use_assistant_capabilities",
-                response: { output: VOICE_AWAIT_USER_SPEECH_TOOL_RESPONSE },
-              }],
-            });
-            return;
-          }
-          if (!shouldRouteAssistantCapability) {
-            suppressLiveDocumentSpeechRef.current = false;
-            session.sendToolResponse({
-              functionResponses: [{
-                id: call.id,
-                name: call.name || "use_assistant_capabilities",
-                response: { output: VOICE_DIRECT_ANSWER_TOOL_RESPONSE },
-              }],
-            });
-            return;
-          }
-          const capability = await ensureAssistantCapability(request, turnBoundary);
-          session.sendToolResponse({
-            functionResponses: [{
-              id: call.id,
-              name: call.name || "use_assistant_capabilities",
-              response: capability.ok
-                ? {
-                    output: capability.capabilityMetadata?.document
-                      ? "The document was saved. Remain silent and wait for the user to speak."
-                      : (capability.result || "Answer the user directly."),
-                  }
-                : { error: capability.error || "The Assistant capability request failed." },
-            }],
-          });
-        }));
-      }
-    }
-    const content = message.serverContent;
-    if (!content) return;
-    if (content.interrupted) {
-      awaitingOpeningTurnRef.current = false;
-      liveDeliverableRef.current = null;
-      setLiveDeliverable(null);
-      draftBodyForConfirmationRef.current = "";
-      suppressLiveDocumentSpeechRef.current = false;
-      confirmationPlayIdRef.current += 1;
-      clearWorking();
-      stopPlayback();
-      updateState("listening");
-    }
-    for (const part of content.interrupted ? [] : content.modelTurn?.parts || []) {
-      const inlineData = part.inlineData;
-      if (inlineData?.data && inlineData.mimeType?.startsWith("audio/")) {
-        if (awaitingOpeningTurnRef.current) continue;
-        if (!suppressLiveDocumentSpeechRef.current) {
-          scheduleAudio(inlineData.data, inlineData.mimeType);
-        }
-        maybeStartVoiceDocumentCapability();
-      }
-    }
-    if (content.inputTranscription?.text) {
-      awaitingOpeningTurnRef.current = false;
-      transcriptRef.current.user = mergeTranscriptChunk(
-        transcriptRef.current.user,
-        content.inputTranscription.text
-      );
-      const userTranscript = transcriptRef.current.user.trim();
-      if (shouldBeginVoiceDocumentSpeechSuppression(userTranscript)) {
-        suppressLiveDocumentSpeechRef.current = true;
-        confirmationPlayIdRef.current += 1;
-        stopPlayback();
-        maybeStartVoiceDocumentCapability();
-      } else if (
-        suppressLiveDocumentSpeechRef.current
-        && !(inFlightAssistantCapabilityTurnsRef.current.get(turnBoundaryRef.current) || 0)
-        && !liveDeliverableRef.current
-      ) {
-        suppressLiveDocumentSpeechRef.current = false;
-        confirmationPlayIdRef.current += 1;
-      }
-      if (pausedAssistantCapabilityTurnRef.current === turnBoundaryRef.current) {
-        finalizePendingVoiceDocument();
-      }
-      scheduleTranscriptFlush();
-    }
-    // Any unexpected opening audio is dropped, not transcribed, and never saved.
-    if (content.outputTranscription?.text && !awaitingOpeningTurnRef.current) {
-      if (!suppressLiveDocumentSpeechRef.current) {
-        transcriptRef.current.assistant = mergeTranscriptChunk(
-          transcriptRef.current.assistant,
-          content.outputTranscription.text
-        );
-        scheduleTranscriptFlush();
-      }
-      maybeStartVoiceDocumentCapability();
-    }
-    if (content.interrupted) finalizeTranscripts("interrupted");
-    if (content.turnComplete) {
-      const hasInFlightAssistantCapability = (inFlightAssistantCapabilityTurnsRef.current.get(turnBoundaryRef.current) || 0) > 0;
-      const shouldAdvanceTurnBoundary = shouldAdvanceVoiceTurnBoundary(
-        "turnComplete",
-        hasInFlightAssistantCapability
-      );
-      if (shouldAdvanceTurnBoundary) {
-        clearWorking();
-        finalizeTranscripts("turnComplete");
-        if (playbackSourcesRef.current.size === 0 && !playbackActiveRef.current) {
-          updateState("listening");
-        }
-      } else {
-        pausedAssistantCapabilityTurnRef.current = turnBoundaryRef.current;
-        finalizeTranscripts("turnComplete", false);
-      }
-    }
-  }, [clearWorking, fetchVoiceSpeech, finalizePendingVoiceDocument, finalizeTranscripts, scheduleAudio, scheduleTranscriptFlush, stopPlayback, updateState]);
 
   const beginAmplitudeUpdates = useCallback(() => {
     const microphoneData = new Uint8Array(256);
@@ -1074,8 +953,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     liveDeliverableRef.current = null;
     setLiveDeliverable(null);
     setLiveTranscripts({ user: "", assistant: "" });
-    suppressLiveDocumentSpeechRef.current = false;
-    confirmationPlayIdRef.current += 1;
+    suppressDocumentTranscriptRef.current = false;
     try {
       if (!navigator.mediaDevices?.getUserMedia) throw new Error("A microphone is not available in this browser.");
 

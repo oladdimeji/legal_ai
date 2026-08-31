@@ -67,6 +67,8 @@ import {
   boundedVoiceHistory,
   createVoiceModeCredential,
   generateVoiceSpeechAudio,
+  voiceDocumentSavedToolResponse,
+  voiceInformationalConfirmationSpeech,
   voiceMessageId,
 } from "./server/voiceMode.js";
 import { detectAssistantDocumentIntent } from "./server/assistant/assistantDocumentIntent.js";
@@ -2919,14 +2921,24 @@ ${sourceText}`;
         conversationState,
       };
       const documentHint = detectAssistantDocumentIntent(plannerInput);
-      const voiceFastDocument = documentHint.kind === "explicit_create"
-        || documentHint.kind === "explicit_revision"
-        || documentHint.kind === "accepted_document_offer";
-      // Skip the planner LLM and workspace tool rounds for clear Voice draft intents so
+      let assistantPlan = fallbackAssistantPlan(plannerInput);
+      if (
+        assistantPlan.deliverable.kind === "message"
+        && documentHint.kind !== "explicit_message_only"
+        && documentHint.kind !== "informational_message"
+      ) {
+        const revise = documentHint.kind === "explicit_revision";
+        assistantPlan = {
+          ...assistantPlan,
+          intent: revise ? "document_revision" : "document_creation",
+          deliverable: { kind: "document", documentAction: revise ? "revise" : "create" },
+          needsClarification: false,
+        };
+      }
+      const voiceFastDocument = assistantPlan.deliverable.kind !== "message"
+        && Boolean(assistantPlan.deliverable.documentAction);
+      // Skip the planner LLM and workspace tool rounds for Voice draft intents so
       // the first draft token can start as soon as the route is ready.
-      const assistantPlan = voiceFastDocument
-        ? fallbackAssistantPlan(plannerInput)
-        : await planAssistantRequest(plannerInput);
       const wantsDocument = assistantPlan.deliverable.kind !== "message"
         && Boolean(assistantPlan.deliverable.documentAction);
       if (wantsDocument) {
@@ -3043,9 +3055,23 @@ ${sourceText}`;
         ...(completion.document ? { document: completion.document } : {}),
         ...(completion.sourceDocument ? { sourceDocument: completion.sourceDocument } : {}),
       };
+      const documentTitle = completion.document && typeof completion.document === "object" && "title" in completion.document
+        ? String((completion.document as { title?: string }).title || "document")
+        : "document";
+      const confirmationSpeech = completion.document
+        ? voiceInformationalConfirmationSpeech({
+          title: documentTitle,
+          draftContent: draftContent || completion.content,
+          revise: assistantPlan.deliverable.documentAction === "revise",
+        })
+        : undefined;
+      const toolResponse = confirmationSpeech
+        ? voiceDocumentSavedToolResponse(confirmationSpeech)
+        : undefined;
       const payload = {
         result: completion.content,
         ...(completion.document ? { draftContent: draftContent || undefined } : {}),
+        ...(toolResponse ? { toolResponse } : {}),
         capabilityMetadata,
       };
       if (res.headersSent) {

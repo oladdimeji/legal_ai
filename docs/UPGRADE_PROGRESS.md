@@ -2166,6 +2166,17 @@ Status: Implementation complete; focused-phase verification recorded below.
 - Added tests for leftover-carrying downsampling and for the playback jitter-buffer wiring. No API, authentication, database, schema, migration, or dependency change was made.
 - Verification: `npm run verify` passed with `npm run lint`, 478/478 tests, and `npm run build`.
 
+### Voice Mode instant Live acknowledgements, confirmations, and document cards
+
+- Fixed late, generic acknowledgements and confirmations. The previous pass replaced Live speech with a separate Gemini TTS round-trip (`/voice/speak`) while simultaneously muting Live audio via `stopPlayback()` and `suppressLiveDocumentSpeechRef`, so acknowledgements arrived seconds late, sounded templated, and were irregular depending on which path won the race.
+- Acknowledgements and confirmations now use the same Live Kore voice and playback path as ordinary conversation. Live speaks a tailored acknowledgement immediately, then speaks an informational confirmation from the tool response after drafting completes. Only chat transcription is suppressed for those turns; Live audio is never blocked.
+- Removed client-side `playAcknowledgement`, `playDocumentConfirmation`, and early transcript-triggered drafting. Document work now starts only when Live calls `use_assistant_capabilities`, so the acknowledgement is always heard before backend drafting begins.
+- Enriched confirmation speech on the server via `voiceInformationalConfirmationSpeech` (section headings plus multiple substantive sentences) and return it to Live through `voiceDocumentSavedToolResponse` as `toolResponse` in the `/voice/assistant` payload.
+- Guaranteed document cards: the voice assistant route always uses `fallbackAssistantPlan`, forces document deliverables when Live invokes the tool, applies draft stream updates across paused turn boundaries via `shouldApplyVoiceDraftUpdate`, always renders the deliverable when `capabilityMetadata.document` is present, and does not clear an in-flight deliverable on spurious interruption.
+- Updated Live system instructions and tool declaration to require tailored immediate acknowledgements and informative spoken confirmations without reading the document body aloud.
+- Changed files: `server/voiceMode.ts`, `server.ts`, `src/hooks/useVoiceMode.ts`, `src/lib/assistantMessageResponse.ts`, `tests/assistant-voice-mode.test.ts`.
+- Verification: `npm run lint` passed, 38/38 voice-mode tests passed, and `npm run build` passed.
+
 ### Voice document generation latency
 
 - Voice and typed drafting already shared the same Assistant planner, retrieval, and `createAssistantDeliverable` path. Voice was slower because Gemini Live sat in front of that path: it often spoke before calling `use_assistant_capabilities`, the spoken user instruction could be paraphrased, and the document card waited until Live finished speaking the result.
