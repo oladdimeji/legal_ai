@@ -205,6 +205,19 @@ export function shouldUseVoiceAssistantCapability(request: string): boolean {
   return looksLikeVoiceDocumentRequest(request);
 }
 
+export function shouldRouteVoiceAssistantCapability(
+  combinedRequest: string,
+  explicitToolRequest = ""
+): boolean {
+  if (shouldUseVoiceAssistantCapability(combinedRequest)) return true;
+  const explicit = explicitToolRequest.trim();
+  return explicit.length > 0 && shouldUseVoiceAssistantCapability(explicit);
+}
+
+export function shouldBeginVoiceDocumentSpeechSuppression(userTranscript: string): boolean {
+  return looksLikeVoiceDocumentRequest(userTranscript);
+}
+
 export function shouldPlayVoiceAcknowledgement(
   functionName: string | undefined,
   request: string,
@@ -715,6 +728,11 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
           error: "The Assistant capability request failed.",
         });
       }
+      if (shouldUseVoiceAssistantCapability(request)) {
+        suppressLiveDocumentSpeechRef.current = true;
+        confirmationPlayIdRef.current += 1;
+        stopPlayback();
+      }
       playAcknowledgement(request, turnBoundary);
       const workingCallId = `voice_assistant_${turnBoundary}`;
       workingCallIdsRef.current.add(workingCallId);
@@ -754,6 +772,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
               pendingCapabilityMetadataRef.current = null;
               liveDeliverableRef.current = null;
               setLiveDeliverable(null);
+              suppressLiveDocumentSpeechRef.current = false;
             }
             return {
               ok: false,
@@ -773,6 +792,8 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
               setLiveDeliverable(deliverable);
               suppressLiveDocumentSpeechRef.current = true;
               playDocumentConfirmation(data.capabilityMetadata as VoiceCapabilityMetadata);
+            } else {
+              suppressLiveDocumentSpeechRef.current = false;
             }
           }
           return {
@@ -805,6 +826,9 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       if (awaitingOpeningTurnRef.current) return;
       const userTranscript = transcriptRef.current.user.trim();
       if (!looksLikeVoiceDocumentRequest(userTranscript)) return;
+      suppressLiveDocumentSpeechRef.current = true;
+      confirmationPlayIdRef.current += 1;
+      stopPlayback();
       void ensureAssistantCapability(userTranscript, turnBoundaryRef.current);
     };
 
@@ -813,14 +837,17 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       if (threadId && pageContext && session) {
         void Promise.all(message.toolCall.functionCalls.map(async (call, callIndex) => {
           const isAssistantCapability = call.name === "use_assistant_capabilities";
+          const explicitToolRequest = typeof call.args?.request === "string" ? call.args.request : "";
           const request = isAssistantCapability
             ? voiceAssistantInstruction(
                 transcriptRef.current.user,
-                typeof call.args?.request === "string" ? call.args.request : ""
+                explicitToolRequest
               )
             : (typeof call.args?.query === "string" ? call.args.query.trim() : "");
           const turnBoundary = turnBoundaryRef.current;
           const isDocumentCapability = isAssistantCapability && shouldUseVoiceAssistantCapability(request);
+          const shouldRouteAssistantCapability = isAssistantCapability
+            && shouldRouteVoiceAssistantCapability(request, explicitToolRequest);
           const deferAssistantCapability = isAssistantCapability && awaitingOpeningTurnRef.current;
           if (
             shouldPlayVoiceAcknowledgement(call.name, request, turnBoundary, acknowledgedTurnRef.current)
@@ -852,6 +879,16 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
                   id: call.id,
                   name: call.name || "use_assistant_capabilities",
                   response: { output: VOICE_AWAIT_USER_SPEECH_TOOL_RESPONSE },
+                }],
+              });
+              return;
+            }
+            if (!shouldRouteAssistantCapability) {
+              session.sendToolResponse({
+                functionResponses: [{
+                  id: call.id,
+                  name: call.name || "use_assistant_capabilities",
+                  response: { output: VOICE_DIRECT_ANSWER_TOOL_RESPONSE },
                 }],
               });
               return;
@@ -936,7 +973,16 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     }
     if (content.inputTranscription?.text) {
       awaitingOpeningTurnRef.current = false;
-      if (suppressLiveDocumentSpeechRef.current) {
+      transcriptRef.current.user = mergeTranscriptChunk(
+        transcriptRef.current.user,
+        content.inputTranscription.text
+      );
+      const userTranscript = transcriptRef.current.user.trim();
+      if (shouldBeginVoiceDocumentSpeechSuppression(userTranscript)) {
+        suppressLiveDocumentSpeechRef.current = true;
+        confirmationPlayIdRef.current += 1;
+        stopPlayback();
+      } else if (suppressLiveDocumentSpeechRef.current) {
         suppressLiveDocumentSpeechRef.current = false;
         confirmationPlayIdRef.current += 1;
       }
@@ -945,10 +991,6 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
         pausedAssistantCapabilityTurnRef.current = null;
         turnBoundaryRef.current += 1;
       }
-      transcriptRef.current.user = mergeTranscriptChunk(
-        transcriptRef.current.user,
-        content.inputTranscription.text
-      );
       scheduleTranscriptFlush();
     }
     // Any unexpected opening audio is dropped, not transcribed, and never saved.

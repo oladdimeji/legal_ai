@@ -1,5 +1,12 @@
 # Compact Upgrade Progress
 
+## Voice suppresses Live speech during document drafting
+
+- Document requests now mute Gemini Live audio as soon as the user transcript matches a draft/create/revise phrase, stopping preamble speech before the acknowledgement clip and draft card appear.
+- Assistant capability routing still reaches `/voice/assistant` for statement-of-work and regenerate requests while mis-invoked non-document tool calls are sent back to direct answers again.
+- Voice acknowledgement and confirmation TTS now reuse the shared transient Gemini retry runner so brief provider failures are retried before returning 502.
+- No schema, migration, dependency, authentication, workspace-isolation, or Matter-isolation changes were made.
+
 ## Voice routes every use_assistant_capabilities call to the backend
 
 - Live `use_assistant_capabilities` tool calls now always reach `/voice/assistant` once the user has spoken in the session, instead of being blocked by a narrow client regex that told the model to answer directly without saving a document.

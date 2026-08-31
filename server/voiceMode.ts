@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { Modality, StartSensitivity, EndSensitivity, ThinkingLevel } from "@google/genai";
 import type { Message } from "../src/types.js";
-import { getAiClient } from "./model.js";
+import { getAiClient, runWithTransientModelRetries } from "./model.js";
 import {
   DOCUMENT_CONFIRMATION_MAX_CHARS,
   documentConfirmationSpeech,
@@ -76,18 +76,29 @@ export function voiceAcknowledgementRequest() {
 }
 
 async function generateVoiceSpeechAudio(text: string): Promise<VoiceAcknowledgementAudio> {
-  const response = await getAiClient().models.generateContent(
-    voiceAcknowledgementRequestFor({
-      text,
-      model: VOICE_MODE_ACKNOWLEDGEMENT.model,
-    })
-  );
-  const inlineData = response.candidates?.[0]?.content?.parts?.find((part) => part.inlineData?.data)?.inlineData;
-  if (!inlineData?.data) throw new Error("Gemini did not return Voice speech audio.");
-  return {
-    data: inlineData.data,
-    mimeType: inlineData.mimeType || "audio/pcm;rate=24000",
-  };
+  return runWithTransientModelRetries(async () => {
+    const response = await getAiClient().models.generateContent(
+      voiceAcknowledgementRequestFor({
+        text,
+        model: VOICE_MODE_ACKNOWLEDGEMENT.model,
+      })
+    );
+    const inlineData = response.candidates?.[0]?.content?.parts?.find((part) => part.inlineData?.data)?.inlineData;
+    if (!inlineData?.data) throw new Error("Gemini did not return Voice speech audio.");
+    return {
+      data: inlineData.data,
+      mimeType: inlineData.mimeType || "audio/pcm;rate=24000",
+    };
+  }, {
+    onRetry: (details) => {
+      const status = details.statusCode ? ` status=${details.statusCode}` : "";
+      console.warn(
+        `[voiceSpeech] Transient Gemini failure for ${VOICE_MODE_ACKNOWLEDGEMENT.model}. ` +
+        `Retry ${details.retryNumber} of ${details.maxAttempts - 1} in ${details.delayMs}ms.` +
+        `kind=${details.kind}${status}`
+      );
+    },
+  });
 }
 
 async function getVoiceAcknowledgementAudioFor(

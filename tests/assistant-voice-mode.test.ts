@@ -28,7 +28,9 @@ import {
   looksLikeVoiceDocumentRequest,
   pushVoiceStartupPacket,
   shouldPlayVoiceAcknowledgement,
+  shouldRouteVoiceAssistantCapability,
   shouldUseVoiceAssistantCapability,
+  shouldBeginVoiceDocumentSpeechSuppression,
   shouldAdvanceVoiceTurnBoundary,
   shouldHoldVoiceCapture,
   usesVoiceRevisionConfirmation,
@@ -133,6 +135,14 @@ test("Voice acknowledgement eligibility is document-capability-only and once per
   assert.equal(shouldPlayVoiceAcknowledgement(undefined, "Draft an NDA.", 7, null), false);
   assert.equal(shouldUseVoiceAssistantCapability("Revise the agreement."), true);
   assert.equal(shouldUseVoiceAssistantCapability("Research the latest case law."), false);
+  assert.equal(shouldRouteVoiceAssistantCapability("Generate a statement of work for this studio.", ""), true);
+  assert.equal(
+    shouldRouteVoiceAssistantCapability("What is the limitation period?", "Generate a statement of work for this studio."),
+    true
+  );
+  assert.equal(shouldRouteVoiceAssistantCapability("What is the limitation period?", ""), false);
+  assert.equal(shouldBeginVoiceDocumentSpeechSuppression("Generate the master service agreement."), true);
+  assert.equal(shouldBeginVoiceDocumentSpeechSuppression("What matters are open right now?"), false);
 });
 
 test("Voice capability metadata waits through contentless completion but remains discarded after interruption", async () => {
@@ -217,6 +227,7 @@ test("Voice acknowledgement is cached, isolated, fail-open, prefetched, and clea
   assert.match(route, /status\(502\)/);
   assert.doesNotMatch(route, /db\.addMessage|db\.addVoiceMessage|voice\/messages/);
   assert.match(voiceMode, /voiceAcknowledgementAudioCache = new Map/);
+  assert.match(voiceMode, /runWithTransientModelRetries/);
   assert.match(voiceMode, /getVoiceAcknowledgementAudioFor/);
   assert.equal((voiceMode.match(/models\.generateContent/g) ?? []).length, 1);
 
@@ -228,9 +239,10 @@ test("Voice acknowledgement is cached, isolated, fail-open, prefetched, and clea
 
   const toolHandler = hook.slice(hook.indexOf("const handleServerMessage"), hook.indexOf("const beginAmplitudeUpdates"));
   assert.match(toolHandler, /shouldPlayVoiceAcknowledgement\(call\.name, request, turnBoundary, acknowledgedTurnRef\.current\)/);
-  assert.match(toolHandler, /shouldUseVoiceAssistantCapability\(request\)/);
-  assert.match(toolHandler, /if \(isAssistantCapability\) \{[\s\S]*await ensureAssistantCapability\(request, turnBoundary\)/);
-  assert.doesNotMatch(toolHandler, /VOICE_DIRECT_ANSWER_TOOL_RESPONSE/);
+  assert.match(toolHandler, /shouldRouteVoiceAssistantCapability\(request, explicitToolRequest\)/);
+  assert.match(toolHandler, /shouldRouteAssistantCapability[\s\S]*await ensureAssistantCapability\(request, turnBoundary\)/);
+  assert.match(toolHandler, /!shouldRouteAssistantCapability[\s\S]*VOICE_DIRECT_ANSWER_TOOL_RESPONSE/);
+  assert.match(toolHandler, /shouldBeginVoiceDocumentSpeechSuppression\(userTranscript\)[\s\S]*stopPlayback\(\)/);
   assert.ok(toolHandler.indexOf("scheduleAudio(acknowledgementAudio.data") < toolHandler.indexOf("await fetch("));
   assert.match(toolHandler, /voice\/assistant/);
   assert.match(toolHandler, /voice\/lookup/);
@@ -329,7 +341,7 @@ test("Voice document completion keeps one card result and speaks a cached confir
   assert.match(hook, /content: documentContent/);
   assert.match(hook, /suppressLiveDocumentSpeechRef\.current[\s\S]*completed\.filter\(\(transcript\) => transcript\.role !== "assistant"\)/);
   assert.match(hook, /content\.interrupted[\s\S]*confirmationPlayIdRef\.current \+= 1/);
-  assert.match(hook, /content\.inputTranscription\?\.text[\s\S]*suppressLiveDocumentSpeechRef\.current = false/);
+  assert.match(hook, /content\.inputTranscription\?\.text[\s\S]*shouldBeginVoiceDocumentSpeechSuppression\(userTranscript\)/);
   assert.doesNotMatch(
     hook.slice(hook.indexOf('if (content.turnComplete)'), hook.indexOf("  }, [clearWorking", hook.indexOf('if (content.turnComplete)'))),
     /suppressLiveDocumentSpeechRef\.current = false/
