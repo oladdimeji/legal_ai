@@ -733,6 +733,7 @@ test("Voice Assistant capability routing reuses the owned Assistant pipeline wit
   assert.match(route, /buildAssistantSessionContext/);
   assert.match(route, /planAssistantRequest/);
   assert.match(route, /orchestrateAssistantRetrieval/);
+  assert.match(route, /skipWebResearch:\s*true/);
   assert.match(route, /resolveAssistantClarification/);
   assert.match(route, /completeAssistantResponse/);
   assert.match(route, /syntheticUserMessage/);
@@ -765,6 +766,7 @@ test("full Voice Assistant delegation retains Firm Library discovery, deliverabl
   assert.match(tools, /get_firm_library_document/);
   assert.match(tools, /search_firm_library_documents/);
   assert.match(route, /orchestrateAssistantRetrieval/);
+  assert.match(route, /skipWebResearch:\s*true/);
   assert.doesNotMatch(route, /selectedItem\?\.kind === "libraryDocument"|must be open|already selected/i);
   assert.match(route, /completeAssistantResponse/);
   assert.match(route, /completion\.document \? \{ document: completion\.document \}/);

@@ -1,5 +1,11 @@
 # Compact Upgrade Progress
 
+## Voice document creation skips public web research
+
+- `/api/threads/:id/voice/assistant` now passes `skipWebResearch: true` into `orchestrateAssistantRetrieval`, so Voice document create and revise requests no longer run the public web research pipeline before drafting.
+- Typed chat, workspace retrieval, planner decisions, draft generation, and document save paths are unchanged. Only the Voice capability route opts out of web research.
+- No schema, migration, dependency, authentication, workspace-isolation, or Matter-isolation changes were made.
+
 ## VPN uses split-tunnel so the existing paths stay unchanged
 
 - Voice, typed chat, Live, retries, VAD, and server Gemini/Supabase calls were not modified. The browser still opens Gemini Live directly; the server still mints ephemeral tokens and never proxies the Live socket.

@@ -3123,6 +3123,9 @@ ${sourceText}`;
         currentMatterId,
         conversationMessages,
         artifacts: conversationState.recentArtifacts,
+        // Voice document creation must stay fast; public web research adds latency
+        // and is not used for spoken draft deliverables.
+        skipWebResearch: true,
       });
       if (validated.selectedEvidence) orchestration.toolRun.evidence.push(validated.selectedEvidence);
 

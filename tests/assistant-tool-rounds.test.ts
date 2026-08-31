@@ -97,6 +97,34 @@ test("a Matter resolved in round one remains authorized in round two", async () 
   assert.ok(result.toolRun.attemptedCalls <= ASSISTANT_TOOL_LIMITS.calls);
 });
 
+test("skipWebResearch bypasses public web research even when the plan requests it", async () => {
+  let modelCalls = 0;
+  const result = await orchestrateAssistantRetrieval({
+    request: "Draft an NDA with current Delaware law.",
+    plan: {
+      ...plan([]),
+      intent: "document_creation",
+      needsWeb: true,
+      deliverable: { kind: "document", documentAction: "create" },
+    },
+    session,
+    account,
+    ownership: { userId: "user_1", firmId: "firm_1" },
+    currentMatterId: "case_current",
+    conversationMessages: [],
+    artifacts: [],
+    database: {} as any,
+    model: (async () => {
+      modelCalls += 1;
+      return { text: JSON.stringify({ toolCalls: [] }) };
+    }) as any,
+    skipWebResearch: true,
+  });
+  assert.equal(modelCalls, 0);
+  assert.equal(result.webResearch.performed, false);
+  assert.equal(result.webResearch.report, "");
+});
+
 test("orchestration never exceeds two planning rounds or eight total tool calls", async () => {
   const calls = Array.from({ length: 12 }, (_, index) => ({ name: "get_account_profile" as const, arguments: { marker: index } }));
   const safeCalls = calls.map(() => ({ name: "get_account_profile" as const, arguments: {} }));

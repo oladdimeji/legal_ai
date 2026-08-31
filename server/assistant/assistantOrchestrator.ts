@@ -226,6 +226,13 @@ function mergeRuns(first: AssistantToolRunResult, second?: AssistantToolRunResul
   };
 }
 
+const EMPTY_WEB_RESEARCH: AssistantWebResearchResult = {
+  performed: false,
+  report: "",
+  citations: [],
+  questions: [],
+};
+
 export async function orchestrateAssistantRetrieval(input: {
   request: string;
   plan: AssistantPlan;
@@ -237,6 +244,7 @@ export async function orchestrateAssistantRetrieval(input: {
   artifacts: AssistantConversationArtifact[];
   database?: Database;
   model?: Model;
+  skipWebResearch?: boolean;
 }): Promise<AssistantOrchestrationResult> {
   const model = input.model || callModel;
   const calls = initialCalls(input);
@@ -297,16 +305,18 @@ export async function orchestrateAssistantRetrieval(input: {
     }
   }
   const toolRun = mergeRuns(firstRun, secondRun);
-  const webResearch = await performAssistantWebResearch({
-    request: input.request,
-    plan: input.plan,
-    session: input.session,
-    resolvedMatterIds: toolRun.resolvedMatterIds,
-    artifactTitles: input.artifacts.map((artifact) => artifact.title),
-    artifactIds: input.artifacts.map((artifact) => artifact.id),
-    attachmentNames: input.conversationMessages.flatMap(attachmentNamesForMessage),
-    privateDocumentTitles: toolRun.evidence.filter((item) => item.sourceType !== "web").map((item) => item.title),
-    model,
-  });
+  const webResearch = input.skipWebResearch
+    ? EMPTY_WEB_RESEARCH
+    : await performAssistantWebResearch({
+      request: input.request,
+      plan: input.plan,
+      session: input.session,
+      resolvedMatterIds: toolRun.resolvedMatterIds,
+      artifactTitles: input.artifacts.map((artifact) => artifact.title),
+      artifactIds: input.artifacts.map((artifact) => artifact.id),
+      attachmentNames: input.conversationMessages.flatMap(attachmentNamesForMessage),
+      privateDocumentTitles: toolRun.evidence.filter((item) => item.sourceType !== "web").map((item) => item.title),
+      model,
+    });
   return { toolRun, webResearch, planningRounds };
 }
