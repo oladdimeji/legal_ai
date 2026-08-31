@@ -1,5 +1,14 @@
 # Compact Upgrade Progress
 
+## Perfect Voice Mode: instant answers, intelligent speech, fast drafts
+
+- Live no longer exposes `lookup_workspace`; ordinary turns answer immediately from supplied context with no tool round-trips. Document turns remain the only tool path (`use_assistant_capabilities`).
+- Static “Absolutely / I have created the document for you” clips were removed. Acknowledgements are request-aware (“I'm drafting that NDA…”) via `/voice/speak`, and confirmations summarize the finished draft content. Neither is transcribed into chat.
+- Clear Voice draft intents use `fallbackAssistantPlan` and skip planner LLM + workspace tool orchestration, emit `draft_started` immediately, then stream with the existing fast draft model.
+- Document cards finalize as soon as the deliverable returns; mic hold no longer waits on transcript persistence; action icons appear as soon as a live Voice document card is ready.
+- No schema, migration, dependency, authentication, workspace-isolation, or Matter-isolation changes were made.
+- Verification: `npm run lint` passed, voice + draft-stream tests passed (44), and `npm run build` passed.
+
 ## Fast uploads with deferred indexing and PDF MIME fix
 
 - Persistent uploads (Firm Library, Matter Sources, portal) now return immediately after text extraction and database insert; Gemini embedding and chunk indexing run in the background while `processing_state` stays `Processing` until complete.

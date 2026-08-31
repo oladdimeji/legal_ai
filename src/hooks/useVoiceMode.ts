@@ -229,6 +229,21 @@ export function shouldPlayVoiceAcknowledgement(
     && acknowledgedTurn !== turnBoundary;
 }
 
+export function voiceAcknowledgementSpeechFromRequest(request: string): string {
+  const text = request.replace(/\s+/g, " ").trim();
+  const lower = text.toLocaleLowerCase();
+  const revise = /\b(?:revise|rewrite|update|amend|shorten|expand|regenerat(?:e|ing)|redo)\b/.test(lower);
+  const typeMatch = text.match(
+    /\b(nda|non-disclosure(?: agreement)?|statement of work|sow|memorandum|memo|agreement|contract|policy|brief|report|notice|checklist|email|letter|document)\b/i
+  );
+  const rawType = typeMatch?.[1] || "document";
+  const docType = /^(nda|sow)$/i.test(rawType)
+    ? rawType.toLocaleUpperCase()
+    : rawType.replace(/\b\w/g, (char) => char.toLocaleUpperCase());
+  if (revise) return `I'm revising that ${docType} for you now.`;
+  return `I'm drafting that ${docType} for you now.`;
+}
+
 /**
  * A completed turn must not retire the boundary that an Assistant capability call
  * was issued against while that call is still running, otherwise the deliverable it
@@ -261,9 +276,10 @@ export function shouldHoldVoiceCapture(
 export function voiceCaptureAwaitingFinalize(input: {
   hasLiveDeliverable: boolean;
   pausedCapabilityTurn: boolean;
-  pendingVoicePersistence: boolean;
+  pendingVoicePersistence?: boolean;
 }): boolean {
-  return input.hasLiveDeliverable || input.pausedCapabilityTurn || input.pendingVoicePersistence;
+  // Persistence is background work — do not hold the mic or delay the next turn for it.
+  return input.hasLiveDeliverable || input.pausedCapabilityTurn;
 }
 
 export function shouldFinalizeVoiceDocumentImmediately(
@@ -314,14 +330,6 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   const turnBoundaryRef = useRef(0);
   const awaitingOpeningTurnRef = useRef(false);
   const acknowledgedTurnRef = useRef<number | null>(null);
-  const acknowledgementAudioRef = useRef<VoiceAcknowledgementAudio | null>(null);
-  const acknowledgementRequestRef = useRef<Promise<VoiceAcknowledgementAudio | null> | null>(null);
-  const confirmationAudioRef = useRef<VoiceAcknowledgementAudio | null>(null);
-  const revisionConfirmationAudioRef = useRef<VoiceAcknowledgementAudio | null>(null);
-  const confirmationRequestRef = useRef<Promise<{
-    create: VoiceAcknowledgementAudio | null;
-    revise: VoiceAcknowledgementAudio | null;
-  } | null> | null>(null);
   const suppressLiveDocumentSpeechRef = useRef(false);
   const confirmationPlayIdRef = useRef(0);
   const documentConfirmationTurnRef = useRef<number | null>(null);
@@ -340,6 +348,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     error?: string;
   }>>());
   const liveDeliverableRef = useRef<VoiceLiveDeliverable | null>(null);
+  const draftBodyForConfirmationRef = useRef<string>("");
   const onTranscriptRef = useRef(onTranscript);
   onTranscriptRef.current = onTranscript;
 
@@ -462,14 +471,10 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     setLiveDeliverable(null);
     awaitingOpeningTurnRef.current = false;
     acknowledgedTurnRef.current = null;
-    acknowledgementAudioRef.current = null;
-    acknowledgementRequestRef.current = null;
-    confirmationAudioRef.current = null;
-    revisionConfirmationAudioRef.current = null;
-    confirmationRequestRef.current = null;
     suppressLiveDocumentSpeechRef.current = false;
     documentConfirmationTurnRef.current = null;
     confirmationPlayIdRef.current += 1;
+    draftBodyForConfirmationRef.current = "";
     tokenPrefetchRef.current = null;
     startupAudioBufferRef.current = [];
     captureLiveRef.current = false;
@@ -611,10 +616,14 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     source.start(startAt);
   }, [cancelPlaybackSettle, schedulePlaybackSettle, updateState]);
 
-  const prefetchAcknowledgement = useCallback((threadId: string, lifecycle: number) => {
-    if (acknowledgementAudioRef.current) return Promise.resolve(acknowledgementAudioRef.current);
-    if (acknowledgementRequestRef.current) return acknowledgementRequestRef.current;
-    const request = fetch(`/api/threads/${encodeURIComponent(threadId)}/voice/acknowledgement`)
+  const fetchVoiceSpeech = useCallback((threadId: string, text: string, lifecycle: number) => {
+    const spoken = text.replace(/\s+/g, " ").trim();
+    if (!spoken) return Promise.resolve(null);
+    return fetch(`/api/threads/${encodeURIComponent(threadId)}/voice/speak`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: spoken }),
+    })
       .then(async (response) => {
         if (!response.ok) return null;
         const audio = await response.json().catch(() => null) as VoiceAcknowledgementAudio | null;
@@ -622,52 +631,11 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       })
       .then((audio) => {
         if (audio && lifecycle === lifecycleRef.current && sessionThreadRef.current === threadId) {
-          acknowledgementAudioRef.current = audio;
           return audio;
         }
         return null;
       })
       .catch(() => null);
-    acknowledgementRequestRef.current = request;
-    void request.finally(() => {
-      if (acknowledgementRequestRef.current === request) acknowledgementRequestRef.current = null;
-    });
-    return request;
-  }, []);
-
-  const prefetchConfirmation = useCallback((threadId: string, lifecycle: number) => {
-    if (confirmationAudioRef.current && revisionConfirmationAudioRef.current) {
-      return Promise.resolve({
-        create: confirmationAudioRef.current,
-        revise: revisionConfirmationAudioRef.current,
-      });
-    }
-    if (confirmationRequestRef.current) return confirmationRequestRef.current;
-    const request = fetch(`/api/threads/${encodeURIComponent(threadId)}/voice/confirmation`)
-      .then(async (response) => {
-        if (!response.ok) return null;
-        const clips = await response.json().catch(() => null) as {
-          create?: VoiceAcknowledgementAudio | null;
-          revise?: VoiceAcknowledgementAudio | null;
-        } | null;
-        const create = clips?.create?.data && clips.create.mimeType ? clips.create : null;
-        const revise = clips?.revise?.data && clips.revise.mimeType ? clips.revise : null;
-        return { create, revise };
-      })
-      .then((clips) => {
-        if (clips && lifecycle === lifecycleRef.current && sessionThreadRef.current === threadId) {
-          if (clips.create) confirmationAudioRef.current = clips.create;
-          if (clips.revise) revisionConfirmationAudioRef.current = clips.revise;
-          return clips;
-        }
-        return null;
-      })
-      .catch(() => null);
-    confirmationRequestRef.current = request;
-    void request.finally(() => {
-      if (confirmationRequestRef.current === request) confirmationRequestRef.current = null;
-    });
-    return request;
   }, []);
 
   const ensureVoiceToken = useCallback((threadId: string, pageContext: WorkspacePageContext) => {
@@ -711,20 +679,41 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     const pageContext = pageContextRef.current;
     const session = sessionRef.current;
 
-    const playDocumentConfirmation = (metadata: VoiceCapabilityMetadata, turnBoundary: number) => {
+    const playDocumentConfirmation = (
+      metadata: VoiceCapabilityMetadata,
+      turnBoundary: number,
+      draftContent: string
+    ) => {
       if (!threadId || documentConfirmationTurnRef.current === turnBoundary) return;
       documentConfirmationTurnRef.current = turnBoundary;
       stopPlayback();
       const confirmationId = ++confirmationPlayIdRef.current;
       const confirmationLifecycle = lifecycleRef.current;
       const revised = usesVoiceRevisionConfirmation(metadata);
-      const ready = revised ? revisionConfirmationAudioRef.current : confirmationAudioRef.current;
-      if (ready) {
-        scheduleAudio(ready.data, ready.mimeType);
-        return;
-      }
-      void prefetchConfirmation(threadId, confirmationLifecycle).then((clips) => {
-        const audio = revised ? clips?.revise : clips?.create;
+      const title = typeof metadata.document === "object" && metadata.document && "title" in metadata.document
+        ? String((metadata.document as { title?: string }).title || "document")
+        : "document";
+      const spoken = (() => {
+        const cleaned = draftContent
+          .replace(/\r/g, "")
+          .replace(/^#{1,6}\s+/gm, "")
+          .replace(/\*\*/g, "")
+          .replace(/^[-*]\s+/gm, "")
+          .replace(/\s+/g, " ")
+          .trim();
+        const sentence = cleaned
+          .split(/(?<=[.!?])\s+/)
+          .map((part) => part.trim())
+          .find((part) => part.length >= 28 && !/^table of contents\b/i.test(part));
+        const snippet = sentence
+          ? sentence.slice(0, 200).replace(/\s+\S*$/, "").replace(/[.,;:]+$/, "")
+          : "";
+        const lead = revised
+          ? `I've finished the revised ${title}.`
+          : `I've finished drafting ${title}.`;
+        return snippet ? `${lead} ${snippet}.` : lead;
+      })();
+      void fetchVoiceSpeech(threadId, spoken, confirmationLifecycle).then((audio) => {
         if (
           audio
           && confirmationId === confirmationPlayIdRef.current
@@ -738,14 +727,13 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     const playAcknowledgement = (request: string, turnBoundary: number) => {
       if (!shouldPlayVoiceAcknowledgement("use_assistant_capabilities", request, turnBoundary, acknowledgedTurnRef.current)) return;
       acknowledgedTurnRef.current = turnBoundary;
-      const acknowledgementAudio = acknowledgementAudioRef.current;
-      if (acknowledgementAudio) {
-        scheduleAudio(acknowledgementAudio.data, acknowledgementAudio.mimeType);
-        return;
-      }
       if (!threadId) return;
       const acknowledgementLifecycle = lifecycleRef.current;
-      void prefetchAcknowledgement(threadId, acknowledgementLifecycle).then((audio) => {
+      void fetchVoiceSpeech(
+        threadId,
+        voiceAcknowledgementSpeechFromRequest(request),
+        acknowledgementLifecycle
+      ).then((audio) => {
         if (
           audio
           && acknowledgementLifecycle === lifecycleRef.current
@@ -773,8 +761,8 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
         documentConfirmationTurnRef.current = null;
         confirmationPlayIdRef.current += 1;
         stopPlayback();
+        playAcknowledgement(request, turnBoundary);
       }
-      playAcknowledgement(request, turnBoundary);
       const workingCallId = `voice_assistant_${turnBoundary}`;
       workingCallIdsRef.current.add(workingCallId);
       const inFlightCount = inFlightAssistantCapabilityTurnsRef.current.get(turnBoundary) || 0;
@@ -790,6 +778,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
           const data = await consumeVoiceAssistantCapabilityResponse(response, {
             onDraftReset: () => {
               if (turnBoundary !== turnBoundaryRef.current) return;
+              draftBodyForConfirmationRef.current = "";
               const metadata = liveDeliverableRef.current?.metadata || {
                 assistantIntent: "document_creation",
                 deliverableKind: "document",
@@ -799,6 +788,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
             },
             onDraftDelta: (preview) => {
               if (turnBoundary !== turnBoundaryRef.current) return;
+              draftBodyForConfirmationRef.current = preview;
               const metadata = liveDeliverableRef.current?.metadata || {
                 assistantIntent: "document_creation",
                 deliverableKind: "document",
@@ -807,12 +797,23 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
               liveDeliverableRef.current = deliverable;
               setLiveDeliverable(deliverable);
             },
+            onDraftStarted: () => {
+              if (turnBoundary !== turnBoundaryRef.current) return;
+              const metadata = liveDeliverableRef.current?.metadata || {
+                assistantIntent: "document_creation",
+                deliverableKind: "document",
+              };
+              if (liveDeliverableRef.current) return;
+              liveDeliverableRef.current = { content: "", metadata };
+              setLiveDeliverable({ content: "", metadata });
+            },
           });
           if (data.error) {
             if (turnBoundary === turnBoundaryRef.current) {
               pendingCapabilityMetadataRef.current = null;
               liveDeliverableRef.current = null;
               setLiveDeliverable(null);
+              draftBodyForConfirmationRef.current = "";
               suppressLiveDocumentSpeechRef.current = false;
             }
             return {
@@ -822,22 +823,33 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
               error: data.error,
             };
           }
-          if (response.ok && turnBoundary === turnBoundaryRef.current) {
+          // Prefer the captured turn over a moved boundary so a saved document always gets a card.
+          const stillCurrent = turnBoundary === turnBoundaryRef.current
+            || pausedAssistantCapabilityTurnRef.current === turnBoundary;
+          if (response.ok && stillCurrent) {
             pendingCapabilityMetadataRef.current = (data.capabilityMetadata || null) as VoiceCapabilityMetadata | null;
             if (data.capabilityMetadata?.document) {
+              const draftBody = typeof data.draftContent === "string" && data.draftContent.trim()
+                ? data.draftContent
+                : draftBodyForConfirmationRef.current;
               const deliverable = {
-                content: data.result || liveDeliverableRef.current?.content || "",
+                content: data.result || "",
                 metadata: data.capabilityMetadata as VoiceCapabilityMetadata,
               };
               liveDeliverableRef.current = deliverable;
               setLiveDeliverable(deliverable);
               suppressLiveDocumentSpeechRef.current = true;
-              playDocumentConfirmation(data.capabilityMetadata as VoiceCapabilityMetadata, turnBoundary);
-              if (shouldFinalizeVoiceDocumentImmediately(pausedAssistantCapabilityTurnRef.current, turnBoundary)) {
-                finalizePendingVoiceDocument();
-              }
+              playDocumentConfirmation(
+                data.capabilityMetadata as VoiceCapabilityMetadata,
+                turnBoundary,
+                draftBody
+              );
+              // Persist the card as soon as the deliverable is ready — do not wait for UI chrome.
+              finalizePendingVoiceDocument();
             } else {
               suppressLiveDocumentSpeechRef.current = false;
+              liveDeliverableRef.current = null;
+              setLiveDeliverable(null);
             }
           }
           return {
@@ -847,7 +859,12 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
             error: data.error,
           };
         } catch {
-          if (turnBoundary === turnBoundaryRef.current) pendingCapabilityMetadataRef.current = null;
+          if (turnBoundary === turnBoundaryRef.current) {
+            pendingCapabilityMetadataRef.current = null;
+            liveDeliverableRef.current = null;
+            setLiveDeliverable(null);
+            suppressLiveDocumentSpeechRef.current = false;
+          }
           return {
             ok: false,
             result: "",
@@ -879,117 +896,63 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     if (message.toolCall?.functionCalls?.length) {
       maybeStartVoiceDocumentCapability();
       if (threadId && pageContext && session) {
-        void Promise.all(message.toolCall.functionCalls.map(async (call, callIndex) => {
-          const isAssistantCapability = call.name === "use_assistant_capabilities";
-          const explicitToolRequest = typeof call.args?.request === "string" ? call.args.request : "";
-          const request = isAssistantCapability
-            ? voiceAssistantInstruction(
-                transcriptRef.current.user,
-                explicitToolRequest
-              )
-            : (typeof call.args?.query === "string" ? call.args.query.trim() : "");
-          const turnBoundary = turnBoundaryRef.current;
-          const isDocumentCapability = isAssistantCapability && shouldUseVoiceAssistantCapability(request);
-          const shouldRouteAssistantCapability = isAssistantCapability
-            && shouldRouteVoiceAssistantCapability(request, explicitToolRequest);
-          const deferAssistantCapability = isAssistantCapability && awaitingOpeningTurnRef.current;
-          if (
-            shouldPlayVoiceAcknowledgement(call.name, request, turnBoundary, acknowledgedTurnRef.current)
-            && !deferAssistantCapability
-            && isDocumentCapability
-          ) {
-            acknowledgedTurnRef.current = turnBoundary;
-            const acknowledgementAudio = acknowledgementAudioRef.current;
-            if (acknowledgementAudio) {
-              scheduleAudio(acknowledgementAudio.data, acknowledgementAudio.mimeType);
-            } else {
-              const acknowledgementLifecycle = lifecycleRef.current;
-              void prefetchAcknowledgement(threadId, acknowledgementLifecycle).then((audio) => {
-                if (
-                  audio
-                  && acknowledgementLifecycle === lifecycleRef.current
-                  && turnBoundary === turnBoundaryRef.current
-                  && acknowledgedTurnRef.current === turnBoundary
-                ) {
-                  scheduleAudio(audio.data, audio.mimeType);
-                }
-              });
-            }
-          }
-          if (isAssistantCapability) {
-            if (deferAssistantCapability) {
-              session.sendToolResponse({
-                functionResponses: [{
-                  id: call.id,
-                  name: call.name || "use_assistant_capabilities",
-                  response: { output: VOICE_AWAIT_USER_SPEECH_TOOL_RESPONSE },
-                }],
-              });
-              return;
-            }
-            if (!shouldRouteAssistantCapability) {
-              session.sendToolResponse({
-                functionResponses: [{
-                  id: call.id,
-                  name: call.name || "use_assistant_capabilities",
-                  response: { output: VOICE_DIRECT_ANSWER_TOOL_RESPONSE },
-                }],
-              });
-              return;
-            }
-            const capability = await ensureAssistantCapability(request, turnBoundary);
+        void Promise.all(message.toolCall.functionCalls.map(async (call) => {
+          if (call.name !== "use_assistant_capabilities") {
             session.sendToolResponse({
               functionResponses: [{
                 id: call.id,
-                name: call.name || "lookup_workspace",
-                response: capability.ok
-                  ? {
-                      output: capability.capabilityMetadata?.document
-                        ? "The document was saved. Remain silent and wait for the user to speak."
-                        : (capability.result || "No authorized result was found."),
-                    }
-                  : { error: capability.error || "The Assistant capability request failed." },
+                name: call.name || "use_assistant_capabilities",
+                response: { output: VOICE_DIRECT_ANSWER_TOOL_RESPONSE },
               }],
             });
             return;
           }
-          const workingCallId = call.id || `${call.name || "lookup_workspace"}_${Date.now()}_${callIndex}`;
-          workingCallIdsRef.current.add(workingCallId);
-          setWorking(true);
-          try {
-            const response = await fetch(`/api/threads/${encodeURIComponent(threadId)}/voice/lookup`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                query: request,
-                pageContext,
-                ...(typeof call.args?.firmLibraryDocumentTitle === "string"
-                  ? { firmLibraryDocumentTitle: call.args.firmLibraryDocumentTitle.trim() }
-                  : {}),
-              }),
-            });
-            const data = await response.json().catch(() => ({})) as { evidence?: string; error?: string };
+          const explicitToolRequest = typeof call.args?.request === "string" ? call.args.request : "";
+          const request = voiceAssistantInstruction(
+            transcriptRef.current.user,
+            explicitToolRequest
+          );
+          const turnBoundary = turnBoundaryRef.current;
+          const shouldRouteAssistantCapability = shouldRouteVoiceAssistantCapability(
+            request,
+            explicitToolRequest
+          );
+          const deferAssistantCapability = awaitingOpeningTurnRef.current;
+          if (deferAssistantCapability) {
             session.sendToolResponse({
               functionResponses: [{
                 id: call.id,
-                name: call.name || "lookup_workspace",
-                response: response.ok
-                  ? { output: data.evidence || "No authorized result was found." }
-                  : { error: data.error || "The authorized workspace lookup failed." },
+                name: call.name || "use_assistant_capabilities",
+                response: { output: VOICE_AWAIT_USER_SPEECH_TOOL_RESPONSE },
               }],
             });
-          } catch {
-            session.sendToolResponse({
-              functionResponses: [{
-                id: call.id,
-                name: call.name || "lookup_workspace",
-                response: { error: "The authorized workspace lookup failed." },
-              }],
-            });
-          } finally {
-            workingCallIdsRef.current.delete(workingCallId);
-            setWorking(workingCallIdsRef.current.size > 0);
+            return;
           }
+          if (!shouldRouteAssistantCapability) {
+            suppressLiveDocumentSpeechRef.current = false;
+            session.sendToolResponse({
+              functionResponses: [{
+                id: call.id,
+                name: call.name || "use_assistant_capabilities",
+                response: { output: VOICE_DIRECT_ANSWER_TOOL_RESPONSE },
+              }],
+            });
+            return;
+          }
+          const capability = await ensureAssistantCapability(request, turnBoundary);
+          session.sendToolResponse({
+            functionResponses: [{
+              id: call.id,
+              name: call.name || "use_assistant_capabilities",
+              response: capability.ok
+                ? {
+                    output: capability.capabilityMetadata?.document
+                      ? "The document was saved. Remain silent and wait for the user to speak."
+                      : (capability.result || "Answer the user directly."),
+                  }
+                : { error: capability.error || "The Assistant capability request failed." },
+            }],
+          });
         }));
       }
     }
@@ -999,6 +962,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       awaitingOpeningTurnRef.current = false;
       liveDeliverableRef.current = null;
       setLiveDeliverable(null);
+      draftBodyForConfirmationRef.current = "";
       suppressLiveDocumentSpeechRef.current = false;
       confirmationPlayIdRef.current += 1;
       clearWorking();
@@ -1026,7 +990,12 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
         suppressLiveDocumentSpeechRef.current = true;
         confirmationPlayIdRef.current += 1;
         stopPlayback();
-      } else if (suppressLiveDocumentSpeechRef.current) {
+        maybeStartVoiceDocumentCapability();
+      } else if (
+        suppressLiveDocumentSpeechRef.current
+        && !(inFlightAssistantCapabilityTurnsRef.current.get(turnBoundaryRef.current) || 0)
+        && !liveDeliverableRef.current
+      ) {
         suppressLiveDocumentSpeechRef.current = false;
         confirmationPlayIdRef.current += 1;
       }
@@ -1056,13 +1025,15 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       if (shouldAdvanceTurnBoundary) {
         clearWorking();
         finalizeTranscripts("turnComplete");
-        if (playbackSourcesRef.current.size === 0) updateState("listening");
+        if (playbackSourcesRef.current.size === 0 && !playbackActiveRef.current) {
+          updateState("listening");
+        }
       } else {
         pausedAssistantCapabilityTurnRef.current = turnBoundaryRef.current;
         finalizeTranscripts("turnComplete", false);
       }
     }
-  }, [clearWorking, finalizePendingVoiceDocument, finalizeTranscripts, prefetchAcknowledgement, prefetchConfirmation, scheduleAudio, scheduleTranscriptFlush, stopPlayback, updateState]);
+  }, [clearWorking, fetchVoiceSpeech, finalizePendingVoiceDocument, finalizeTranscripts, scheduleAudio, scheduleTranscriptFlush, stopPlayback, updateState]);
 
   const beginAmplitudeUpdates = useCallback(() => {
     const microphoneData = new Uint8Array(256);
@@ -1194,9 +1165,9 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
             stateRef.current,
             workingCallIdsRef.current.size > 0,
             voiceCaptureAwaitingFinalize({
-              hasLiveDeliverable: liveDeliverableRef.current !== null,
+              hasLiveDeliverable: liveDeliverableRef.current !== null
+                && !liveDeliverableRef.current.metadata.document,
               pausedCapabilityTurn: pausedAssistantCapabilityTurnRef.current !== null,
-              pendingVoicePersistence: voicePersistencePendingRef.current > 0,
             })
           )) return;
           liveSession.sendRealtimeInput({
@@ -1257,8 +1228,6 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       }
       sessionRef.current = session;
       initializeLiveHistory(session, tokenData.history);
-      void prefetchAcknowledgement(threadId, lifecycle);
-      void prefetchConfirmation(threadId, lifecycle);
       for (const data of startupAudioBufferRef.current) {
         session.sendRealtimeInput({
           audio: { data, mimeType: "audio/pcm;rate=16000" },
@@ -1275,7 +1244,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
         ? "Microphone access was denied. Allow microphone access to use Voice Mode."
         : startError instanceof Error ? startError.message : "Voice Mode could not start.");
     }
-  }, [beginAmplitudeUpdates, ensureVoiceToken, fail, handleServerMessage, prefetchAcknowledgement, prefetchConfirmation, schedulePlaybackSettle, updateState]);
+  }, [beginAmplitudeUpdates, ensureVoiceToken, fail, handleServerMessage, schedulePlaybackSettle, updateState]);
 
   const stop = useCallback(() => {
     setError("");

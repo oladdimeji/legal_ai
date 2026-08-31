@@ -1202,6 +1202,7 @@ export default function AssistantView({
               {displayMessages.map((m, index) => {
                 const isLastMessage = index === displayMessages.length - 1;
                 const isLiveVoiceMessage = m.metadata?.liveVoiceTranscript === true;
+                const liveDocumentReady = isLiveVoiceMessage && Boolean(documentReferenceForMessage(m));
                 return (
                   <div key={m.id} className="w-full max-w-3xl mx-auto flex flex-col py-5 animate-fade-in" id={`message-wrapper-${m.id}`}>
                     <div className={`w-full flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
@@ -1286,8 +1287,8 @@ export default function AssistantView({
                             );
                           })()}
 
-                          {/* Message Action Items */}
-                          {!isLiveVoiceMessage && m.metadata?.error !== true && (
+                          {/* Message Action Items — show as soon as a live Voice document card is ready */}
+                          {(!isLiveVoiceMessage || liveDocumentReady) && m.metadata?.error !== true && (
                             <div className="mt-5 pt-3.5 border-t border-zinc-100 flex items-center justify-between flex-wrap gap-2.5 select-none">
                               <div className="flex items-center gap-3">
                                 {m.citations && m.citations.length > 0 ? (

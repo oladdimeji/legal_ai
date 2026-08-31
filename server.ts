@@ -47,13 +47,12 @@ import {
 } from "./server/assistantRouting.js";
 import { LAWYER_ASSISTANT_CHARTER } from "./server/assistant/assistantCharter.js";
 import { buildAssistantSessionContext, sessionContextForPrompt } from "./server/assistant/assistantContext.js";
-import { planAssistantRequest } from "./server/assistant/assistantPlanner.js";
+import { planAssistantRequest, fallbackAssistantPlan } from "./server/assistant/assistantPlanner.js";
 import { completeAssistantResponse } from "./server/assistant/assistantCompletion.js";
 import { writeAssistantDraftNdjson } from "./server/assistant/assistantDraftStream.js";
 import { orchestrateAssistantRetrieval } from "./server/assistant/assistantOrchestrator.js";
 import { boundEvidence, temporaryAttachmentEvidence, wrapAuthorizedEvidence } from "./server/assistant/assistantEvidence.js";
-import { executeAssistantToolPlan } from "./server/assistant/assistantToolExecutor.js";
-import type { AssistantEvidence, AssistantPlan, AssistantToolCall } from "./server/assistant/assistantTypes.js";
+import type { AssistantEvidence } from "./server/assistant/assistantTypes.js";
 import {
   buildAssistantConversationState,
   conversationResearchSourceMetadata,
@@ -67,13 +66,10 @@ import { normalizeFollowUpSuggestions } from "./server/assistant/followUpSuggest
 import {
   boundedVoiceHistory,
   createVoiceModeCredential,
-  getVoiceAcknowledgementAudio,
-  getVoiceConfirmationAudio,
-  getVoiceRevisionConfirmationAudio,
-  resolveFirmLibraryTitle,
-  warmupVoiceSpeechAudio,
+  generateVoiceSpeechAudio,
   voiceMessageId,
 } from "./server/voiceMode.js";
+import { detectAssistantDocumentIntent } from "./server/assistant/assistantDocumentIntent.js";
 import {
   conversationContextWithMemory,
   refreshAssistantMemory,
@@ -274,94 +270,23 @@ async function validatedVoiceCapabilityMetadata(
   };
 }
 
-function voiceLookupCalls(pageContext: WorkspacePageContext, query: string): AssistantToolCall[] {
-  const selected = pageContext.selectedItem;
-  const currentMatterId = currentMatterIdForAssistant(pageContext);
-  const calls: AssistantToolCall[] = [];
-  const add = (call: AssistantToolCall) => {
-    const key = `${call.name}:${JSON.stringify(call.arguments)}`;
-    if (!calls.some((existing) => `${existing.name}:${JSON.stringify(existing.arguments)}` === key)) calls.push(call);
+function emptyVoiceToolRun(): {
+  evidence: AssistantEvidence[];
+  checkedLocations: string[];
+  attemptedCalls: number;
+  limitReached: boolean;
+  errors: string[];
+  resolvedMatterIds: string[];
+  clarificationQuestion?: string;
+} {
+  return {
+    evidence: [],
+    checkedLocations: [],
+    attemptedCalls: 0,
+    limitReached: false,
+    errors: [],
+    resolvedMatterIds: [],
   };
-
-  // An explicitly open item is the most precise current-page evidence.
-  if (selected?.id) {
-    if (selected.kind === "source" && currentMatterId) {
-      add({ name: "get_matter_source", arguments: { matterId: currentMatterId, documentId: selected.id } });
-      add({ name: "search_matter_documents", arguments: { matterId: currentMatterId, documentId: selected.id, query } });
-    }
-    if (selected.kind === "workProduct" && currentMatterId) add({ name: "get_work_product", arguments: { matterId: currentMatterId, workProductId: selected.id, query } });
-    if (selected.kind === "libraryDocument" && pageContext.routeKind === "library") {
-      add({ name: "get_firm_library_document", arguments: { documentId: selected.id } });
-      add({ name: "search_firm_library_documents", arguments: { documentId: selected.id, query } });
-    }
-    if (selected.kind === "assistantDocument" && pageContext.routeKind === "assistantDocument") add({ name: "get_assistant_document", arguments: { documentId: selected.id } });
-  }
-
-  // The validated current route and section establish the minimum evidence.
-  if (pageContext.routeKind === "matters") add({ name: "list_matters", arguments: {} });
-  if (currentMatterId) {
-    const section = (pageContext.activeSection || "").toLocaleLowerCase();
-    if (section === "overview") add({ name: "get_matter_overview", arguments: { matterId: currentMatterId } });
-    if (section === "sources") add({ name: "list_matter_sources", arguments: { matterId: currentMatterId } });
-    if (section === "matter intelligence") add({ name: "get_matter_intelligence", arguments: { matterId: currentMatterId } });
-    if (section === "work product") add({ name: "list_matter_work_products", arguments: { matterId: currentMatterId } });
-    if (section === "collaboration") add({ name: "get_matter_collaboration_summary", arguments: { matterId: currentMatterId } });
-
-    // Query terms may add evidence, but never replace the current-section baseline.
-    if (section === "sources" && !selected?.id && !/^(?:what|which) (?:is|are|do we have)(?: on)? (?:this page|here)\??$/i.test(query)) {
-      add({ name: "search_matter_documents", arguments: { matterId: currentMatterId, query } });
-    }
-    if (/intelligence|risk|issue|fact|position/i.test(query)) add({ name: "get_matter_intelligence", arguments: { matterId: currentMatterId } });
-    if (/work product|draft|document we (?:made|created)|deliverable/i.test(query)) add({ name: "list_matter_work_products", arguments: { matterId: currentMatterId } });
-    if (/collaborat|client response|shared|request|waiting on/i.test(query)) add({ name: "get_matter_collaboration_summary", arguments: { matterId: currentMatterId } });
-  }
-  if (pageContext.routeKind === "library") {
-    if (!selected?.id) add({ name: "list_firm_library_documents", arguments: {} });
-    if (/search|find|about|mention|contain|say|clause|term|question/i.test(query)) {
-      add({ name: "search_firm_library_documents", arguments: { query } });
-    }
-  }
-  if (pageContext.routeKind === "settings") {
-    add({ name: "get_account_profile", arguments: {} });
-    add({ name: "get_firm_summary", arguments: { includeMembers: true } });
-  }
-  if (pageContext.routeKind === "matters" && /account|firm|profile|member|logged in/i.test(query)) {
-    add({ name: "get_account_profile", arguments: {} });
-    add({ name: "get_firm_summary", arguments: { includeMembers: true } });
-  }
-  if (pageContext.routeKind === "history" && /search|find|about|conversation|thread|discussed|said/i.test(query)) {
-    add({ name: "search_conversation_history", arguments: { query } });
-  }
-  return calls;
-}
-
-function boundedVoiceFirmLibraryText(text: string, query: string, maxCharacters = 15_000): string {
-  if (text.length <= maxCharacters) return text;
-  const queryTerms = Array.from(new Set(
-    query.toLocaleLowerCase().match(/[a-z0-9]{4,}/g) || []
-  )).filter((term) => !["what", "does", "this", "that", "document", "about", "from", "with"].includes(term));
-  if (queryTerms.length === 0) return text.slice(0, maxCharacters);
-  const paragraphs = text.split(/\n\s*\n/).map((paragraph) => paragraph.trim()).filter(Boolean);
-  const ranked = paragraphs.map((paragraph, index) => {
-    const normalized = paragraph.toLocaleLowerCase();
-    const score = queryTerms.reduce((total, term) => total + (normalized.includes(term) ? 1 : 0), 0);
-    return { index, paragraph, score };
-  }).filter((item) => item.score > 0).sort((left, right) => right.score - left.score || left.index - right.index);
-  if (ranked.length === 0) return text.slice(0, maxCharacters);
-  const selected = new Map<number, string>([[0, paragraphs[0]]]);
-  let characters = paragraphs[0].length;
-  for (const item of ranked) {
-    if (selected.has(item.index)) continue;
-    const remaining = maxCharacters - characters - 2;
-    if (remaining <= 0) break;
-    selected.set(item.index, item.paragraph.slice(0, remaining));
-    characters += Math.min(item.paragraph.length, remaining) + 2;
-  }
-  return Array.from(selected.entries())
-    .sort(([left], [right]) => left - right)
-    .map(([, paragraph]) => paragraph)
-    .join("\n\n")
-    .slice(0, maxCharacters);
 }
 
 const PROFESSIONAL_ROLES: ProfessionalRole[] = [
@@ -2932,139 +2857,18 @@ ${sourceText}`;
     }
   });
 
-  app.get("/api/threads/:id/voice/acknowledgement", async (req, res) => {
+  app.post("/api/threads/:id/voice/speak", async (req, res) => {
+    const text = typeof req.body.text === "string" ? req.body.text.replace(/\s+/g, " ").trim().slice(0, 500) : "";
+    if (!text) return res.status(400).json({ error: "Speech text is required." });
     try {
       const thread = await db.getThreadById(req.params.id, ownership(req));
       if (!thread) return res.status(404).json({ error: "Thread not found" });
-      const audio = await getVoiceAcknowledgementAudio();
+      const audio = await generateVoiceSpeechAudio(text);
       res.setHeader("Cache-Control", "no-store");
       return res.json(audio);
     } catch {
-      console.error("Voice acknowledgement generation failed.");
-      return res.status(502).json({ error: "Voice acknowledgement audio is unavailable." });
-    }
-  });
-
-  app.get("/api/threads/:id/voice/confirmation", async (req, res) => {
-    try {
-      const thread = await db.getThreadById(req.params.id, ownership(req));
-      if (!thread) return res.status(404).json({ error: "Thread not found" });
-      const [createResult, reviseResult] = await Promise.allSettled([
-        getVoiceConfirmationAudio(),
-        getVoiceRevisionConfirmationAudio(),
-      ]);
-      const create = createResult.status === "fulfilled" ? createResult.value : null;
-      const revise = reviseResult.status === "fulfilled" ? reviseResult.value : null;
-      if (!create && !revise) throw new Error("Voice confirmation audio is unavailable.");
-      res.setHeader("Cache-Control", "no-store");
-      return res.json({ create, revise });
-    } catch {
-      console.error("Voice confirmation generation failed.");
-      return res.status(502).json({ error: "Voice confirmation audio is unavailable." });
-    }
-  });
-
-  app.post("/api/threads/:id/voice/lookup", async (req, res) => {
-    const query = typeof req.body.query === "string" ? req.body.query.trim().slice(0, 2_000) : "";
-    const firmLibraryDocumentTitle = typeof req.body.firmLibraryDocumentTitle === "string"
-      ? req.body.firmLibraryDocumentTitle.trim().slice(0, 240)
-      : "";
-    if (!query) return res.status(400).json({ error: "A workspace lookup query is required." });
-    try {
-      const requestOwnership = ownership(req);
-      const thread = await db.getThreadById(req.params.id, requestOwnership);
-      if (!thread) return res.status(404).json({ error: "Thread not found" });
-      const validated = await validateVoicePageContext(req.body.pageContext, requestOwnership);
-      let titleResolution: ReturnType<typeof resolveFirmLibraryTitle> | null = null;
-      if (firmLibraryDocumentTitle) {
-        const metadata = await db.listFirmLibraryDocumentMetadata(requestOwnership);
-        titleResolution = resolveFirmLibraryTitle(firmLibraryDocumentTitle, metadata);
-      }
-      const toolCalls = titleResolution?.status === "resolved" || titleResolution?.status === "ambiguous"
-        ? []
-        : voiceLookupCalls(validated.pageContext, query);
-      if (titleResolution?.status === "not_found") {
-        toolCalls.push(
-          { name: "list_firm_library_documents", arguments: {} },
-          { name: "search_firm_library_documents", arguments: { query: `${firmLibraryDocumentTitle}\n${query}` } }
-        );
-      }
-      const evidence: AssistantEvidence[] = [];
-      if (titleResolution?.status === "resolved") {
-        const document = await db.getDocumentById(titleResolution.document.id, requestOwnership, null);
-        if (document) {
-          evidence.push({
-            id: `voice_firm_library_${document.id}`,
-            sourceType: "firmLibrary",
-            title: document.title,
-            sourceName: "Firm Library",
-            entityId: document.id,
-            text: boundedVoiceFirmLibraryText(document.extracted_text, query),
-          });
-        }
-      } else if (titleResolution?.status === "ambiguous") {
-        evidence.push({
-          id: "voice_firm_library_title_candidates",
-          sourceType: "firmLibrary",
-          title: "Possible Firm Library documents",
-          sourceName: "Firm Library",
-          text: JSON.stringify(titleResolution.candidates.slice(0, 8).map((candidate) => candidate.title)),
-        });
-      }
-      if (validated.pageContext.routeKind === "history") {
-        const threads = (await db.getHistoryThreads(requestOwnership)).slice(0, 50);
-        evidence.push({
-          id: "voice_history",
-          sourceType: "conversation",
-          title: "Authorized conversation History",
-          sourceName: "Assistant History",
-          text: JSON.stringify(threads.map((historyThread) => ({
-            id: historyThread.id,
-            title: historyThread.title,
-            matterId: historyThread.case_id,
-            createdAt: historyThread.created_at,
-            lastActivityAt: historyThread.last_activity_at || historyThread.created_at,
-          }))),
-        });
-      }
-      if (toolCalls.length > 0) {
-        const plan: AssistantPlan = {
-          intent: "workspace_lookup",
-          depth: "brief",
-          needsWorkspace: true,
-          needsCurrentPage: true,
-          needsWeb: false,
-          needsClarification: false,
-          deliverable: { kind: "message" },
-          referencedArtifactIds: [],
-          referencedResearchSourceIds: [],
-          toolCalls,
-        };
-        const result = await executeAssistantToolPlan({
-          plan,
-          account: (req as AuthenticatedRequest).auth!,
-          ownership: requestOwnership,
-          currentMatterId: validated.currentMatter?.id || null,
-          authorizedMatterIds: validated.currentMatter ? [validated.currentMatter.id] : [],
-          request: query,
-        });
-        evidence.push(...result.evidence);
-      }
-      return res.json({
-        evidence: [
-          "CURRENT AUTHORIZED PAGE:",
-          pageContextForPrompt(validated.pageContext),
-          "",
-          "AUTHORIZED WORKSPACE EVIDENCE:",
-          wrapAuthorizedEvidence(boundEvidence(evidence, 18_000)),
-        ].join("\n"),
-      });
-    } catch (error) {
-      if (error instanceof VoicePageContextError) {
-        return res.status(error.status).json({ error: error.message });
-      }
-      console.error("Voice workspace lookup failed.", error);
-      return res.status(500).json({ error: "The authorized workspace lookup failed." });
+      console.error("Voice speech generation failed.");
+      return res.status(502).json({ error: "Voice speech audio is unavailable." });
     }
   });
 
@@ -3106,37 +2910,67 @@ ${sourceText}`;
         pageContext: validated.pageContext,
         currentMatter: validated.currentMatter,
       });
-      const assistantPlan = await planAssistantRequest({
+      const plannerInput = {
         content: request,
         pageContext: validated.pageContext,
         hasTemporaryFiles: false,
-        temporaryFileNames: [],
+        temporaryFileNames: [] as string[],
         currentMatterId,
         conversationState,
-      });
-      const orchestration = await orchestrateAssistantRetrieval({
-        request,
-        plan: assistantPlan,
-        session: assistantSession,
-        account: (req as AuthenticatedRequest).auth!,
-        ownership: requestOwnership,
-        currentMatterId,
-        conversationMessages,
-        artifacts: conversationState.recentArtifacts,
-        // Voice document creation must stay fast; public web research adds latency
-        // and is not used for spoken draft deliverables.
-        skipWebResearch: true,
-      });
-      if (validated.selectedEvidence) orchestration.toolRun.evidence.push(validated.selectedEvidence);
+      };
+      const documentHint = detectAssistantDocumentIntent(plannerInput);
+      const voiceFastDocument = documentHint.kind === "explicit_create"
+        || documentHint.kind === "explicit_revision"
+        || documentHint.kind === "accepted_document_offer";
+      // Skip the planner LLM and workspace tool rounds for clear Voice draft intents so
+      // the first draft token can start as soon as the route is ready.
+      const assistantPlan = voiceFastDocument
+        ? fallbackAssistantPlan(plannerInput)
+        : await planAssistantRequest(plannerInput);
+      const wantsDocument = assistantPlan.deliverable.kind !== "message"
+        && Boolean(assistantPlan.deliverable.documentAction);
+      if (wantsDocument) {
+        writeAssistantDraftNdjson(res, { type: "draft_started" });
+      }
+      let toolRun = emptyVoiceToolRun();
+      let planningRounds = 0;
+      if (!voiceFastDocument || !wantsDocument) {
+        const orchestration = await orchestrateAssistantRetrieval({
+          request,
+          plan: assistantPlan,
+          session: assistantSession,
+          account: (req as AuthenticatedRequest).auth!,
+          ownership: requestOwnership,
+          currentMatterId,
+          conversationMessages,
+          artifacts: conversationState.recentArtifacts,
+          skipWebResearch: true,
+        });
+        toolRun = orchestration.toolRun;
+        planningRounds = orchestration.planningRounds;
+      }
+      if (validated.selectedEvidence) toolRun.evidence.push(validated.selectedEvidence);
 
       const clarificationQuestion = resolveAssistantClarification({
         plan: assistantPlan,
         plannerNeedsClarification: assistantPlan.needsClarification,
         plannerClarificationQuestion: assistantPlan.clarificationQuestion,
-        toolClarificationQuestion: orchestration.toolRun.clarificationQuestion,
+        toolClarificationQuestion: toolRun.clarificationQuestion,
         hasTemporaryFiles: false,
       });
       if (clarificationQuestion) {
+        if (res.headersSent) {
+          writeAssistantDraftNdjson(res, {
+            type: "complete",
+            result: clarificationQuestion,
+            capabilityMetadata: {
+              assistantIntent: assistantPlan.intent,
+              deliverableKind: "message",
+            },
+          });
+          res.end();
+          return;
+        }
         return res.json({
           result: clarificationQuestion,
           capabilityMetadata: {
@@ -3146,6 +2980,7 @@ ${sourceText}`;
         });
       }
 
+      let draftContent = "";
       const completion = await completeAssistantResponse({
         instruction: request,
         plan: assistantPlan,
@@ -3156,25 +2991,44 @@ ${sourceText}`;
         conversationState,
         conversationContext,
         conversationHistory,
-        toolRun: orchestration.toolRun,
-        webResearch: orchestration.webResearch,
-        planningRounds: orchestration.planningRounds,
+        toolRun,
+        webResearch: {
+          performed: false,
+          report: "",
+          citations: [],
+          questions: [],
+        },
+        planningRounds,
         account: (req as AuthenticatedRequest).auth!,
         ownership: requestOwnership,
-        // Voice speaks the answer and never renders follow-up pills, so the
-        // suggestion model call would only add latency to a spoken reply.
         generateSuggestions: async () => [],
-        onDraftChunk: assistantPlan.deliverable.kind === "message"
-          ? undefined
-          : (event) => {
+        onDraftChunk: wantsDocument
+          ? (event) => {
             if (event.reset) {
+              draftContent = "";
               writeAssistantDraftNdjson(res, { type: "draft_reset" });
               return;
             }
-            if (event.text) writeAssistantDraftNdjson(res, { type: "draft_delta", text: event.text });
-          },
+            if (event.text) {
+              draftContent += event.text;
+              writeAssistantDraftNdjson(res, { type: "draft_delta", text: event.text });
+            }
+          }
+          : undefined,
       });
       if (completion.clarificationQuestion) {
+        if (res.headersSent) {
+          writeAssistantDraftNdjson(res, {
+            type: "complete",
+            result: completion.clarificationQuestion,
+            capabilityMetadata: {
+              assistantIntent: assistantPlan.intent,
+              deliverableKind: "message",
+            },
+          });
+          res.end();
+          return;
+        }
         return res.json({
           result: completion.clarificationQuestion,
           capabilityMetadata: {
@@ -3191,6 +3045,7 @@ ${sourceText}`;
       };
       const payload = {
         result: completion.content,
+        ...(completion.document ? { draftContent: draftContent || undefined } : {}),
         capabilityMetadata,
       };
       if (res.headersSent) {
@@ -3927,7 +3782,6 @@ ${sourceText}`;
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
-    warmupVoiceSpeechAudio();
   });
 }
 

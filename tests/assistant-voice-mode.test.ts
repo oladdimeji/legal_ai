@@ -4,16 +4,16 @@ import test from "node:test";
 import type { Message } from "../src/types.js";
 import { assistantDocumentConfirmationContent } from "../server/assistant/assistantCompletion.js";
 import {
-  VOICE_MODE_ACKNOWLEDGEMENT,
   VOICE_MODE_CONFIG,
-  VOICE_MODE_DOCUMENT_CONFIRMATION,
-  VOICE_MODE_REVISION_CONFIRMATION,
+  VOICE_MODE_SPEECH_MODEL,
   VOICE_MODE_TTS_FALLBACK_MODEL,
   boundedVoiceHistory,
   liveConnectConfig,
   resolveFirmLibraryTitle,
   voiceCredentialRequest,
   voiceAcknowledgementRequest,
+  voiceAcknowledgementSpeech,
+  voiceInformationalConfirmationSpeech,
   voiceDocumentConfirmationSpeech,
   voiceMessageId,
 } from "../server/voiceMode.js";
@@ -36,6 +36,7 @@ import {
   shouldAdvanceVoiceTurnBoundary,
   shouldHoldVoiceCapture,
   voiceCaptureAwaitingFinalize,
+  voiceAcknowledgementSpeechFromRequest,
   usesVoiceRevisionConfirmation,
   voiceAssistantInstruction,
   voicePrefetchStillValid,
@@ -67,27 +68,21 @@ test("Gemini Live configuration is centralized for native audio, transcription, 
   assert.equal(config.realtimeInputConfig.automaticActivityDetection.startOfSpeechSensitivity, "START_SENSITIVITY_LOW");
   assert.deepEqual(
     config.tools[0].functionDeclarations.map((declaration) => declaration.name),
-    ["lookup_workspace", "use_assistant_capabilities"]
+    ["use_assistant_capabilities"]
   );
   assert.match(String(config.systemInstruction), /Do not proactively mention or enumerate Voice Mode's capability limitations/);
-  assert.match(String(config.systemInstruction), /Ordinary authorized read-only retrieval is an internal step and does not require separate permission/);
-  assert.match(String(config.systemInstruction), /Use lookup_workspace as the fast path for straightforward authorized retrieval/);
-  assert.match(String(config.systemInstruction), /Use use_assistant_capabilities only when the user asks you to create, draft, write, prepare, generate, or revise a document/);
-  assert.match(String(config.systemInstruction), /answer the user directly without calling any function/);
-  assert.match(String(config.systemInstruction), /named Firm Library documents even when they are not currently open/);
-  assert.match(String(config.systemInstruction), /Before saying authenticated workspace information is unavailable, use the appropriate function/);
+  assert.match(String(config.systemInstruction), /Do not call any function for lookups/);
+  assert.match(String(config.systemInstruction), /Answer ordinary conversation[\s\S]*directly and immediately/);
+  assert.match(String(config.systemInstruction), /speak exactly one short, specific sentence that confirms what you are starting now/);
+  assert.match(String(config.systemInstruction), /call use_assistant_capabilities immediately as your next action/);
+  assert.match(String(config.systemInstruction), /After that function returns, remain completely silent/);
+  assert.match(String(config.systemInstruction), /Do not speak a confirmation or read the document aloud/);
   assert.match(String(config.systemInstruction), /measured conversational pace/);
   assert.match(String(config.systemInstruction), /Never fabricate progress/);
-  assert.match(String(config.systemInstruction), /Treat both functions as your own internal actions/);
-  assert.match(String(config.systemInstruction), /report it as your own completed work in the first person/);
-  assert.match(String(config.systemInstruction), /Never mention function names, tools, capabilities, delegation, or another Assistant/);
-  assert.match(String(config.systemInstruction), /call use_assistant_capabilities immediately as your first action in the turn, before producing any spoken audio/);
-  assert.match(String(config.systemInstruction), /After that function returns, remain silent/);
-  assert.match(String(config.systemInstruction), /Do not speak a confirmation or read the document aloud/);
-  assert.doesNotMatch(String(config.systemInstruction), /speak one short confirmation/);
+  assert.match(String(config.systemInstruction), /never mention function names, tools, capabilities, delegation, or another Assistant/i);
+  assert.doesNotMatch(String(config.systemInstruction), /lookup_workspace/);
   assert.doesNotMatch(String(config.systemInstruction), /Voice Mode is read-only|better handled in the standard Assistant/);
   assert.doesNotMatch(String(config.systemInstruction), /pretend|browser text-to-speech/i);
-  assert.doesNotMatch(String(config.systemInstruction), /you may give one short, natural acknowledgement/i);
 });
 
 test("Voice Mode stays silent on open, drops unexpected opening audio, and never saves it", async () => {
@@ -113,10 +108,9 @@ test("Voice Mode stays silent on open, drops unexpected opening audio, and never
   assert.match(hook, /deferAssistantCapability[\s\S]*VOICE_AWAIT_USER_SPEECH_TOOL_RESPONSE/);
 });
 
-test("Voice acknowledgement TTS reuses the configured Voice Agent identity and fixed phrase", () => {
+test("Voice acknowledgement and confirmation speech are request-aware and use Kore TTS", () => {
   const request = voiceAcknowledgementRequest();
-  assert.equal(VOICE_MODE_ACKNOWLEDGEMENT.text, "Absolutely — give me a moment, I’m working on that now.");
-  assert.equal(request.model, "gemini-3.1-flash-tts-preview");
+  assert.equal(VOICE_MODE_SPEECH_MODEL, "gemini-3.1-flash-tts-preview");
   assert.equal(VOICE_MODE_TTS_FALLBACK_MODEL, "gemini-2.5-flash-preview-tts");
   assert.deepEqual(request.config.responseModalities, ["AUDIO"]);
   assert.match(JSON.stringify(voiceAcknowledgementRequest()), /"parts":\[\{"text":/);
@@ -125,10 +119,24 @@ test("Voice acknowledgement TTS reuses the configured Voice Agent identity and f
     VOICE_MODE_CONFIG.voiceName
   );
   assert.equal(VOICE_MODE_CONFIG.voiceName, "Kore");
-  assert.equal(VOICE_MODE_DOCUMENT_CONFIRMATION.text, "I have created the document for you.");
-  assert.equal(VOICE_MODE_REVISION_CONFIRMATION.text, "I have created a revised version for you.");
-  assert.equal(VOICE_MODE_DOCUMENT_CONFIRMATION.model, VOICE_MODE_ACKNOWLEDGEMENT.model);
-  assert.equal(VOICE_MODE_REVISION_CONFIRMATION.model, VOICE_MODE_ACKNOWLEDGEMENT.model);
+  assert.equal(voiceAcknowledgementSpeech("Draft an NDA for Acme."), "I'm drafting that NDA for you now.");
+  assert.equal(voiceAcknowledgementSpeech("Revise the agreement."), "I'm revising that Agreement for you now.");
+  assert.equal(voiceAcknowledgementSpeechFromRequest("Prepare a memo."), "I'm drafting that Memo for you now.");
+  assert.match(
+    voiceInformationalConfirmationSpeech({
+      title: "Acme NDA",
+      draftContent: "# Acme NDA\n\nThis Non-Disclosure Agreement protects confidential information shared between the parties.",
+    }),
+    /I've finished drafting Acme NDA\./
+  );
+  assert.match(
+    voiceInformationalConfirmationSpeech({
+      title: "Acme NDA",
+      draftContent: "Confidential terms apply to all shared materials under this agreement.",
+      revise: true,
+    }),
+    /I've finished the revised Acme NDA\./
+  );
 });
 
 test("Voice acknowledgement eligibility is document-capability-only and once per existing turn boundary", () => {
@@ -170,10 +178,9 @@ test("Voice capability metadata waits through contentless completion but remains
   assert.match(completion, /shouldAdvanceVoiceTurnBoundary/);
   assert.match(completion, /finalizeTranscripts\("turnComplete", false\)/);
   assert.match(hook, /finalizePendingVoiceDocument/);
-  assert.match(hook, /shouldFinalizeVoiceDocumentImmediately\(pausedAssistantCapabilityTurnRef\.current, turnBoundary\)/);
-  assert.match(hook, /pausedAssistantCapabilityTurnRef\.current === turnBoundaryRef\.current[\s\S]*finalizePendingVoiceDocument\(\)/);
+  assert.match(hook, /finalizePendingVoiceDocument\(\)/);
   assert.match(hook, /documentConfirmationTurnRef\.current === turnBoundary/);
-  assert.match(hook, /playDocumentConfirmation\([\s\S]*turnBoundary\)/);
+  assert.match(hook, /playDocumentConfirmation\(/);
 });
 
 test("a completed turn cannot retire an Assistant capability boundary while its call is still running", async () => {
@@ -223,65 +230,56 @@ test("spoken document instructions start the Assistant draft path without waitin
   assert.doesNotMatch(toolHandler, /persistFinalTranscript|voice\/messages/);
 });
 
-test("Voice acknowledgement is cached, isolated, fail-open, prefetched, and cleaned up with shared playback", async () => {
+test("Voice speech endpoint and intelligent acknowledgement playback are fail-open", async () => {
   const [server, hook, voiceMode] = await Promise.all([
     readFile(new URL("../server.ts", import.meta.url), "utf8"),
     readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8"),
     readFile(new URL("../server/voiceMode.ts", import.meta.url), "utf8"),
   ]);
   const route = server.slice(
-    server.indexOf('app.get("/api/threads/:id/voice/acknowledgement"'),
-    server.indexOf('app.get("/api/threads/:id/voice/confirmation"')
+    server.indexOf('app.post("/api/threads/:id/voice/speak"'),
+    server.indexOf('app.post("/api/threads/:id/voice/assistant"')
   );
   assert.match(route, /db\.getThreadById\(req\.params\.id, ownership\(req\)\)/);
-  assert.match(route, /getVoiceAcknowledgementAudio\(\)/);
+  assert.match(route, /generateVoiceSpeechAudio\(text\)/);
   assert.match(route, /status\(502\)/);
   assert.doesNotMatch(route, /db\.addMessage|db\.addVoiceMessage|voice\/messages/);
-  assert.match(voiceMode, /voiceAcknowledgementAudioCache = new Map/);
+  assert.match(voiceMode, /voiceSpeechAudioCache = new Map/);
   assert.match(voiceMode, /runWithTransientModelRetries/);
   assert.match(voiceMode, /VOICE_MODE_TTS_FALLBACK_MODEL/);
-  assert.match(voiceMode, /getVoiceAcknowledgementAudioFor/);
+  assert.match(voiceMode, /generateVoiceSpeechAudio/);
   assert.equal((voiceMode.match(/models\.generateContent/g) ?? []).length, 1);
 
-  const prefetch = hook.slice(hook.indexOf("const prefetchAcknowledgement"), hook.indexOf("const prefetchConfirmation"));
-  assert.match(prefetch, /voice\/acknowledgement/);
-  assert.match(prefetch, /acknowledgementRequestRef\.current/);
-  assert.equal((prefetch.match(/\.catch\(\(\) => null\);/g) ?? []).length, 1);
-  assert.doesNotMatch(prefetch, /setError|fail\(|transcriptRef|setLiveTranscripts|persistFinalTranscript/);
+  assert.match(hook, /voice\/speak/);
+  assert.match(hook, /fetchVoiceSpeech/);
+  assert.match(hook, /voiceAcknowledgementSpeechFromRequest/);
 
   const toolHandler = hook.slice(hook.indexOf("const handleServerMessage"), hook.indexOf("const beginAmplitudeUpdates"));
-  assert.match(toolHandler, /shouldPlayVoiceAcknowledgement\(call\.name, request, turnBoundary, acknowledgedTurnRef\.current\)/);
-  assert.match(toolHandler, /shouldRouteVoiceAssistantCapability\(request, explicitToolRequest\)/);
-  assert.match(toolHandler, /shouldRouteAssistantCapability[\s\S]*await ensureAssistantCapability\(request, turnBoundary\)/);
-  assert.match(toolHandler, /!shouldRouteAssistantCapability[\s\S]*VOICE_DIRECT_ANSWER_TOOL_RESPONSE/);
+  assert.match(toolHandler, /shouldRouteVoiceAssistantCapability\(\s*request,\s*explicitToolRequest\s*\)/);
+  assert.match(toolHandler, /await ensureAssistantCapability\(request, turnBoundary\)/);
+  assert.match(toolHandler, /VOICE_DIRECT_ANSWER_TOOL_RESPONSE/);
   assert.match(toolHandler, /shouldBeginVoiceDocumentSpeechSuppression\(userTranscript\)[\s\S]*stopPlayback\(\)/);
-  assert.ok(toolHandler.indexOf("scheduleAudio(acknowledgementAudio.data") < toolHandler.indexOf("await fetch("));
   assert.match(toolHandler, /voice\/assistant/);
-  assert.match(toolHandler, /voice\/lookup/);
+  assert.doesNotMatch(toolHandler, /voice\/lookup/);
   assert.match(toolHandler, /session\.sendToolResponse/);
-  assert.doesNotMatch(toolHandler, /session\.close|live\.connect|persistFinalTranscript|voice\/messages/);
+  assert.doesNotMatch(toolHandler, /session\.close\(|ai\.live\.connect/);
 
-  const start = hook.slice(hook.indexOf("const start"), hook.indexOf("const stop ="));
-  assert.match(start, /sessionRef\.current = session;[\s\S]*prefetchAcknowledgement\(threadId, lifecycle\)/);
-  assert.match(start, /prefetchConfirmation\(threadId, lifecycle\)/);
+  const startFn = hook.slice(hook.indexOf("const start"), hook.indexOf("const stop ="));
+  assert.doesNotMatch(startFn, /prefetchAcknowledgement|prefetchConfirmation/);
   const cleanup = hook.slice(hook.indexOf("const releaseResources"), hook.indexOf("const fail"));
   assert.match(cleanup, /stopPlayback\(\)/);
   assert.match(cleanup, /acknowledgedTurnRef\.current = null/);
-  assert.match(cleanup, /acknowledgementAudioRef\.current = null/);
-  assert.match(cleanup, /acknowledgementRequestRef\.current = null/);
-  assert.match(cleanup, /confirmationAudioRef\.current = null/);
-  assert.match(cleanup, /revisionConfirmationAudioRef\.current = null/);
-  assert.match(cleanup, /confirmationRequestRef\.current = null/);
   assert.doesNotMatch(hook, /speechSynthesis|SpeechSynthesisUtterance|webkitSpeechRecognition|SpeechRecognition/);
   assert.doesNotMatch(hook, /playbackRate/);
 });
 
-test("Voice document completion keeps one card result and speaks a cached confirmation clip", async () => {
-  const [server, hook, voiceMode, completion] = await Promise.all([
+test("Voice document completion keeps one card result and speaks an informational confirmation", async () => {
+  const [server, hook, voiceMode, completion, assistant] = await Promise.all([
     readFile(new URL("../server.ts", import.meta.url), "utf8"),
     readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8"),
     readFile(new URL("../server/voiceMode.ts", import.meta.url), "utf8"),
     readFile(new URL("../server/assistant/assistantCompletion.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/components/AssistantView.tsx", import.meta.url), "utf8"),
   ]);
   assert.equal(
     assistantDocumentConfirmationContent("create", "Employment Advice"),
@@ -295,75 +293,25 @@ test("Voice document completion keeps one card result and speaks a cached confir
     voiceDocumentConfirmationSpeech("I have created the **Employment Advice**."),
     "I have created the Employment Advice."
   );
-  assert.equal(
-    voiceDocumentConfirmationSpeech("I have created a revised version of **NDA**."),
-    "I have created a revised version of NDA."
-  );
-  assert.equal(voiceDocumentConfirmationSpeech("Absolutely — give me a moment, I’m working on that now."), null);
   assert.equal(voiceDocumentConfirmationSpeech("Please read this advice aloud."), null);
   assert.match(completion, /assistantDocumentConfirmationContent\(input\.plan\.deliverable\.documentAction, deliverable\.document\.title\)/);
-  assert.doesNotMatch(completion, /onDraftTitle/);
 
   assert.equal(usesVoiceRevisionConfirmation({ assistantIntent: "document_creation" }), false);
   assert.equal(usesVoiceRevisionConfirmation({ assistantIntent: "document_revision" }), true);
   assert.equal(usesVoiceRevisionConfirmation({ sourceDocument: { id: "doc_1" } }), true);
 
-  const confirmationRoute = server.slice(
-    server.indexOf('app.get("/api/threads/:id/voice/confirmation"'),
-    server.indexOf('app.post("/api/threads/:id/voice/lookup"')
-  );
-  assert.match(confirmationRoute, /db\.getThreadById\(req\.params\.id, ownership\(req\)\)/);
-  assert.match(confirmationRoute, /getVoiceConfirmationAudio\(\)/);
-  assert.match(confirmationRoute, /getVoiceRevisionConfirmationAudio\(\)/);
-  assert.match(confirmationRoute, /status\(502\)/);
-  assert.doesNotMatch(confirmationRoute, /db\.addMessage|db\.addVoiceMessage|voice\/messages|req\.body\.text/);
-
-  const assistantRoute = server.slice(
-    server.indexOf('app.post("/api/threads/:id/voice/assistant"'),
-    server.indexOf('app.post("/api/threads/:id/voice/messages"')
-  );
-  assert.doesNotMatch(assistantRoute, /onDraftTitle|prefetchVoiceConfirmationAudio|peekReadyVoiceConfirmationAudio|confirmationAudio/);
-  assert.doesNotMatch(assistantRoute, /voice\/confirmation/);
-
-  assert.match(voiceMode, /getVoiceConfirmationAudio\(\)/);
-  assert.match(voiceMode, /getVoiceRevisionConfirmationAudio\(\)/);
-  assert.match(voiceMode, /warmupVoiceSpeechAudio/);
-  assert.match(voiceMode, /getVoiceAcknowledgementAudioFor\(VOICE_MODE_DOCUMENT_CONFIRMATION\)/);
-  assert.match(voiceMode, /getVoiceAcknowledgementAudioFor\(VOICE_MODE_REVISION_CONFIRMATION\)/);
-  assert.doesNotMatch(voiceMode, /voiceConfirmationAudioCache|peekReadyVoiceConfirmationAudio|prefetchVoiceConfirmationAudio\(/);
-  assert.equal((voiceMode.match(/models\.generateContent/g) ?? []).length, 1);
-  assert.match(server, /warmupVoiceSpeechAudio\(\)/);
+  assert.match(server, /voice\/speak/);
+  assert.doesNotMatch(server, /voice\/acknowledgement|voice\/confirmation|voice\/lookup/);
+  assert.match(voiceMode, /generateVoiceSpeechAudio/);
+  assert.doesNotMatch(voiceMode, /warmupVoiceSpeechAudio|VOICE_MODE_DOCUMENT_CONFIRMATION|Absolutely/);
 
   const toolHandler = hook.slice(hook.indexOf("const handleServerMessage"), hook.indexOf("const beginAmplitudeUpdates"));
-  const assistantFetch = toolHandler.slice(
-    toolHandler.indexOf('await fetch(`/api/threads/${encodeURIComponent(threadId)}/voice/assistant`'),
-    toolHandler.indexOf("session.sendToolResponse")
-  );
-  assert.match(assistantFetch, /setLiveDeliverable\(deliverable\)/);
-  assert.match(assistantFetch, /playDocumentConfirmation\(/);
-  assert.match(assistantFetch, /if \(data\.capabilityMetadata\?\.document\) \{[\s\S]*setLiveDeliverable\(deliverable\)[\s\S]*playDocumentConfirmation\(/);
-  assert.match(toolHandler, /usesVoiceRevisionConfirmation\(metadata\)/);
-  assert.match(toolHandler, /prefetchConfirmation/);
-  assert.match(hook, /const prefetchConfirmation/);
-  assert.match(hook, /voice\/confirmation/);
-  assert.match(toolHandler, /suppressLiveDocumentSpeechRef\.current/);
-  assert.match(toolHandler, /if \(!suppressLiveDocumentSpeechRef\.current\) \{\s*scheduleAudio\(inlineData\.data/);
-  assert.match(toolHandler, /capability\.capabilityMetadata\?\.document[\s\S]*Remain silent and wait for the user to speak/);
-  assert.match(hook, /completed\.filter\(\(transcript\) => transcript\.role !== "assistant"\)/);
-  assert.match(hook, /content: documentContent/);
-  assert.match(hook, /suppressLiveDocumentSpeechRef\.current[\s\S]*completed\.filter\(\(transcript\) => transcript\.role !== "assistant"\)/);
-  assert.match(hook, /content\.interrupted[\s\S]*confirmationPlayIdRef\.current \+= 1/);
-  assert.match(hook, /content\.inputTranscription\?\.text[\s\S]*shouldBeginVoiceDocumentSpeechSuppression\(userTranscript\)/);
-  assert.doesNotMatch(
-    hook.slice(hook.indexOf('if (content.turnComplete)'), hook.indexOf("  }, [clearWorking", hook.indexOf('if (content.turnComplete)'))),
-    /suppressLiveDocumentSpeechRef\.current = false/
-  );
-  assert.doesNotMatch(toolHandler, /persistFinalTranscript|voice\/messages/);
-
-  const assistant = await readFile(new URL("../src/components/AssistantView.tsx", import.meta.url), "utf8");
+  assert.match(toolHandler, /playDocumentConfirmation\(/);
+  assert.match(toolHandler, /finalizePendingVoiceDocument\(\)/);
+  assert.match(toolHandler, /draftBodyForConfirmationRef/);
+  assert.match(toolHandler, /suppressLiveDocumentSpeechRef\.current = false/);
+  assert.match(assistant, /liveDocumentReady/);
   assert.match(assistant, /confirmationOnly = Boolean\(document && isDocumentConfirmationContent\(m\.content\)\)/);
-  assert.match(assistant, /!confirmationOnly && \(/);
-  assert.match(assistant, /confirmationOnly \? \([\s\S]*renderMessageTextWithCitations\(m\.content/);
 });
 
 test("Voice heavy calls keep the normal working lifecycle without any progress heartbeat", async () => {
@@ -378,7 +326,7 @@ test("Voice heavy calls keep the normal working lifecycle without any progress h
   assert.match(toolHandler, /workingCallIdsRef\.current\.add\(workingCallId\)/);
   assert.match(toolHandler, /finally \{[\s\S]*workingCallIdsRef\.current\.delete\(workingCallId\)/);
   assert.match(toolHandler, /JSON\.stringify\(\{ request, pageContext \}\)/);
-  assert.match(toolHandler, /voice\/lookup/);
+  assert.doesNotMatch(toolHandler, /voice\/lookup/);
   assert.match(toolHandler, /session\.sendToolResponse\(\{[\s\S]*functionResponses/);
   assert.match(toolHandler, /content\.interrupted[\s\S]*clearWorking\(\)/);
   assert.match(toolHandler, /content\.turnComplete[\s\S]*clearWorking\(\)/);
@@ -388,13 +336,10 @@ test("Voice heavy calls keep the normal working lifecycle without any progress h
   assert.doesNotMatch(voiceMode, /VOICE_MODE_PROGRESS_ACKNOWLEDGEMENT|voiceProgressAcknowledgementRequest|getVoiceProgressAcknowledgementAudio|Still on it\./);
 });
 
-test("Live tool declarations expose named Firm Library lookup and keep routine reads out of the heavy bridge", () => {
+test("Live tool declarations expose only document creation capability", () => {
   const declarations = liveConnectConfig().tools[0].functionDeclarations;
-  const lookup = declarations.find((declaration) => declaration.name === "lookup_workspace")!;
+  assert.deepEqual(declarations.map((declaration) => declaration.name), ["use_assistant_capabilities"]);
   const assistant = declarations.find((declaration) => declaration.name === "use_assistant_capabilities")!;
-  assert.ok(Object.hasOwn(lookup.parametersJsonSchema.properties, "firmLibraryDocumentTitle"));
-  assert.match(lookup.description, /even when that document is not currently open/);
-  assert.match(lookup.description, /routine direct document reading/);
   assert.match(assistant.description, /Create or revise a saved document only/);
   assert.match(assistant.description, /Do not use it for lookups, analysis, research, planning/);
 });
@@ -423,7 +368,7 @@ test("ephemeral credential request preserves constrained Live tools without the 
   assert.equal(request.config.liveConnectConstraints.model, VOICE_MODE_CONFIG.model);
   assert.deepEqual(
     request.config.liveConnectConstraints.config.tools[0].functionDeclarations.map((declaration) => declaration.name),
-    ["lookup_workspace", "use_assistant_capabilities"]
+    ["use_assistant_capabilities"]
   );
   assert.equal(
     request.config.liveConnectConstraints.config.realtimeInputConfig.automaticActivityDetection.startOfSpeechSensitivity,
@@ -563,18 +508,16 @@ test("Voice holds microphone capture while speaking or working and still stops p
   assert.equal(voiceCaptureAwaitingFinalize({
     hasLiveDeliverable: true,
     pausedCapabilityTurn: false,
-    pendingVoicePersistence: false,
   }), true);
   assert.equal(voiceCaptureAwaitingFinalize({
     hasLiveDeliverable: false,
     pausedCapabilityTurn: true,
-    pendingVoicePersistence: false,
   }), true);
   assert.equal(voiceCaptureAwaitingFinalize({
     hasLiveDeliverable: false,
     pausedCapabilityTurn: false,
     pendingVoicePersistence: true,
-  }), true);
+  }), false);
 
   const hook = await readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8");
   const send = hook.slice(hook.indexOf("const sendOrBufferCapture"), hook.indexOf("if (capture.kind === \"worklet\")"));
@@ -640,7 +583,7 @@ test("active Voice sessions receive current navigation context without reconnect
   assert.match(assistant, /useEffect\(\(\) => \{\s*voiceMode\.updatePageContext\(pageContext\);\s*\}, \[pageContext, voiceMode\.updatePageContext\]\)/);
   const update = hook.slice(hook.indexOf("const updatePageContext"), hook.indexOf("return {", hook.indexOf("const updatePageContext")));
   assert.doesNotMatch(update, /connect|token|transcript|playback|releaseResources|sessionRef/);
-  assert.match(hook, /query: request,\s*pageContext/);
+  assert.match(hook, /JSON\.stringify\(\{ request, pageContext \}\)/);
 });
 
 test("finalized transcripts use a narrow idempotent owned route and never invoke standard generation", async () => {
@@ -690,35 +633,16 @@ test("ephemeral credential route is authenticated by the established API gate an
   assert.doesNotMatch(await readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8"), /GEMINI_API_KEY|VITE_.*GEMINI/);
 });
 
-test("Voice workspace lookup is narrow, read-only, and derives scope from validated page context", async () => {
+test("Voice Mode no longer exposes workspace lookup routes or tool handling", async () => {
   const [server, hook] = await Promise.all([
     readFile(new URL("../server.ts", import.meta.url), "utf8"),
     readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8"),
   ]);
-  const lookupRoute = server.slice(
-    server.indexOf('app.post("/api/threads/:id/voice/lookup"'),
-    server.indexOf('app.post("/api/threads/:id/voice/assistant"')
-  );
-  assert.match(lookupRoute, /ownership\(req\)/);
-  assert.match(lookupRoute, /db\.getThreadById/);
-  assert.match(lookupRoute, /validateVoicePageContext\(req\.body\.pageContext, requestOwnership\)/);
-  assert.match(lookupRoute, /voiceLookupCalls\(validated\.pageContext, query\)/);
-  assert.match(lookupRoute, /currentMatterId: validated\.currentMatter\?\.id \|\| null/);
-  assert.match(lookupRoute, /CURRENT AUTHORIZED PAGE:/);
-  assert.match(lookupRoute, /pageContextForPrompt\(validated\.pageContext\)/);
-  assert.match(lookupRoute, /db\.getHistoryThreads\(requestOwnership\)/);
-  assert.match(lookupRoute, /db\.listFirmLibraryDocumentMetadata\(requestOwnership\)/);
-  assert.match(lookupRoute, /resolveFirmLibraryTitle\(firmLibraryDocumentTitle, metadata\)/);
-  assert.match(lookupRoute, /db\.getDocumentById\(titleResolution\.document\.id, requestOwnership, null\)/);
-  assert.match(lookupRoute, /titleResolution\?\.status === "ambiguous"/);
-  assert.doesNotMatch(lookupRoute, /planAssistantRequest|completeAssistantResponse/);
-  assert.doesNotMatch(server, /currentMatterId !== threadMatterId|Voice page context does not match this conversation/);
-  assert.doesNotMatch(lookupRoute, /req\.body\.(?:matterId|documentId|scope)|needsWeb: true|\b(?:create|update|delete|share|send|invite)\w*\(/);
+  assert.doesNotMatch(server, /voice\/lookup/);
+  assert.doesNotMatch(hook, /voice\/lookup/);
   assert.match(hook, /voice\/assistant/);
-  assert.match(hook, /voice\/lookup/);
   assert.match(hook, /session\.sendToolResponse/);
-  assert.match(hook, /functionResponses:\s*\[\{/);
-  assert.match(hook, /firmLibraryDocumentTitle: call\.args\.firmLibraryDocumentTitle\.trim\(\)/);
+  assert.match(hook, /VOICE_DIRECT_ANSWER_TOOL_RESPONSE/);
 });
 
 test("Voice function HTTP work exposes a ref-counted working state without changing audio behavior", async () => {
@@ -780,28 +704,23 @@ test("Voice Assistant capability routing reuses the owned Assistant pipeline wit
   assert.match(route, /validateVoicePageContext\(req\.body\.pageContext, requestOwnership\)/);
   assert.match(route, /buildAssistantConversationState/);
   assert.match(route, /buildAssistantSessionContext/);
-  assert.match(route, /planAssistantRequest/);
-  assert.match(route, /orchestrateAssistantRetrieval/);
-  assert.match(route, /skipWebResearch:\s*true/);
-  assert.match(route, /resolveAssistantClarification/);
+  assert.match(route, /fallbackAssistantPlan|planAssistantRequest/);
+  assert.match(route, /detectAssistantDocumentIntent/);
+  assert.match(route, /draft_started/);
   assert.match(route, /completeAssistantResponse/);
   assert.match(route, /syntheticUserMessage/);
-  assert.match(route, /const conversationMessages = \[\.\.\.priorHistory, syntheticUserMessage\]/);
-  assert.doesNotMatch(route, /db\.addMessage|db\.addVoiceMessage|\/api\/threads\/.*\/messages|GEMINI_API_KEY/);
-  assert.doesNotMatch(route, /voice\/confirmation/);
-  assert.doesNotMatch(route, /prefetchVoiceConfirmationAudio|peekReadyVoiceConfirmationAudio|onDraftTitle/);
-  assert.doesNotMatch(route, /req\.body\.(?:matterId|documentId|userId|workspaceId|scope)/);
+  assert.doesNotMatch(route, /db\.addMessage|db\.addVoiceMessage|GEMINI_API_KEY/);
+  assert.doesNotMatch(route, /voice\/confirmation|voice\/lookup/);
 
   const toolHandler = hook.slice(hook.indexOf("const handleServerMessage"), hook.indexOf("const beginAmplitudeUpdates"));
-  assert.match(toolHandler, /call\.name === "use_assistant_capabilities"/);
+  assert.match(toolHandler, /use_assistant_capabilities/);
   assert.match(toolHandler, /voice\/assistant/);
-  assert.match(toolHandler, /voice\/lookup/);
+  assert.doesNotMatch(toolHandler, /voice\/lookup/);
   assert.match(toolHandler, /session\.sendToolResponse/);
   assert.doesNotMatch(toolHandler, /session\.close|live\.connect|releaseResources/);
-  assert.doesNotMatch(hook, /fetch\([^\n]*\/api\/threads\/[^\n]*\/messages[^\n]*\)[\s\S]*use_assistant_capabilities/);
 });
 
-test("full Voice Assistant delegation retains Firm Library discovery, deliverables, and artifact continuity", async () => {
+test("full Voice Assistant delegation retains deliverables and artifact continuity on a fast path", async () => {
   const [server, tools, conversationState] = await Promise.all([
     readFile(new URL("../server.ts", import.meta.url), "utf8"),
     readFile(new URL("../server/assistant/assistantTools.ts", import.meta.url), "utf8"),
@@ -814,9 +733,8 @@ test("full Voice Assistant delegation retains Firm Library discovery, deliverabl
   assert.match(tools, /list_firm_library_documents/);
   assert.match(tools, /get_firm_library_document/);
   assert.match(tools, /search_firm_library_documents/);
-  assert.match(route, /orchestrateAssistantRetrieval/);
-  assert.match(route, /skipWebResearch:\s*true/);
-  assert.doesNotMatch(route, /selectedItem\?\.kind === "libraryDocument"|must be open|already selected/i);
+  assert.match(route, /fallbackAssistantPlan|orchestrateAssistantRetrieval/);
+  assert.match(route, /draft_started/);
   assert.match(route, /completeAssistantResponse/);
   assert.match(route, /completion\.document \? \{ document: completion\.document \}/);
   assert.match(route, /completion\.sourceDocument \? \{ sourceDocument: completion\.sourceDocument \}/);
@@ -831,7 +749,7 @@ test("Voice deliverable metadata is turn-scoped and ownership-validated on final
   ]);
   const validation = server.slice(
     server.indexOf("async function validatedVoiceDocumentReference"),
-    server.indexOf("function voiceLookupCalls")
+    server.indexOf("function emptyVoiceToolRun")
   );
   assert.match(validation, /db\.getDraftById\(id, matterId, requestOwnership\)/);
   assert.match(validation, /db\.getAssistantDocumentById\(id, requestOwnership\)/);
@@ -850,26 +768,15 @@ test("Voice deliverable metadata is turn-scoped and ownership-validated on final
   assert.match(hook, /boundary === "turnComplete" \? pendingCapabilityMetadataRef\.current : null/);
   assert.match(hook, /pendingCapabilityMetadataRef\.current = null/);
   assert.match(hook, /transcript\.role === "assistant" && capabilityMetadata/);
-  assert.match(hook, /turnBoundary === turnBoundaryRef\.current/);
+  assert.match(hook, /stillCurrent|turnBoundary === turnBoundaryRef\.current/);
   assert.match(hook, /turnBoundaryRef\.current \+= 1/);
 });
 
-test("Voice workspace lookup is page-first across authenticated workspace sections", async () => {
+test("Voice Mode removes page-first workspace lookup helpers from the server", async () => {
   const server = await readFile(new URL("../server.ts", import.meta.url), "utf8");
-  const calls = server.slice(server.indexOf("function voiceLookupCalls"), server.indexOf("const PROFESSIONAL_ROLES"));
-  assert.match(calls, /routeKind === "matters"\) add\(\{ name: "list_matters"/);
-  assert.match(calls, /section === "overview"\) add\(\{ name: "get_matter_overview"/);
-  assert.match(calls, /section === "sources"\) add\(\{ name: "list_matter_sources"/);
-  assert.match(calls, /section === "matter intelligence"\) add\(\{ name: "get_matter_intelligence"/);
-  assert.match(calls, /section === "work product"\) add\(\{ name: "list_matter_work_products"/);
-  assert.match(calls, /section === "collaboration"\) add\(\{ name: "get_matter_collaboration_summary"/);
-  assert.match(calls, /routeKind === "library"[\s\S]*list_firm_library_documents/);
-  assert.match(calls, /kind === "source"[\s\S]*get_matter_source[\s\S]*documentId: selected\.id, query/);
-  assert.match(calls, /kind === "workProduct"[\s\S]*get_work_product[\s\S]*workProductId: selected\.id, query/);
-  assert.match(calls, /kind === "libraryDocument"[\s\S]*get_firm_library_document/);
-  assert.match(calls, /kind === "assistantDocument"[\s\S]*get_assistant_document/);
-  assert.ok(calls.indexOf("// An explicitly open item") < calls.indexOf("// The validated current route"));
-  assert.ok(calls.indexOf("// The validated current route") < calls.indexOf("// Query terms may add evidence"));
+  assert.doesNotMatch(server, /function voiceLookupCalls/);
+  assert.match(server, /function emptyVoiceToolRun/);
+  assert.doesNotMatch(server, /voice\/lookup/);
 });
 
 test("selected Work Product lookup keeps bounded query-relevant access beyond its initial context prefix", async () => {

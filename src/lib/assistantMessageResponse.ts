@@ -50,12 +50,14 @@ export function parseAssistantNdjsonBuffer(buffer: string): {
 
 export type VoiceAssistantCapabilityPayload = {
   result?: string;
+  draftContent?: string;
   capabilityMetadata?: Record<string, unknown>;
   error?: string;
 };
 
 export type VoiceAssistantDraftStreamEvent = AssistantDraftStreamEvent & {
   result?: string;
+  draftContent?: string;
   capabilityMetadata?: Record<string, unknown>;
 };
 
@@ -64,6 +66,7 @@ export async function consumeVoiceAssistantCapabilityResponse(
   options: {
     onDraftDelta?: (preview: string) => void;
     onDraftReset?: () => void;
+    onDraftStarted?: () => void;
   } = {}
 ): Promise<VoiceAssistantCapabilityPayload> {
   const contentType = response.headers.get("content-type");
@@ -83,6 +86,10 @@ export async function consumeVoiceAssistantCapabilityResponse(
   let complete: VoiceAssistantCapabilityPayload | null = null;
 
   const applyEvent = (event: VoiceAssistantDraftStreamEvent) => {
+    if (event.type === "draft_started") {
+      options.onDraftStarted?.();
+      return;
+    }
     if (event.type === "draft_reset") {
       preview = "";
       options.onDraftReset?.();
@@ -100,6 +107,7 @@ export async function consumeVoiceAssistantCapabilityResponse(
     if (event.type === "complete") {
       complete = {
         result: event.result,
+        draftContent: event.draftContent || preview,
         capabilityMetadata: event.capabilityMetadata,
       };
     }
