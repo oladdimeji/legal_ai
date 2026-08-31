@@ -1,5 +1,11 @@
 # Compact Upgrade Progress
 
+## Voice defers document capability until the user speaks
+
+- Reopening Voice on a conversation whose history includes a prior document request no longer auto-starts drafting. Live `use_assistant_capabilities` document calls are deferred until the first `inputTranscription` in the current session.
+- `awaitingOpeningTurnRef` now clears only when the user speaks or barge-in occurs, not on a history-only `turnComplete`. Acknowledgement, lookup, typed chat, streaming, save, and post-speech document creation are unchanged.
+- No schema, migration, dependency, authentication, workspace-isolation, or Matter-isolation changes were made.
+
 ## Voice document creation streams draft previews
 
 - `/api/threads/:id/voice/assistant` now streams document drafts over the same NDJSON preview channel as typed chat while generation runs, then returns the saved confirmation and document metadata in a final `complete` event.

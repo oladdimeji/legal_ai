@@ -100,7 +100,12 @@ test("Voice Mode stays silent on open, drops unexpected opening audio, and never
   assert.match(hook, /content\.outputTranscription\?\.text && !awaitingOpeningTurnRef\.current/);
   assert.match(hook, /content\.inputTranscription\?\.text\) \{\s*awaitingOpeningTurnRef\.current = false/);
   assert.match(hook, /content\.interrupted\) \{\s*awaitingOpeningTurnRef\.current = false/);
-  assert.match(hook, /content\.turnComplete\) \{\s*awaitingOpeningTurnRef\.current = false/);
+  assert.doesNotMatch(
+    hook.slice(hook.indexOf("if (content.turnComplete)"), hook.indexOf("  }, [clearWorking", hook.indexOf("if (content.turnComplete)"))),
+    /awaitingOpeningTurnRef\.current = false/
+  );
+  assert.match(hook, /VOICE_AWAIT_USER_SPEECH_TOOL_RESPONSE/);
+  assert.match(hook, /deferDocumentCapability[\s\S]*VOICE_AWAIT_USER_SPEECH_TOOL_RESPONSE/);
 });
 
 test("Voice acknowledgement TTS reuses the configured Voice Agent identity and fixed phrase", () => {

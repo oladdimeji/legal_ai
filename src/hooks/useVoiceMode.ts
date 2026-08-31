@@ -198,6 +198,9 @@ export function initializeLiveHistory(
 export const VOICE_DIRECT_ANSWER_TOOL_RESPONSE =
   "This request does not require document creation or revision. Answer the user directly from your knowledge and any conversation context already available. Do not call any function.";
 
+export const VOICE_AWAIT_USER_SPEECH_TOOL_RESPONSE =
+  "The user has not spoken yet in this Voice session. Remain completely silent and wait for the user to speak first. Do not call use_assistant_capabilities until the user speaks.";
+
 export function shouldUseVoiceAssistantCapability(request: string): boolean {
   return looksLikeVoiceDocumentRequest(request);
 }
@@ -818,7 +821,11 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
             : (typeof call.args?.query === "string" ? call.args.query.trim() : "");
           const turnBoundary = turnBoundaryRef.current;
           const isDocumentCapability = isAssistantCapability && shouldUseVoiceAssistantCapability(request);
-          if (shouldPlayVoiceAcknowledgement(call.name, request, turnBoundary, acknowledgedTurnRef.current)) {
+          const deferDocumentCapability = isDocumentCapability && awaitingOpeningTurnRef.current;
+          if (
+            shouldPlayVoiceAcknowledgement(call.name, request, turnBoundary, acknowledgedTurnRef.current)
+            && !deferDocumentCapability
+          ) {
             acknowledgedTurnRef.current = turnBoundary;
             const acknowledgementAudio = acknowledgementAudioRef.current;
             if (acknowledgementAudio) {
@@ -844,6 +851,16 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
                   id: call.id,
                   name: call.name || "use_assistant_capabilities",
                   response: { output: VOICE_DIRECT_ANSWER_TOOL_RESPONSE },
+                }],
+              });
+              return;
+            }
+            if (deferDocumentCapability) {
+              session.sendToolResponse({
+                functionResponses: [{
+                  id: call.id,
+                  name: call.name || "use_assistant_capabilities",
+                  response: { output: VOICE_AWAIT_USER_SPEECH_TOOL_RESPONSE },
                 }],
               });
               return;
@@ -956,7 +973,6 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     }
     if (content.interrupted) finalizeTranscripts("interrupted");
     if (content.turnComplete) {
-      awaitingOpeningTurnRef.current = false;
       const hasInFlightAssistantCapability = (inFlightAssistantCapabilityTurnsRef.current.get(turnBoundaryRef.current) || 0) > 0;
       const shouldAdvanceTurnBoundary = shouldAdvanceVoiceTurnBoundary(
         "turnComplete",
