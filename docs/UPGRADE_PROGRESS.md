@@ -1,5 +1,11 @@
 # Compact Upgrade Progress
 
+## Voice document order and confirmation playback
+
+- Voice document cards now persist only after the user turn is finalized, or together on `turnComplete` when the deliverable returns first, so the request always appears above the response.
+- Document confirmation audio now plays once per turn with playback cleared first, preventing the doubled "I have... I have created" clip.
+- No schema, migration, dependency, authentication, workspace-isolation, or Matter-isolation changes were made.
+
 ## Voice TTS clips and document finalize gap
 
 - Voice acknowledgement and confirmation TTS now send structured `contents` parts, retry transient Gemini failures, and fall back to `gemini-2.5-flash-preview-tts` when `gemini-3.1-flash-tts-preview` is unavailable.

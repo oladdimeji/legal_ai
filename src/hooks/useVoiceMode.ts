@@ -266,6 +266,13 @@ export function voiceCaptureAwaitingFinalize(input: {
   return input.hasLiveDeliverable || input.pausedCapabilityTurn || input.pendingVoicePersistence;
 }
 
+export function shouldFinalizeVoiceDocumentImmediately(
+  pausedCapabilityTurn: number | null,
+  turnBoundary: number
+): boolean {
+  return pausedCapabilityTurn === turnBoundary;
+}
+
 export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   const [state, setState] = useState<VoiceModeState>("off");
   const [error, setError] = useState("");
@@ -317,6 +324,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   } | null> | null>(null);
   const suppressLiveDocumentSpeechRef = useRef(false);
   const confirmationPlayIdRef = useRef(0);
+  const documentConfirmationTurnRef = useRef<number | null>(null);
   const tokenPrefetchRef = useRef<{
     threadId: string;
     pageContextKey: string;
@@ -460,6 +468,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     revisionConfirmationAudioRef.current = null;
     confirmationRequestRef.current = null;
     suppressLiveDocumentSpeechRef.current = false;
+    documentConfirmationTurnRef.current = null;
     confirmationPlayIdRef.current += 1;
     tokenPrefetchRef.current = null;
     startupAudioBufferRef.current = [];
@@ -702,8 +711,10 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     const pageContext = pageContextRef.current;
     const session = sessionRef.current;
 
-    const playDocumentConfirmation = (metadata: VoiceCapabilityMetadata) => {
-      if (!threadId) return;
+    const playDocumentConfirmation = (metadata: VoiceCapabilityMetadata, turnBoundary: number) => {
+      if (!threadId || documentConfirmationTurnRef.current === turnBoundary) return;
+      documentConfirmationTurnRef.current = turnBoundary;
+      stopPlayback();
       const confirmationId = ++confirmationPlayIdRef.current;
       const confirmationLifecycle = lifecycleRef.current;
       const revised = usesVoiceRevisionConfirmation(metadata);
@@ -759,6 +770,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       }
       if (shouldUseVoiceAssistantCapability(request)) {
         suppressLiveDocumentSpeechRef.current = true;
+        documentConfirmationTurnRef.current = null;
         confirmationPlayIdRef.current += 1;
         stopPlayback();
       }
@@ -820,8 +832,10 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
               liveDeliverableRef.current = deliverable;
               setLiveDeliverable(deliverable);
               suppressLiveDocumentSpeechRef.current = true;
-              playDocumentConfirmation(data.capabilityMetadata as VoiceCapabilityMetadata);
-              finalizePendingVoiceDocument();
+              playDocumentConfirmation(data.capabilityMetadata as VoiceCapabilityMetadata, turnBoundary);
+              if (shouldFinalizeVoiceDocumentImmediately(pausedAssistantCapabilityTurnRef.current, turnBoundary)) {
+                finalizePendingVoiceDocument();
+              }
             } else {
               suppressLiveDocumentSpeechRef.current = false;
             }

@@ -32,6 +32,7 @@ import {
   shouldRouteVoiceAssistantCapability,
   shouldUseVoiceAssistantCapability,
   shouldBeginVoiceDocumentSpeechSuppression,
+  shouldFinalizeVoiceDocumentImmediately,
   shouldAdvanceVoiceTurnBoundary,
   shouldHoldVoiceCapture,
   voiceCaptureAwaitingFinalize,
@@ -147,6 +148,8 @@ test("Voice acknowledgement eligibility is document-capability-only and once per
   assert.equal(shouldRouteVoiceAssistantCapability("What is the limitation period?", ""), false);
   assert.equal(shouldBeginVoiceDocumentSpeechSuppression("Generate the master service agreement."), true);
   assert.equal(shouldBeginVoiceDocumentSpeechSuppression("What matters are open right now?"), false);
+  assert.equal(shouldFinalizeVoiceDocumentImmediately(3, 3), true);
+  assert.equal(shouldFinalizeVoiceDocumentImmediately(3, 4), false);
 });
 
 test("Voice capability metadata waits through contentless completion but remains discarded after interruption", async () => {
@@ -167,7 +170,10 @@ test("Voice capability metadata waits through contentless completion but remains
   assert.match(completion, /shouldAdvanceVoiceTurnBoundary/);
   assert.match(completion, /finalizeTranscripts\("turnComplete", false\)/);
   assert.match(hook, /finalizePendingVoiceDocument/);
+  assert.match(hook, /shouldFinalizeVoiceDocumentImmediately\(pausedAssistantCapabilityTurnRef\.current, turnBoundary\)/);
   assert.match(hook, /pausedAssistantCapabilityTurnRef\.current === turnBoundaryRef\.current[\s\S]*finalizePendingVoiceDocument\(\)/);
+  assert.match(hook, /documentConfirmationTurnRef\.current === turnBoundary/);
+  assert.match(hook, /playDocumentConfirmation\([\s\S]*turnBoundary\)/);
 });
 
 test("a completed turn cannot retire an Assistant capability boundary while its call is still running", async () => {
