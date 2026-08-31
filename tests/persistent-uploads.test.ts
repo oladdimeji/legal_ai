@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import type { Express } from "express";
 import { Readable } from "node:stream";
 import test from "node:test";
 import {
@@ -16,6 +17,7 @@ import {
   MAX_FILE_COUNT,
   MAX_FILE_SIZE_BYTES,
   MAX_TOTAL_EXTRACTED_CHARS,
+  validateUploadFile,
 } from "../server/fileExtraction.js";
 
 function file(name: string, lastModified = 1): File {
@@ -119,6 +121,24 @@ test("server-provided upload errors are preserved without automatic retries", as
   assert.equal(result.successfulFiles.length, 0);
   assert.equal(result.failedFiles[0].file, currentFile);
   assert.equal(result.failedFiles[0].error, "Extracted text exceeds the request limit.");
+});
+
+test("pdf uploads accept application/octet-stream when the extension is .pdf", () => {
+  const buffer = Buffer.from("sample");
+  const upload = {
+    fieldname: "files",
+    originalname: "contract.pdf",
+    encoding: "7bit",
+    mimetype: "application/octet-stream",
+    size: buffer.length,
+    destination: "",
+    filename: "",
+    path: "",
+    buffer,
+    stream: Readable.from(buffer),
+  } satisfies Express.Multer.File;
+
+  assert.equal(validateUploadFile(upload), ".pdf");
 });
 
 test("backend upload safeguards remain unchanged", () => {

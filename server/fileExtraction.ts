@@ -8,8 +8,11 @@ export const MAX_FILE_COUNT = 5;
 export const MAX_TOTAL_EXTRACTED_CHARS = 120_000;
 
 const supported = {
-  ".pdf": ["application/pdf"],
-  ".docx": ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+  ".pdf": ["application/pdf", "application/octet-stream"],
+  ".docx": [
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/octet-stream",
+  ],
   ".txt": ["text/plain", "application/octet-stream"],
 } as const;
 

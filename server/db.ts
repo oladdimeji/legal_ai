@@ -123,6 +123,58 @@ async function prepareDocumentIndex(text: string, documentId: string): Promise<P
   };
 }
 
+async function finalizeDocumentIndex(
+  documentId: string,
+  text: string,
+  firmId: string,
+  query: ChunkQuery
+): Promise<void> {
+  const indexingStartedAt = Date.now();
+  try {
+    const prepared = await prepareDocumentIndex(text, documentId);
+    const insertStartedAt = Date.now();
+    await insertDocumentChunks(documentId, prepared.chunks, query);
+    const indexed = await query(
+      "SELECT COUNT(*)::int AS count FROM document_chunks WHERE document_id = $1",
+      [documentId]
+    );
+    const chunkCount = Number((indexed as Array<{ count: number }>)[0]?.count || 0);
+    await query(
+      "UPDATE documents SET processing_state = $1 WHERE id = $2 AND firm_id = $3",
+      [chunkCount > 0 ? "Ready" : "Needs Attention", documentId, firmId]
+    );
+    console.info("Document indexing completed.", {
+      documentId,
+      characterCount: text.length,
+      chunkCount: prepared.chunkCount,
+      embeddingBatchCount: prepared.batchCount,
+      embeddingDurationMs: prepared.embeddingDurationMs,
+      indexingDurationMs: Date.now() - insertStartedAt,
+      totalIndexingDurationMs: Date.now() - indexingStartedAt,
+      fallbackToSingleCount: prepared.fallbackToSingleCount,
+    });
+  } catch (error) {
+    console.error(`Background document indexing failed for ${documentId}:`, error);
+    try {
+      await query(
+        "UPDATE documents SET processing_state = $1 WHERE id = $2 AND firm_id = $3",
+        ["Needs Attention", documentId, firmId]
+      );
+    } catch (updateError) {
+      console.error(`Failed to mark document ${documentId} as Needs Attention:`, updateError);
+    }
+  }
+}
+
+function scheduleDocumentIndex(
+  documentId: string,
+  text: string,
+  firmId: string,
+  query: ChunkQuery
+): void {
+  void finalizeDocumentIndex(documentId, text, firmId, query);
+}
+
 async function insertDocumentChunks(
   documentId: string,
   chunks: PreparedDocumentChunk[],
@@ -449,7 +501,6 @@ class DatabaseService {
   ): Promise<Document> {
     const docId = `doc_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const uploadedAt = new Date().toISOString();
-    const indexingStartedAt = Date.now();
 
     await this.query(
       `INSERT INTO documents
@@ -459,27 +510,7 @@ class DatabaseService {
       [docId, firmId, caseId, title, sourceUrl, driveId, text, section, uploadedAt, sourceType, origin]
     );
 
-    const prepared = await prepareDocumentIndex(text, docId);
-    const insertStartedAt = Date.now();
-    await insertDocumentChunks(docId, prepared.chunks, (query, params) => this.query(query, params));
-    const indexed = await this.query(
-      "SELECT COUNT(*)::int AS count FROM document_chunks WHERE document_id = $1",
-      [docId]
-    );
-    await this.query(
-      "UPDATE documents SET processing_state = $1 WHERE id = $2 AND firm_id = $3",
-      [Number(indexed[0]?.count || 0) > 0 ? "Ready" : "Needs Attention", docId, firmId]
-    );
-    console.info("Document indexing completed.", {
-      documentId: docId,
-      characterCount: text.length,
-      chunkCount: prepared.chunkCount,
-      embeddingBatchCount: prepared.batchCount,
-      embeddingDurationMs: prepared.embeddingDurationMs,
-      indexingDurationMs: Date.now() - insertStartedAt,
-      totalIndexingDurationMs: Date.now() - indexingStartedAt,
-      fallbackToSingleCount: prepared.fallbackToSingleCount,
-    });
+    scheduleDocumentIndex(docId, text, firmId, (query, params) => this.query(query, params));
 
     return {
       id: docId,
@@ -490,7 +521,8 @@ class DatabaseService {
       drive_id: driveId,
       extracted_text: text,
       section,
-      uploaded_at: uploadedAt
+      uploaded_at: uploadedAt,
+      processing_state: "Processing",
     };
   }
 
@@ -2680,10 +2712,9 @@ class DatabaseService {
     const client = await getPool().connect();
     try {
       await client.query("BEGIN");
-      const uploadedPairs: Array<{ documentId: string; draftId: string }> = [];
+      const uploadedPairs: Array<{ documentId: string; draftId: string; text: string }> = [];
       for (const file of uploadedFiles) {
         const documentId = `doc_${randomUUID()}`;
-        const indexingStartedAt = Date.now();
         await client.query(
           `INSERT INTO documents
             (id, firm_id, case_id, title, source_url, drive_id, extracted_text, section, uploaded_at,
@@ -2692,27 +2723,6 @@ class DatabaseService {
              'Client Submission', 'Client', 'Processing')`,
           [documentId, access.firm_id, access.case_id, file.filename, file.text, now]
         );
-        const prepared = await prepareDocumentIndex(file.text, documentId);
-        const insertStartedAt = Date.now();
-        await insertDocumentChunks(documentId, prepared.chunks, (query, params) => client.query(query, params));
-        const indexed = await client.query(
-          "SELECT COUNT(*)::int AS count FROM document_chunks WHERE document_id = $1",
-          [documentId]
-        );
-        await client.query(
-          "UPDATE documents SET processing_state = $1 WHERE id = $2 AND firm_id = $3",
-          [Number(indexed.rows[0]?.count || 0) > 0 ? "Ready" : "Needs Attention", documentId, access.firm_id]
-        );
-        console.info("Portal response document indexing completed.", {
-          documentId,
-          characterCount: file.text.length,
-          chunkCount: prepared.chunkCount,
-          embeddingBatchCount: prepared.batchCount,
-          embeddingDurationMs: prepared.embeddingDurationMs,
-          indexingDurationMs: Date.now() - insertStartedAt,
-          totalIndexingDurationMs: Date.now() - indexingStartedAt,
-          fallbackToSingleCount: prepared.fallbackToSingleCount,
-        });
 
         const draftId = `draft_${randomUUID()}`;
         await client.query(
@@ -2721,7 +2731,7 @@ class DatabaseService {
            VALUES($1, NULL, $2, $3, $4, $5, $5, 'Client Response Upload', 'Client Response')`,
           [draftId, access.case_id, `Client Response — ${file.filename}`, file.text, now]
         );
-        uploadedPairs.push({ documentId, draftId });
+        uploadedPairs.push({ documentId, draftId, text: file.text });
       }
 
       const rows = await client.query(
@@ -2757,6 +2767,14 @@ class DatabaseService {
         [now, requestId, access.case_id]
       );
       await client.query("COMMIT");
+      for (const pair of uploadedPairs) {
+        scheduleDocumentIndex(
+          pair.documentId,
+          pair.text,
+          access.firm_id,
+          (query, params) => this.query(query, params)
+        );
+      }
       return { ...rows.rows[0], attachments: await this.getResponseAttachments(id) };
     } catch (error) {
       await client.query("ROLLBACK");
@@ -2888,34 +2906,11 @@ class DatabaseService {
     origin = "Lawyer"
   ): Promise<Document> {
     if (caseId) await this.assertMatterAccess(caseId, context);
-    let suggestedSection = "General Legal Advice";
-    try {
-      const docEmbedding = await callModel("embedding", [], { textToEmbed: text.substring(0, 500) }) as number[];
-      const vectorStr = `[${docEmbedding.join(",")}]`;
-
-      const rows = await this.query(
-        `SELECT d.section, AVG(1 - (dc.embedding <=> $1::vector)) as avg_sim
-         FROM document_chunks dc
-         JOIN documents d ON dc.document_id = d.id
-         WHERE d.firm_id = $2 AND d.case_id IS NULL
-           AND d.is_generated_draft_duplicate = FALSE
-         GROUP BY d.section
-         ORDER BY avg_sim DESC
-         LIMIT 1`,
-        [vectorStr, context.firmId]
-      );
-
-      if (rows.length > 0 && rows[0].avg_sim > 0.3) {
-        suggestedSection = rows[0].section;
-      }
-    } catch (e) {
-      console.error("Error suggesting section for document:", e);
-    }
 
     return await this.addDocumentInternal(
       title,
       text,
-      suggestedSection,
+      "General Legal Advice",
       sourceUrl,
       driveId,
       caseId,

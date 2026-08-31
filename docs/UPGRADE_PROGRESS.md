@@ -1,5 +1,12 @@
 # Compact Upgrade Progress
 
+## Fast uploads with deferred indexing and PDF MIME fix
+
+- Persistent uploads (Firm Library, Matter Sources, portal) now return immediately after text extraction and database insert; Gemini embedding and chunk indexing run in the background while `processing_state` stays `Processing` until complete.
+- Upload-time section suggestion embedding was removed; new Firm Library documents default to `General Legal Advice` instead of blocking on a vector similarity query.
+- PDF and DOCX uploads now accept `application/octet-stream` when the file extension matches, fixing common Windows/browser MIME mismatches that previously rejected valid PDFs.
+- Voice mode, authentication, workspace isolation, and Matter isolation were not changed.
+
 ## Voice document order and confirmation playback
 
 - Voice document cards now persist only after the user turn is finalized, or together on `turnComplete` when the deliverable returns first, so the request always appears above the response.
