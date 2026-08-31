@@ -48,6 +48,85 @@ export function parseAssistantNdjsonBuffer(buffer: string): {
   return { events, rest };
 }
 
+export type VoiceAssistantCapabilityPayload = {
+  result?: string;
+  capabilityMetadata?: Record<string, unknown>;
+  error?: string;
+};
+
+export type VoiceAssistantDraftStreamEvent = AssistantDraftStreamEvent & {
+  result?: string;
+  capabilityMetadata?: Record<string, unknown>;
+};
+
+export async function consumeVoiceAssistantCapabilityResponse(
+  response: Response,
+  options: {
+    onDraftDelta?: (preview: string) => void;
+    onDraftReset?: () => void;
+  } = {}
+): Promise<VoiceAssistantCapabilityPayload> {
+  const contentType = response.headers.get("content-type");
+  if (!isAssistantNdjsonResponse(contentType)) {
+    const data = await response.json().catch(() => ({})) as VoiceAssistantCapabilityPayload & { error?: string };
+    if (!response.ok) {
+      return { error: data.error || "The Assistant capability request failed." };
+    }
+    return data;
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) return { error: "The Assistant capability request failed." };
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let preview = "";
+  let complete: VoiceAssistantCapabilityPayload | null = null;
+
+  const applyEvent = (event: VoiceAssistantDraftStreamEvent) => {
+    if (event.type === "draft_reset") {
+      preview = "";
+      options.onDraftReset?.();
+      return;
+    }
+    if (event.type === "draft_delta") {
+      preview = applyAssistantDraftPreview(preview, event);
+      options.onDraftDelta?.(preview);
+      return;
+    }
+    if (event.type === "error") {
+      complete = { error: event.error || "The Assistant capability request failed." };
+      return;
+    }
+    if (event.type === "complete") {
+      complete = {
+        result: event.result,
+        capabilityMetadata: event.capabilityMetadata,
+      };
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      buffer += decoder.decode();
+      const { events } = parseAssistantNdjsonBuffer(`${buffer}\n`);
+      for (const event of events) applyEvent(event as VoiceAssistantDraftStreamEvent);
+      break;
+    }
+    buffer += decoder.decode(value, { stream: true });
+    const parsed = parseAssistantNdjsonBuffer(buffer);
+    buffer = parsed.rest;
+    for (const event of parsed.events) applyEvent(event as VoiceAssistantDraftStreamEvent);
+  }
+
+  if (complete?.error) return complete;
+  if (!response.ok) {
+    return { error: complete?.error || "The Assistant capability request failed." };
+  }
+  if (complete?.result !== undefined || complete?.capabilityMetadata) return complete;
+  return { error: "The Assistant capability request failed." };
+}
+
 export async function consumeAssistantTurnResponse(
   response: Response,
   options: {

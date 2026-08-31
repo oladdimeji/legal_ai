@@ -184,6 +184,8 @@ test("spoken document instructions start the Assistant draft path without waitin
   assert.match(toolHandler, /looksLikeVoiceDocumentRequest\(userTranscript\)/);
   assert.match(toolHandler, /voiceAssistantInstruction\(/);
   assert.match(toolHandler, /assistantCapabilityPromisesRef\.current\.get\(turnBoundary\)/);
+  assert.match(toolHandler, /consumeVoiceAssistantCapabilityResponse/);
+  assert.match(toolHandler, /onDraftDelta/);
   assert.match(toolHandler, /setLiveDeliverable\(deliverable\)/);
   assert.match(toolHandler, /inlineData\.mimeType\?\.startsWith\("audio\/"\)[\s\S]*maybeStartVoiceDocumentCapability\(\)/);
   assert.match(toolHandler, /outputTranscription\?\.text && !awaitingOpeningTurnRef\.current[\s\S]*maybeStartVoiceDocumentCapability\(\)/);
@@ -306,9 +308,8 @@ test("Voice document completion keeps one card result and speaks a cached confir
     toolHandler.indexOf("session.sendToolResponse")
   );
   assert.match(assistantFetch, /setLiveDeliverable\(deliverable\)/);
-  assert.match(assistantFetch, /playDocumentConfirmation\(data\.capabilityMetadata\)/);
-  assert.ok(assistantFetch.indexOf("setLiveDeliverable(deliverable)") < assistantFetch.indexOf("playDocumentConfirmation"));
-  assert.ok(assistantFetch.indexOf("playDocumentConfirmation") < assistantFetch.indexOf("return {"));
+  assert.match(assistantFetch, /playDocumentConfirmation\(/);
+  assert.match(assistantFetch, /if \(data\.capabilityMetadata\?\.document\) \{[\s\S]*setLiveDeliverable\(deliverable\)[\s\S]*playDocumentConfirmation\(/);
   assert.match(toolHandler, /usesVoiceRevisionConfirmation\(metadata\)/);
   assert.match(toolHandler, /prefetchConfirmation/);
   assert.match(hook, /const prefetchConfirmation/);

@@ -19,6 +19,7 @@ import {
   VOICE_CAPTURE_TARGET_RATE,
   VOICE_CAPTURE_WORKLET_SOURCE,
 } from "../lib/voiceCaptureWorklet";
+import { consumeVoiceAssistantCapabilityResponse } from "../lib/assistantMessageResponse";
 import {
   VOICE_PLAYBACK_DRAIN_SECONDS,
   VOICE_PLAYBACK_PREBUFFER_SECONDS,
@@ -724,28 +725,57 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ request, pageContext }),
           });
-          const data = await response.json().catch(() => ({})) as {
-            result?: string;
-            capabilityMetadata?: VoiceCapabilityMetadata;
-            error?: string;
-          };
+          const data = await consumeVoiceAssistantCapabilityResponse(response, {
+            onDraftReset: () => {
+              if (turnBoundary !== turnBoundaryRef.current) return;
+              const metadata = liveDeliverableRef.current?.metadata || {
+                assistantIntent: "document_creation",
+                deliverableKind: "document",
+              };
+              liveDeliverableRef.current = { content: "", metadata };
+              setLiveDeliverable({ content: "", metadata });
+            },
+            onDraftDelta: (preview) => {
+              if (turnBoundary !== turnBoundaryRef.current) return;
+              const metadata = liveDeliverableRef.current?.metadata || {
+                assistantIntent: "document_creation",
+                deliverableKind: "document",
+              };
+              const deliverable = { content: preview, metadata };
+              liveDeliverableRef.current = deliverable;
+              setLiveDeliverable(deliverable);
+            },
+          });
+          if (data.error) {
+            if (turnBoundary === turnBoundaryRef.current) {
+              pendingCapabilityMetadataRef.current = null;
+              liveDeliverableRef.current = null;
+              setLiveDeliverable(null);
+            }
+            return {
+              ok: false,
+              result: "",
+              capabilityMetadata: null,
+              error: data.error,
+            };
+          }
           if (response.ok && turnBoundary === turnBoundaryRef.current) {
-            pendingCapabilityMetadataRef.current = data.capabilityMetadata || null;
+            pendingCapabilityMetadataRef.current = (data.capabilityMetadata || null) as VoiceCapabilityMetadata | null;
             if (data.capabilityMetadata?.document) {
               const deliverable = {
-                content: data.result || "",
-                metadata: data.capabilityMetadata,
+                content: data.result || liveDeliverableRef.current?.content || "",
+                metadata: data.capabilityMetadata as VoiceCapabilityMetadata,
               };
               liveDeliverableRef.current = deliverable;
               setLiveDeliverable(deliverable);
               suppressLiveDocumentSpeechRef.current = true;
-              playDocumentConfirmation(data.capabilityMetadata);
+              playDocumentConfirmation(data.capabilityMetadata as VoiceCapabilityMetadata);
             }
           }
           return {
             ok: response.ok,
             result: data.result || "",
-            capabilityMetadata: data.capabilityMetadata || null,
+            capabilityMetadata: (data.capabilityMetadata || null) as VoiceCapabilityMetadata | null,
             error: data.error,
           };
         } catch {

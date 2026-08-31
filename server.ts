@@ -3164,6 +3164,15 @@ ${sourceText}`;
         // Voice speaks the answer and never renders follow-up pills, so the
         // suggestion model call would only add latency to a spoken reply.
         generateSuggestions: async () => [],
+        onDraftChunk: assistantPlan.deliverable.kind === "message"
+          ? undefined
+          : (event) => {
+            if (event.reset) {
+              writeAssistantDraftNdjson(res, { type: "draft_reset" });
+              return;
+            }
+            if (event.text) writeAssistantDraftNdjson(res, { type: "draft_delta", text: event.text });
+          },
       });
       if (completion.clarificationQuestion) {
         return res.json({
@@ -3174,20 +3183,35 @@ ${sourceText}`;
           },
         });
       }
-      return res.json({
+      const capabilityMetadata = {
+        assistantIntent: assistantPlan.intent,
+        deliverableKind: assistantPlan.deliverable.kind,
+        ...(completion.document ? { document: completion.document } : {}),
+        ...(completion.sourceDocument ? { sourceDocument: completion.sourceDocument } : {}),
+      };
+      const payload = {
         result: completion.content,
-        capabilityMetadata: {
-          assistantIntent: assistantPlan.intent,
-          deliverableKind: assistantPlan.deliverable.kind,
-          ...(completion.document ? { document: completion.document } : {}),
-          ...(completion.sourceDocument ? { sourceDocument: completion.sourceDocument } : {}),
-        },
-      });
+        capabilityMetadata,
+      };
+      if (res.headersSent) {
+        writeAssistantDraftNdjson(res, { type: "complete", ...payload });
+        res.end();
+        return;
+      }
+      return res.json(payload);
     } catch (error) {
       if (error instanceof VoicePageContextError) {
         return res.status(error.status).json({ error: error.message });
       }
       console.error("Voice Assistant capability request failed.", error);
+      if (res.headersSent) {
+        writeAssistantDraftNdjson(res, {
+          type: "error",
+          error: error instanceof Error ? error.message : "The Assistant capability request failed.",
+        });
+        res.end();
+        return;
+      }
       return res.status(500).json({ error: "The Assistant capability request failed." });
     }
   });

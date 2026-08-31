@@ -1,5 +1,11 @@
 # Compact Upgrade Progress
 
+## Voice document creation streams draft previews
+
+- `/api/threads/:id/voice/assistant` now streams document drafts over the same NDJSON preview channel as typed chat while generation runs, then returns the saved confirmation and document metadata in a final `complete` event.
+- `useVoiceMode` consumes those preview chunks into `liveDeliverable` during Voice document work. Save, confirmation speech, transcript persistence, typed chat streaming, and non-document Voice replies are unchanged.
+- No schema, migration, dependency, authentication, workspace-isolation, or Matter-isolation changes were made.
+
 ## Document create skips pre-draft clarification
 
 - Document create deliverables now clear planner `needsClarification` during reconciliation and bypass both planner and tool clarification gates before drafting begins.

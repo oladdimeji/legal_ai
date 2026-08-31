@@ -97,21 +97,54 @@ test("document streaming uses the same save path and only forwards display chunk
 });
 
 test("document draft streaming leaves the saved Assistant turn and Work Product path unchanged", async () => {
-  const [server, assistant, deliverables] = await Promise.all([
+  const [server, assistant, deliverables, hook] = await Promise.all([
     readFile("server.ts", "utf8"),
     readFile("src/components/AssistantView.tsx", "utf8"),
     readFile("server/assistant/assistantDeliverables.ts", "utf8"),
+    readFile("src/hooks/useVoiceMode.ts", "utf8"),
   ]);
   const route = server.slice(
     server.indexOf('app.post("/api/threads/:id/messages"'),
     server.indexOf('// PUT route for updating a message')
   );
+  const voiceRoute = server.slice(
+    server.indexOf('app.post("/api/threads/:id/voice/assistant"'),
+    server.indexOf('app.post("/api/threads/:id/voice/messages"')
+  );
   assert.match(route, /writeAssistantDraftNdjson\(res, \{ type: "draft_delta"/);
   assert.match(route, /writeAssistantDraftNdjson\(res, \{ type: "complete"/);
+  assert.match(voiceRoute, /writeAssistantDraftNdjson\(res, \{ type: "draft_delta"/);
+  assert.match(voiceRoute, /writeAssistantDraftNdjson\(res, \{ type: "complete"/);
   assert.match(route, /completeAssistantResponse/);
+  assert.match(voiceRoute, /completeAssistantResponse/);
   assert.match(route, /publicAssistantMessage\(assistantMessage\)/);
   assert.match(deliverables, /cleanGeneratedWorkProductContent\(result\.text\)/);
   assert.match(assistant, /setDraftStream\(null\)/);
   assert.match(assistant, /streamedResponse \? savedAssistantMessage\.content : ""/);
+  assert.match(hook, /consumeVoiceAssistantCapabilityResponse/);
+  assert.match(hook, /onDraftDelta/);
   assert.doesNotMatch(assistant, /db\.createDraft|createAssistantDocument/);
+});
+
+test("voice capability responses stream draft previews and finish with the saved deliverable payload", async () => {
+  const { consumeVoiceAssistantCapabilityResponse } = await import("../src/lib/assistantMessageResponse.js");
+  const deltas: string[] = [];
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('{"type":"draft_delta","text":"# Memo\\n\\n"}\n'));
+      controller.enqueue(new TextEncoder().encode('{"type":"draft_delta","text":"Body."}\n'));
+      controller.enqueue(new TextEncoder().encode('{"type":"complete","result":"I have created the **Memo**.","capabilityMetadata":{"document":{"id":"doc_1","kind":"assistantDocument","title":"Memo"}}}\n'));
+      controller.close();
+    },
+  });
+  const response = new Response(body, {
+    status: 201,
+    headers: { "Content-Type": "application/x-ndjson; charset=utf-8" },
+  });
+  const data = await consumeVoiceAssistantCapabilityResponse(response, {
+    onDraftDelta: (preview) => deltas.push(preview),
+  });
+  assert.deepEqual(deltas, ["# Memo\n\n", "# Memo\n\nBody."]);
+  assert.equal(data.result, "I have created the **Memo**.");
+  assert.deepEqual(data.capabilityMetadata?.document, { id: "doc_1", kind: "assistantDocument", title: "Memo" });
 });
