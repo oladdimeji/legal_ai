@@ -8,6 +8,7 @@ import {
   VOICE_MODE_CONFIG,
   VOICE_MODE_DOCUMENT_CONFIRMATION,
   VOICE_MODE_REVISION_CONFIRMATION,
+  VOICE_MODE_TTS_FALLBACK_MODEL,
   boundedVoiceHistory,
   liveConnectConfig,
   resolveFirmLibraryTitle,
@@ -33,6 +34,7 @@ import {
   shouldBeginVoiceDocumentSpeechSuppression,
   shouldAdvanceVoiceTurnBoundary,
   shouldHoldVoiceCapture,
+  voiceCaptureAwaitingFinalize,
   usesVoiceRevisionConfirmation,
   voiceAssistantInstruction,
   voicePrefetchStillValid,
@@ -114,7 +116,9 @@ test("Voice acknowledgement TTS reuses the configured Voice Agent identity and f
   const request = voiceAcknowledgementRequest();
   assert.equal(VOICE_MODE_ACKNOWLEDGEMENT.text, "Absolutely — give me a moment, I’m working on that now.");
   assert.equal(request.model, "gemini-3.1-flash-tts-preview");
+  assert.equal(VOICE_MODE_TTS_FALLBACK_MODEL, "gemini-2.5-flash-preview-tts");
   assert.deepEqual(request.config.responseModalities, ["AUDIO"]);
+  assert.match(JSON.stringify(voiceAcknowledgementRequest()), /"parts":\[\{"text":/);
   assert.equal(
     request.config.speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName,
     VOICE_MODE_CONFIG.voiceName
@@ -162,7 +166,8 @@ test("Voice capability metadata waits through contentless completion but remains
   assert.match(completion, /inFlightAssistantCapabilityTurnsRef/);
   assert.match(completion, /shouldAdvanceVoiceTurnBoundary/);
   assert.match(completion, /finalizeTranscripts\("turnComplete", false\)/);
-  assert.match(hook, /pausedAssistantCapabilityTurnRef\.current === turnBoundaryRef\.current[\s\S]*pendingCapabilityMetadataRef\.current = null[\s\S]*turnBoundaryRef\.current \+= 1/);
+  assert.match(hook, /finalizePendingVoiceDocument/);
+  assert.match(hook, /pausedAssistantCapabilityTurnRef\.current === turnBoundaryRef\.current[\s\S]*finalizePendingVoiceDocument\(\)/);
 });
 
 test("a completed turn cannot retire an Assistant capability boundary while its call is still running", async () => {
@@ -228,6 +233,7 @@ test("Voice acknowledgement is cached, isolated, fail-open, prefetched, and clea
   assert.doesNotMatch(route, /db\.addMessage|db\.addVoiceMessage|voice\/messages/);
   assert.match(voiceMode, /voiceAcknowledgementAudioCache = new Map/);
   assert.match(voiceMode, /runWithTransientModelRetries/);
+  assert.match(voiceMode, /VOICE_MODE_TTS_FALLBACK_MODEL/);
   assert.match(voiceMode, /getVoiceAcknowledgementAudioFor/);
   assert.equal((voiceMode.match(/models\.generateContent/g) ?? []).length, 1);
 
@@ -547,10 +553,26 @@ test("Voice holds microphone capture while speaking or working and still stops p
   assert.equal(shouldHoldVoiceCapture("listening", false), false);
   assert.equal(shouldHoldVoiceCapture("connecting", false), false);
   assert.equal(shouldHoldVoiceCapture("off", false), false);
+  assert.equal(shouldHoldVoiceCapture("listening", false, true), true);
+  assert.equal(voiceCaptureAwaitingFinalize({
+    hasLiveDeliverable: true,
+    pausedCapabilityTurn: false,
+    pendingVoicePersistence: false,
+  }), true);
+  assert.equal(voiceCaptureAwaitingFinalize({
+    hasLiveDeliverable: false,
+    pausedCapabilityTurn: true,
+    pendingVoicePersistence: false,
+  }), true);
+  assert.equal(voiceCaptureAwaitingFinalize({
+    hasLiveDeliverable: false,
+    pausedCapabilityTurn: false,
+    pendingVoicePersistence: true,
+  }), true);
 
   const hook = await readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8");
   const send = hook.slice(hook.indexOf("const sendOrBufferCapture"), hook.indexOf("if (capture.kind === \"worklet\")"));
-  assert.match(send, /shouldHoldVoiceCapture\(stateRef\.current, workingCallIdsRef\.current\.size > 0\)/);
+  assert.match(send, /shouldHoldVoiceCapture\([\s\S]*workingCallIdsRef\.current\.size > 0[\s\S]*voiceCaptureAwaitingFinalize/);
   assert.ok(send.indexOf("shouldHoldVoiceCapture") < send.indexOf("sendRealtimeInput"));
   assert.ok(send.indexOf("if (shouldHoldVoiceCapture") < send.indexOf("sendRealtimeInput"));
   assert.ok(send.indexOf("return;") < send.indexOf("sendRealtimeInput"));

@@ -252,9 +252,18 @@ export function usesVoiceRevisionConfirmation(metadata: {
 
 export function shouldHoldVoiceCapture(
   state: VoiceModeState,
-  hasInFlightWork: boolean
+  hasInFlightWork: boolean,
+  awaitingVoiceFinalize = false
 ): boolean {
-  return state === "speaking" || hasInFlightWork;
+  return state === "speaking" || hasInFlightWork || awaitingVoiceFinalize;
+}
+
+export function voiceCaptureAwaitingFinalize(input: {
+  hasLiveDeliverable: boolean;
+  pausedCapabilityTurn: boolean;
+  pendingVoicePersistence: boolean;
+}): boolean {
+  return input.hasLiveDeliverable || input.pausedCapabilityTurn || input.pendingVoicePersistence;
 }
 
 export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
@@ -290,6 +299,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   const pageContextRef = useRef<WorkspacePageContext | null>(null);
   const eventSequenceRef = useRef({ user: 0, assistant: 0 });
   const persistQueueRef = useRef(Promise.resolve());
+  const voicePersistencePendingRef = useRef(0);
   const pendingCapabilityMetadataRef = useRef<VoiceCapabilityMetadata | null>(null);
   const workingCallIdsRef = useRef(new Set<string>());
   const inFlightAssistantCapabilityTurnsRef = useRef(new Map<number, number>());
@@ -495,7 +505,10 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     }).catch((persistenceError) => {
       console.error("Voice transcript persistence failed.");
       setError(persistenceError instanceof Error ? persistenceError.message : "This Voice Mode transcript could not be saved.");
+    }).finally(() => {
+      voicePersistencePendingRef.current = Math.max(0, voicePersistencePendingRef.current - 1);
     });
+    voicePersistencePendingRef.current += 1;
   }, []);
 
   const finalizeTranscripts = useCallback((
@@ -532,6 +545,22 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
         transcript.role === "assistant" && capabilityMetadata ? capabilityMetadata : undefined
       );
     }
+  }, [cancelTranscriptFlush, persistFinalTranscript]);
+
+  const finalizePendingVoiceDocument = useCallback(() => {
+    const capabilityMetadata = pendingCapabilityMetadataRef.current;
+    const documentContent = liveDeliverableRef.current?.content?.trim();
+    if (!capabilityMetadata?.document || !documentContent) return false;
+
+    cancelTranscriptFlush();
+    persistFinalTranscript("assistant", documentContent, capabilityMetadata);
+    transcriptRef.current = { ...transcriptRef.current, assistant: "" };
+    setLiveTranscripts((current) => ({ ...current, assistant: "" }));
+    pendingCapabilityMetadataRef.current = null;
+    pausedAssistantCapabilityTurnRef.current = null;
+    assistantCapabilityPromisesRef.current.delete(turnBoundaryRef.current);
+    turnBoundaryRef.current += 1;
+    return true;
   }, [cancelTranscriptFlush, persistFinalTranscript]);
 
   const scheduleAudio = useCallback((data: string, mimeType?: string) => {
@@ -792,6 +821,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
               setLiveDeliverable(deliverable);
               suppressLiveDocumentSpeechRef.current = true;
               playDocumentConfirmation(data.capabilityMetadata as VoiceCapabilityMetadata);
+              finalizePendingVoiceDocument();
             } else {
               suppressLiveDocumentSpeechRef.current = false;
             }
@@ -987,9 +1017,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
         confirmationPlayIdRef.current += 1;
       }
       if (pausedAssistantCapabilityTurnRef.current === turnBoundaryRef.current) {
-        pendingCapabilityMetadataRef.current = null;
-        pausedAssistantCapabilityTurnRef.current = null;
-        turnBoundaryRef.current += 1;
+        finalizePendingVoiceDocument();
       }
       scheduleTranscriptFlush();
     }
@@ -1020,7 +1048,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
         finalizeTranscripts("turnComplete", false);
       }
     }
-  }, [clearWorking, finalizeTranscripts, prefetchAcknowledgement, prefetchConfirmation, scheduleAudio, scheduleTranscriptFlush, stopPlayback, updateState]);
+  }, [clearWorking, finalizePendingVoiceDocument, finalizeTranscripts, prefetchAcknowledgement, prefetchConfirmation, scheduleAudio, scheduleTranscriptFlush, stopPlayback, updateState]);
 
   const beginAmplitudeUpdates = useCallback(() => {
     const microphoneData = new Uint8Array(256);
@@ -1148,7 +1176,15 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
         if (captureLiveRef.current && liveSession) {
           // Drop capture instead of buffering it: flushing held speech after
           // playback would replay the barge-in as the next user turn.
-          if (shouldHoldVoiceCapture(stateRef.current, workingCallIdsRef.current.size > 0)) return;
+          if (shouldHoldVoiceCapture(
+            stateRef.current,
+            workingCallIdsRef.current.size > 0,
+            voiceCaptureAwaitingFinalize({
+              hasLiveDeliverable: liveDeliverableRef.current !== null,
+              pausedCapabilityTurn: pausedAssistantCapabilityTurnRef.current !== null,
+              pendingVoicePersistence: voicePersistencePendingRef.current > 0,
+            })
+          )) return;
           liveSession.sendRealtimeInput({
             audio: { data, mimeType: "audio/pcm;rate=16000" },
           });

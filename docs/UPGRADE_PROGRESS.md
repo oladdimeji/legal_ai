@@ -1,5 +1,11 @@
 # Compact Upgrade Progress
 
+## Voice TTS clips and document finalize gap
+
+- Voice acknowledgement and confirmation TTS now send structured `contents` parts, retry transient Gemini failures, and fall back to `gemini-2.5-flash-preview-tts` when `gemini-3.1-flash-tts-preview` is unavailable.
+- Completed Voice document turns now persist the assistant card as soon as the deliverable returns, and the microphone stays held until the live card and voice persistence queue finish so accidental speech cannot overwrite the response.
+- No schema, migration, dependency, authentication, workspace-isolation, or Matter-isolation changes were made.
+
 ## Voice suppresses Live speech during document drafting
 
 - Document requests now mute Gemini Live audio as soon as the user transcript matches a draft/create/revise phrase, stopping preamble speech before the acknowledgement clip and draft card appear.

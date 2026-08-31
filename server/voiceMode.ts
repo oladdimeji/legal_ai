@@ -17,6 +17,8 @@ export const VOICE_MODE_CONFIG = {
   historyCharacterLimit: 6000,
 } as const;
 
+export const VOICE_MODE_TTS_FALLBACK_MODEL = "gemini-2.5-flash-preview-tts" as const;
+
 export const VOICE_MODE_ACKNOWLEDGEMENT = {
   text: "Absolutely — give me a moment, I’m working on that now.",
   model: "gemini-3.1-flash-tts-preview",
@@ -61,7 +63,7 @@ export function voiceDocumentConfirmationSpeech(content: string): string | null 
 function voiceAcknowledgementRequestFor(acknowledgement: VoiceAcknowledgement) {
   return {
     model: acknowledgement.model,
-    contents: acknowledgement.text,
+    contents: [{ role: "user", parts: [{ text: acknowledgement.text }] }],
     config: {
       responseModalities: [Modality.AUDIO],
       speechConfig: {
@@ -75,13 +77,13 @@ export function voiceAcknowledgementRequest() {
   return voiceAcknowledgementRequestFor(VOICE_MODE_ACKNOWLEDGEMENT);
 }
 
-async function generateVoiceSpeechAudio(text: string): Promise<VoiceAcknowledgementAudio> {
+async function generateVoiceSpeechAudioWithModel(
+  text: string,
+  model: string
+): Promise<VoiceAcknowledgementAudio> {
   return runWithTransientModelRetries(async () => {
     const response = await getAiClient().models.generateContent(
-      voiceAcknowledgementRequestFor({
-        text,
-        model: VOICE_MODE_ACKNOWLEDGEMENT.model,
-      })
+      voiceAcknowledgementRequestFor({ text, model })
     );
     const inlineData = response.candidates?.[0]?.content?.parts?.find((part) => part.inlineData?.data)?.inlineData;
     if (!inlineData?.data) throw new Error("Gemini did not return Voice speech audio.");
@@ -93,12 +95,26 @@ async function generateVoiceSpeechAudio(text: string): Promise<VoiceAcknowledgem
     onRetry: (details) => {
       const status = details.statusCode ? ` status=${details.statusCode}` : "";
       console.warn(
-        `[voiceSpeech] Transient Gemini failure for ${VOICE_MODE_ACKNOWLEDGEMENT.model}. ` +
-        `Retry ${details.retryNumber} of ${details.maxAttempts - 1} in ${details.delayMs}ms.` +
+        `[voiceSpeech] Transient Gemini failure for ${model}. ` +
+        `Retry ${details.retryNumber} of ${details.maxAttempts - 1} in ${details.delayMs}ms. ` +
         `kind=${details.kind}${status}`
       );
     },
   });
+}
+
+async function generateVoiceSpeechAudio(text: string): Promise<VoiceAcknowledgementAudio> {
+  const models = [VOICE_MODE_ACKNOWLEDGEMENT.model, VOICE_MODE_TTS_FALLBACK_MODEL];
+  let lastError: unknown;
+  for (const model of models) {
+    try {
+      return await generateVoiceSpeechAudioWithModel(text, model);
+    } catch (error) {
+      lastError = error;
+      console.error(`Voice speech generation failed for ${model}.`, safeGeminiErrorDetails(error));
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("Voice speech audio is unavailable.");
 }
 
 async function getVoiceAcknowledgementAudioFor(
