@@ -227,6 +227,10 @@ export function shouldBeginVoiceDocumentTranscriptSuppression(userTranscript: st
 
 export const shouldBeginVoiceDocumentSpeechSuppression = shouldBeginVoiceDocumentTranscriptSuppression;
 
+export function shouldStartVoiceDocumentDraft(userTranscript: string): boolean {
+  return looksLikeVoiceDocumentRequest(userTranscript);
+}
+
 export function shouldPlayVoiceAcknowledgement(
   functionName: string | undefined,
   request: string,
@@ -571,6 +575,14 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     if (!capabilityMetadata?.document || !documentContent) return false;
 
     cancelTranscriptFlush();
+    const pendingUser = transcriptRef.current.user.trim();
+    if (pendingUser) {
+      persistFinalTranscript("user", pendingUser);
+      transcriptRef.current = { ...transcriptRef.current, user: "" };
+      setLiveTranscripts((current) => (current.user.trim() === pendingUser
+        ? { ...current, user: "" }
+        : current));
+    }
     persistFinalTranscript("assistant", documentContent, capabilityMetadata);
     transcriptRef.current = { ...transcriptRef.current, assistant: "" };
     setLiveTranscripts((current) => ({ ...current, assistant: "" }));
@@ -757,6 +769,13 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       return promise;
     };
 
+    const maybeStartVoiceDocumentDraft = () => {
+      if (awaitingOpeningTurnRef.current) return;
+      const userTranscript = transcriptRef.current.user.trim();
+      if (!shouldStartVoiceDocumentDraft(userTranscript)) return;
+      void ensureAssistantCapability(userTranscript, turnBoundaryRef.current);
+    };
+
     if (message.toolCall?.functionCalls?.length) {
       if (threadId && pageContext && session) {
         void Promise.all(message.toolCall.functionCalls.map(async (call) => {
@@ -836,6 +855,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       const userTranscript = transcriptRef.current.user.trim();
       if (shouldBeginVoiceDocumentTranscriptSuppression(userTranscript)) {
         suppressDocumentTranscriptRef.current = true;
+        maybeStartVoiceDocumentDraft();
       } else if (
         suppressDocumentTranscriptRef.current
         && !(inFlightAssistantCapabilityTurnsRef.current.get(turnBoundaryRef.current) || 0)
@@ -860,6 +880,11 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     }
     if (content.interrupted) finalizeTranscripts("interrupted");
     if (content.turnComplete) {
+      const turnBoundary = turnBoundaryRef.current;
+      const userTranscript = transcriptRef.current.user.trim();
+      if (shouldStartVoiceDocumentDraft(userTranscript) && !assistantCapabilityPromisesRef.current.has(turnBoundary)) {
+        maybeStartVoiceDocumentDraft();
+      }
       const hasInFlightAssistantCapability = (inFlightAssistantCapabilityTurnsRef.current.get(turnBoundaryRef.current) || 0) > 0;
       const shouldAdvanceTurnBoundary = shouldAdvanceVoiceTurnBoundary(
         "turnComplete",

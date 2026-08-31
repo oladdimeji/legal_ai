@@ -2177,7 +2177,13 @@ Status: Implementation complete; focused-phase verification recorded below.
 - Changed files: `server/voiceMode.ts`, `server.ts`, `src/hooks/useVoiceMode.ts`, `src/lib/assistantMessageResponse.ts`, `tests/assistant-voice-mode.test.ts`.
 - Verification: `npm run lint` passed, 38/38 voice-mode tests passed, and `npm run build` passed.
 
-### Voice document generation latency
+### Voice Mode confirmation reviews, parallel drafting, and message ordering
+
+- Fixed confirmations reading the document opening verbatim. `voiceInformationalConfirmationSpeech` no longer quotes body sentences; `generateVoiceDocumentReviewSpeech` uses a fast model call to produce a spoken review of purpose, structure, and themes, with a structural fallback when the model is unavailable.
+- Restored parallel draft start on document intent via `maybeStartVoiceDocumentDraft` when the user transcript is recognized, without stopping Live playback or blocking acknowledgements. Drafting reuses the same in-flight promise when Live later calls `use_assistant_capabilities`, and turn completion retries start if Live delayed the tool call.
+- Updated Live instructions and tool declaration to require acknowledgement and `use_assistant_capabilities` in the same turn without waiting for another user utterance.
+- Fixed document cards appearing above the user request by persisting the pending user transcript before the assistant document in `finalizePendingVoiceDocument`, preserving normal request-then-response order.
+- Changed files: `server/voiceMode.ts`, `server.ts`, `src/hooks/useVoiceMode.ts`, `tests/assistant-voice-mode.test.ts`.
 
 - Voice and typed drafting already shared the same Assistant planner, retrieval, and `createAssistantDeliverable` path. Voice was slower because Gemini Live sat in front of that path: it often spoke before calling `use_assistant_capabilities`, the spoken user instruction could be paraphrased, and the document card waited until Live finished speaking the result.
 - Spoken create/revise instructions now start that existing `/voice/assistant` pipeline as soon as Live begins responding, using the user's transcript rather than a Live paraphrase. The same in-flight request is reused if Live later calls the tool, so drafting is not duplicated.

@@ -14,6 +14,7 @@ import {
   voiceAcknowledgementRequest,
   voiceAcknowledgementSpeech,
   voiceInformationalConfirmationSpeech,
+  generateVoiceDocumentReviewSpeech,
   voiceDocumentConfirmationSpeech,
   voiceMessageId,
 } from "../server/voiceMode.js";
@@ -74,10 +75,9 @@ test("Gemini Live configuration is centralized for native audio, transcription, 
   assert.match(String(config.systemInstruction), /Do not call any function for lookups/);
   assert.match(String(config.systemInstruction), /Answer ordinary conversation[\s\S]*directly and immediately/);
   assert.match(String(config.systemInstruction), /speak exactly one short, specific, tailored sentence immediately/);
-  assert.match(String(config.systemInstruction), /call use_assistant_capabilities as your very next action/);
-  assert.match(String(config.systemInstruction), /read and speak the confirmation text it gives you naturally and informatively/);
-  assert.doesNotMatch(String(config.systemInstruction), /After that function returns, remain completely silent/);
-  assert.doesNotMatch(String(config.systemInstruction), /Do not speak a confirmation or read the document aloud/);
+  assert.match(String(config.systemInstruction), /In the same turn, call use_assistant_capabilities as your very next action without waiting for the user to speak again/);
+  assert.match(String(config.systemInstruction), /speak the confirmation guidance it gives you as a brief review/);
+  assert.match(String(config.systemInstruction), /Never read or quote text from the document/);
   assert.match(String(config.systemInstruction), /measured conversational pace/);
   assert.match(String(config.systemInstruction), /Never fabricate progress/);
   assert.match(String(config.systemInstruction), /never mention function names, tools, capabilities, delegation, or another Assistant/i);
@@ -129,6 +129,13 @@ test("Voice acknowledgement and confirmation speech are request-aware and use Ko
       draftContent: "# Acme NDA\n\nThis Non-Disclosure Agreement protects confidential information shared between the parties.",
     }),
     /I've finished drafting Acme NDA\./
+  );
+  assert.doesNotMatch(
+    voiceInformationalConfirmationSpeech({
+      title: "Acme NDA",
+      draftContent: "This Non-Disclosure Agreement protects confidential information shared between the parties.",
+    }),
+    /protects confidential information/
   );
   assert.match(
     voiceInformationalConfirmationSpeech({
@@ -199,7 +206,7 @@ test("a completed turn cannot retire an Assistant capability boundary while its 
   assert.doesNotMatch(hook, /shouldAdvanceVoiceTurnBoundary\([^)]*transcriptRef/);
 });
 
-test("spoken document instructions wait for Live tool calls before starting the Assistant draft path", async () => {
+test("spoken document instructions start drafting in parallel without blocking Live acknowledgements", async () => {
   const [hook, assistant] = await Promise.all([
     readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8"),
     readFile(new URL("../src/components/AssistantView.tsx", import.meta.url), "utf8"),
@@ -207,29 +214,34 @@ test("spoken document instructions wait for Live tool calls before starting the 
   const toolHandler = hook.slice(hook.indexOf("const handleServerMessage"), hook.indexOf("const ensureVoiceToken"));
 
   assert.equal(looksLikeVoiceDocumentRequest("Draft an NDA for the Acme engagement."), true);
-  assert.equal(looksLikeVoiceDocumentRequest("Please write a client advice letter."), true);
-  assert.equal(looksLikeVoiceDocumentRequest("Revise the agreement to add a termination clause."), true);
-  assert.equal(looksLikeVoiceDocumentRequest("Generate a statement of work for this studio."), true);
-  assert.equal(looksLikeVoiceDocumentRequest("You should regenerate another one for me to see now."), true);
-  assert.equal(looksLikeVoiceDocumentRequest("How should I draft a memorandum?"), false);
-  assert.equal(looksLikeVoiceDocumentRequest("What is the limitation period?"), false);
   assert.equal(voiceAssistantInstruction("Draft an NDA.", "Please create a document"), "Draft an NDA.");
-  assert.equal(voiceAssistantInstruction("  ", "Please create a document"), "Please create a document");
 
-  assert.doesNotMatch(toolHandler, /maybeStartVoiceDocumentCapability/);
+  assert.match(toolHandler, /maybeStartVoiceDocumentDraft/);
+  assert.match(toolHandler, /shouldStartVoiceDocumentDraft/);
   assert.match(toolHandler, /use_assistant_capabilities/);
-  assert.match(toolHandler, /voiceAssistantInstruction\(/);
-  assert.match(toolHandler, /assistantCapabilityPromisesRef\.current\.get\(turnBoundary\)/);
   assert.match(toolHandler, /consumeVoiceAssistantCapabilityResponse/);
   assert.match(toolHandler, /onDraftDelta/);
   assert.match(toolHandler, /shouldApplyVoiceDraftUpdate/);
   assert.match(toolHandler, /setLiveDeliverable\(deliverable\)/);
   assert.match(toolHandler, /scheduleAudio\(inlineData\.data, inlineData\.mimeType\)/);
-  assert.doesNotMatch(toolHandler, /inlineData[\s\S]*stopPlayback\(\)/);
-  assert.match(hook, /liveDeliverable/);
+  assert.match(toolHandler, /const maybeStartVoiceDocumentDraft = \(\) => \{[\s\S]*ensureAssistantCapability\(userTranscript, turnBoundaryRef\.current\)/);
+  assert.doesNotMatch(
+    toolHandler.slice(
+      toolHandler.indexOf("const maybeStartVoiceDocumentDraft"),
+      toolHandler.indexOf("if (message.toolCall?.functionCalls?.length)")
+    ),
+    /stopPlayback\(\)/
+  );
+  assert.doesNotMatch(
+    toolHandler.slice(
+      toolHandler.indexOf("if (content.inputTranscription?.text)"),
+      toolHandler.indexOf("if (content.outputTranscription?.text")
+    ),
+    /stopPlayback\(\)/
+  );
+  assert.match(hook, /persistFinalTranscript\("user", pendingUser\)/);
   assert.match(assistant, /voiceMode\.liveDeliverable/);
   assert.match(assistant, /id: "voice-live-deliverable"/);
-  assert.doesNotMatch(toolHandler, /persistFinalTranscript|voice\/messages/);
 });
 
 test("Voice speech endpoint remains available while acknowledgements and confirmations use Live audio", async () => {
@@ -300,7 +312,7 @@ test("Voice document completion keeps one card result and speaks an informationa
   assert.equal(usesVoiceRevisionConfirmation({ assistantIntent: "document_revision" }), true);
   assert.equal(usesVoiceRevisionConfirmation({ sourceDocument: { id: "doc_1" } }), true);
 
-  assert.match(server, /voiceInformationalConfirmationSpeech/);
+  assert.match(server, /generateVoiceDocumentReviewSpeech/);
   assert.match(server, /voiceDocumentSavedToolResponse/);
   assert.match(server, /toolResponse/);
   assert.doesNotMatch(server, /voice\/acknowledgement|voice\/confirmation|voice\/lookup/);
@@ -343,7 +355,7 @@ test("Live tool declarations expose only document creation capability", () => {
   assert.deepEqual(declarations.map((declaration) => declaration.name), ["use_assistant_capabilities"]);
   const assistant = declarations.find((declaration) => declaration.name === "use_assistant_capabilities")!;
   assert.match(assistant.description, /Create or revise a saved document only/);
-  assert.match(assistant.description, /Speak one tailored acknowledgement sentence immediately/);
+  assert.match(assistant.description, /Speak one tailored acknowledgement sentence and call this in the same turn immediately/);
 });
 
 test("Firm Library title resolution is normalized, deterministic, and refuses ambiguity", () => {

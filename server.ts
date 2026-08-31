@@ -67,6 +67,7 @@ import {
   boundedVoiceHistory,
   createVoiceModeCredential,
   generateVoiceSpeechAudio,
+  generateVoiceDocumentReviewSpeech,
   voiceDocumentSavedToolResponse,
   voiceInformationalConfirmationSpeech,
   voiceMessageId,
@@ -3059,10 +3060,11 @@ ${sourceText}`;
         ? String((completion.document as { title?: string }).title || "document")
         : "document";
       const confirmationSpeech = completion.document
-        ? voiceInformationalConfirmationSpeech({
+        ? await generateVoiceDocumentReviewSpeech({
           title: documentTitle,
           draftContent: draftContent || completion.content,
           revise: assistantPlan.deliverable.documentAction === "revise",
+          request,
         })
         : undefined;
       const toolResponse = confirmationSpeech
