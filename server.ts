@@ -68,7 +68,6 @@ import {
   buildVoiceLiveContextPrompt,
   createVoiceModeCredential,
   generateVoiceSpeechAudio,
-  voiceDocumentConfirmationSpeech,
   voiceMessageId,
   VOICE_ASSISTANT_HISTORY_LIMIT,
   VOICE_ASSISTANT_CONVERSATION_CHAR_LIMIT,
@@ -3056,18 +3055,10 @@ ${sourceText}`;
         ...(completion.document ? { document: completion.document } : {}),
         ...(completion.sourceDocument ? { sourceDocument: completion.sourceDocument } : {}),
       };
-      const documentTitle = completion.document && typeof completion.document === "object" && "title" in completion.document
-        ? String((completion.document as { title?: string }).title || "document")
-        : "document";
       const draftContent = completion.draftContent || completion.content;
-      const confirmationSpeech = completion.document
-        ? voiceDocumentConfirmationSpeech(completion.content)
-          || `The ${documentTitle} is ready for your review.`
-        : undefined;
       return res.json({
         result: completion.content,
         ...(completion.document ? { draftContent } : {}),
-        ...(confirmationSpeech ? { confirmationSpeech } : {}),
         capabilityMetadata,
       });
     } catch (error) {

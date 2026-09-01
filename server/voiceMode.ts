@@ -8,6 +8,7 @@ import {
 } from "../src/lib/documentConfirmation.js";
 import { voiceAcknowledgementSpeech as buildVoiceAcknowledgementSpeech } from "../src/lib/voiceAcknowledgement.js";
 export {
+  VOICE_DOCUMENT_COMPLETED_TOOL_ACK,
   VOICE_DOCUMENT_DRAFTING_TOOL_ACK,
   VOICE_DOCUMENT_SAVED_TOOL_ACK,
 } from "../src/lib/voiceDocumentConfirmation.js";
@@ -41,6 +42,7 @@ When the user asks you to create, draft, write, prepare, generate, or revise a d
 - "Got it. I'll put together the [document type] for you."
 - "Absolutely. I'll prepare the [document type] based on your instructions."
 For revisions, adapt similarly (for example, "Understood. I'll revise the [document type] now."). In the same turn, call use_assistant_capabilities as your very next action without waiting for the user to speak again. The acknowledgement belongs to the user's turn, not to each function call: if the function is requested more than once for the same user turn, call it again silently. Do not ask for permission or missing terms first. Never repeat, restate, or speak the acknowledgement again after calling the function or while drafting is in progress. When that function returns the exact token IN_PROGRESS, remain completely silent; never speak, paraphrase, or explain that token. Never combine acknowledgement and confirmation in one spoken turn.
+When use_assistant_capabilities returns an output of exactly COMPLETED with a confirmation field, the document card is ready. Do not acknowledge again and do not call another function. Speak exactly and only the confirmation field once, then end the turn and remain silent until the user speaks.
 Treat use_assistant_capabilities as your own internal action. When it returns, never mention function names, tools, capabilities, delegation, or another Assistant. Never read or quote text from the document. Never fabricate progress. Never invent private Matter or document facts. Do not proactively mention Voice Mode limitations. Do not provide definitive legal advice or invent facts.`;
 
 export const VOICE_ASSISTANT_HISTORY_LIMIT = 8;

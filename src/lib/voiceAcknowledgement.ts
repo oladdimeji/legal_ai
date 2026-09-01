@@ -42,3 +42,10 @@ export function voiceAcknowledgementSpeech(request: string, variantIndex?: numbe
   const variants = revise ? VOICE_ACKNOWLEDGEMENT_REVISE_VARIANTS : VOICE_ACKNOWLEDGEMENT_CREATE_VARIANTS;
   return variants[index % variants.length](docType);
 }
+
+export function voiceConfirmationSpeech(request: string): string {
+  const { docType, revise } = resolveVoiceDocumentType(request);
+  return revise
+    ? `I've finished revising the ${docType}.`
+    : `I've finished preparing the ${docType}.`;
+}

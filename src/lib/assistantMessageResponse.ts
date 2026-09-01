@@ -51,7 +51,6 @@ export function parseAssistantNdjsonBuffer(buffer: string): {
 export type VoiceAssistantCapabilityPayload = {
   result?: string;
   draftContent?: string;
-  confirmationSpeech?: string;
   capabilityMetadata?: Record<string, unknown>;
   error?: string;
 };
@@ -59,7 +58,6 @@ export type VoiceAssistantCapabilityPayload = {
 export type VoiceAssistantDraftStreamEvent = AssistantDraftStreamEvent & {
   result?: string;
   draftContent?: string;
-  confirmationSpeech?: string;
   capabilityMetadata?: Record<string, unknown>;
 };
 
@@ -110,7 +108,6 @@ export async function consumeVoiceAssistantCapabilityResponse(
       complete = {
         result: event.result,
         draftContent: event.draftContent || preview,
-        confirmationSpeech: event.confirmationSpeech,
         capabilityMetadata: event.capabilityMetadata,
       };
     }

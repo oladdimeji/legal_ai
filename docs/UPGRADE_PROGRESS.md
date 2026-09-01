@@ -1,5 +1,15 @@
 # Compact Upgrade Progress
 
+## Voice acknowledgement-parity confirmation
+
+- Moved document confirmation back into the existing Gemini Live session so acknowledgement and confirmation now use the same native Live voice and playback path.
+- The document type is resolved once from the user's request. At that point the short confirmation is fixed as either `I've finished preparing the ${docType}.` or `I've finished revising the ${docType}.`; no saved document title or document-body review is used.
+- The original function call remains open while the document is created. After the card is finalized and receives a render opportunity, that call returns one standard `COMPLETED` result with the fixed confirmation, which Live speaks exactly once before ending the turn.
+- Removed confirmation use of `/voice/speak`, prepared confirmation audio, confirmation caching, server confirmation generation, and confirmation audio-response plumbing. Duplicate capability calls retain the existing silent `IN_PROGRESS` result.
+- Transcript suppression remains active from the document request through confirmation playback, so neither acknowledgement nor confirmation is written to chat.
+- No schema, migration, dependency, authentication, workspace-isolation, Matter-isolation, document-generation, acknowledgement, typed Assistant, or interface changes were made.
+- Verification: all 44 focused Voice and draft-stream tests and the full 499-test suite passed; `npm run lint` and `npm run build` passed with the existing non-fatal large-chunk warning.
+
 ## Voice prepared confirmation playback
 
 - Replaced the Live-generated document confirmation with one short prepared Kore speech clip through the existing authenticated `/voice/speak` path. The acknowledgement behavior and wording remain unchanged.
