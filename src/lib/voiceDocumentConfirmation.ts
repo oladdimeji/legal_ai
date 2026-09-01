@@ -1,5 +1,5 @@
 export const VOICE_DOCUMENT_DRAFTING_TOOL_ACK =
-  "Document drafting is in progress. Remain silent until follow-up confirmation guidance arrives.";
+  "Document drafting is in progress. This is not the final result. Remain completely silent. Do not confirm, review, or mention the document until separate follow-up confirmation guidance arrives.";
 
 /** @deprecated Use {@link VOICE_DOCUMENT_DRAFTING_TOOL_ACK} for immediate tool responses. */
 export const VOICE_DOCUMENT_SAVED_TOOL_ACK = VOICE_DOCUMENT_DRAFTING_TOOL_ACK;

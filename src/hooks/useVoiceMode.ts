@@ -612,7 +612,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   ) => {
     if (voiceDocumentDeliveryCompletedTurnsRef.current.has(turnBoundary)) return;
     voiceDocumentDeliveryCompletedTurnsRef.current.add(turnBoundary);
-    if (capability.ok && capability.toolResponse) {
+    if (capability.ok && capability.toolResponse && capability.capabilityMetadata?.document) {
       suppressDocumentTranscriptRef.current = true;
       session.sendClientContent({
         turns: [{
@@ -634,7 +634,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     capability: VoiceCapabilityResult,
     request: string
   ) => {
-    if (capability.capabilityMetadata?.document || capability.toolResponse) {
+    if (capability.ok && capability.capabilityMetadata?.document) {
       completeVoiceDocumentDelivery(session, turnBoundary, capability);
       return;
     }
@@ -734,37 +734,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
             pausedAssistantCapabilityTurnRef.current,
             assistantCapabilityPromisesRef.current.has(turnBoundary)
           );
-          const data = await consumeVoiceAssistantCapabilityResponse(response, {
-            onDraftReset: () => {
-              if (!shouldApplyDraft()) return;
-              const metadata = liveDeliverableRef.current?.metadata || {
-                assistantIntent: "document_creation",
-                deliverableKind: "document",
-              };
-              liveDeliverableRef.current = { content: "", metadata };
-              setLiveDeliverable({ content: "", metadata });
-            },
-            onDraftDelta: (preview) => {
-              if (!shouldApplyDraft()) return;
-              const metadata = liveDeliverableRef.current?.metadata || {
-                assistantIntent: "document_creation",
-                deliverableKind: "document",
-              };
-              const deliverable = { content: preview, metadata };
-              liveDeliverableRef.current = deliverable;
-              setLiveDeliverable(deliverable);
-            },
-            onDraftStarted: () => {
-              if (!shouldApplyDraft()) return;
-              const metadata = liveDeliverableRef.current?.metadata || {
-                assistantIntent: "document_creation",
-                deliverableKind: "document",
-              };
-              if (liveDeliverableRef.current) return;
-              liveDeliverableRef.current = { content: "", metadata };
-              setLiveDeliverable({ content: "", metadata });
-            },
-          });
+          const data = await consumeVoiceAssistantCapabilityResponse(response);
           if (data.error) {
             if (shouldApplyDraft()) {
               pendingCapabilityMetadataRef.current = null;

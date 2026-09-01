@@ -77,7 +77,8 @@ test("Gemini Live configuration is centralized for native audio, transcription, 
   assert.match(String(config.systemInstruction), /Answer ordinary conversation[\s\S]*directly and immediately/);
   assert.match(String(config.systemInstruction), /Rotate naturally among these acknowledgement styles/);
   assert.match(String(config.systemInstruction), /Understood\. I'll prepare the \[document type\] now\./);
-  assert.match(String(config.systemInstruction), /first confirm the document was created or revised/);
+  assert.match(String(config.systemInstruction), /When that function first returns, it may only mean drafting is in progress/);
+  assert.match(String(config.systemInstruction), /Speak only when separate follow-up confirmation guidance arrives/);
   assert.match(String(config.systemInstruction), /Never read or quote text from the document/);
   assert.match(String(config.systemInstruction), /measured conversational pace/);
   assert.match(String(config.systemInstruction), /Never fabricate progress/);
@@ -237,7 +238,7 @@ test("spoken document instructions start drafting in parallel without blocking L
   assert.match(toolHandler, /shouldStartVoiceDocumentDraft/);
   assert.match(toolHandler, /use_assistant_capabilities/);
   assert.match(toolHandler, /consumeVoiceAssistantCapabilityResponse/);
-  assert.match(toolHandler, /onDraftDelta/);
+  assert.doesNotMatch(toolHandler, /onDraftDelta/);
   assert.match(toolHandler, /shouldApplyVoiceDraftUpdate/);
   assert.match(toolHandler, /setLiveDeliverable\(deliverable\)/);
   assert.match(toolHandler, /scheduleAudio\(inlineData\.data, inlineData\.mimeType\)/);
@@ -331,9 +332,12 @@ test("Voice document completion keeps one card result and speaks an informationa
   assert.equal(usesVoiceRevisionConfirmation({ assistantIntent: "document_revision" }), true);
   assert.equal(usesVoiceRevisionConfirmation({ sourceDocument: { id: "doc_1" } }), true);
 
-  assert.match(server, /generateVoiceDocumentReviewSpeech/);
-  assert.match(voiceMode, /Start with a clear confirmation that the document has been created or revised/);
-  assert.match(voiceMode, /first confirm the document was created or revised/);
+  assert.match(hook, /deliverVoiceDocumentCapability/);
+  assert.match(hook, /capability\.ok && capability\.capabilityMetadata\?\.document/);
+  assert.match(voiceMode, /When that function first returns, it may only mean drafting is in progress/);
+  assert.match(voiceMode, /Speak only when separate follow-up confirmation guidance arrives/);
+  assert.match(server, /voiceInformationalConfirmationSpeech/);
+  assert.doesNotMatch(server, /generateVoiceDocumentReviewSpeech/);
   assert.match(server, /voiceDocumentSavedToolResponse/);
   assert.match(server, /toolResponse/);
   assert.doesNotMatch(server, /voice\/acknowledgement|voice\/confirmation|voice\/lookup/);
@@ -754,7 +758,10 @@ test("Voice Assistant capability routing reuses the owned Assistant pipeline wit
   assert.match(route, /detectAssistantDocumentIntent/);
   assert.match(route, /toolResponse/);
   assert.match(route, /voiceDocumentSavedToolResponse/);
-  assert.match(route, /draft_started/);
+  assert.match(route, /voiceInformationalConfirmationSpeech/);
+  assert.match(route, /VOICE_ASSISTANT_HISTORY_LIMIT/);
+  assert.match(route, /return res\.json\(/);
+  assert.doesNotMatch(route, /writeAssistantDraftNdjson|draft_started|onDraftChunk|generateVoiceDocumentReviewSpeech/);
   assert.match(route, /completeAssistantResponse/);
   assert.match(route, /syntheticUserMessage/);
   assert.doesNotMatch(route, /db\.addMessage|db\.addVoiceMessage|GEMINI_API_KEY/);
@@ -782,10 +789,9 @@ test("full Voice Assistant delegation retains deliverables and artifact continui
   assert.match(tools, /get_firm_library_document/);
   assert.match(tools, /search_firm_library_documents/);
   assert.match(route, /fallbackAssistantPlan|orchestrateAssistantRetrieval/);
-  assert.match(route, /draft_started/);
+  assert.doesNotMatch(route, /draft_started|writeAssistantDraftNdjson|onDraftChunk/);
   assert.match(route, /completeAssistantResponse/);
-  assert.match(route, /completion\.document \? \{ document: completion\.document \}/);
-  assert.match(route, /completion\.sourceDocument \? \{ sourceDocument: completion\.sourceDocument \}/);
+  assert.match(route, /completion\.draftContent/);
   assert.match(conversationState, /message\.metadata\?\.document/);
   assert.match(route, /messages: conversationMessages/);
 });

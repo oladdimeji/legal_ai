@@ -49,6 +49,7 @@ export type AssistantCompletionResult = {
   metadata: Record<string, unknown>;
   document?: AssistantDocumentReference;
   sourceDocument?: AssistantDocumentReference;
+  draftContent?: string;
   clarificationQuestion?: string;
 };
 
@@ -197,7 +198,7 @@ export async function completeAssistantResponse(input: {
       webResearchPerformed: webResearch.performed,
     }),
     metadata,
-    ...(deliverable ? { document: deliverable.document } : {}),
+    ...(deliverable ? { document: deliverable.document, draftContent: deliverable.content } : {}),
     ...(deliverable?.sourceDocument ? { sourceDocument: deliverable.sourceDocument } : {}),
   };
 }

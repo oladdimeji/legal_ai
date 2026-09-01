@@ -113,8 +113,8 @@ test("document draft streaming leaves the saved Assistant turn and Work Product 
   );
   assert.match(route, /writeAssistantDraftNdjson\(res, \{ type: "draft_delta"/);
   assert.match(route, /writeAssistantDraftNdjson\(res, \{ type: "complete"/);
-  assert.match(voiceRoute, /writeAssistantDraftNdjson\(res, \{ type: "draft_delta"/);
-  assert.match(voiceRoute, /writeAssistantDraftNdjson\(res, \{ type: "complete"/);
+  assert.doesNotMatch(voiceRoute, /writeAssistantDraftNdjson\(res, \{ type: "draft_delta"/);
+  assert.match(voiceRoute, /return res\.json\(/);
   assert.match(route, /completeAssistantResponse/);
   assert.match(voiceRoute, /completeAssistantResponse/);
   assert.match(route, /publicAssistantMessage\(assistantMessage\)/);
@@ -122,7 +122,7 @@ test("document draft streaming leaves the saved Assistant turn and Work Product 
   assert.match(assistant, /setDraftStream\(null\)/);
   assert.match(assistant, /streamedResponse \? savedAssistantMessage\.content : ""/);
   assert.match(hook, /consumeVoiceAssistantCapabilityResponse/);
-  assert.match(hook, /onDraftDelta/);
+  assert.doesNotMatch(hook, /onDraftDelta/);
   assert.doesNotMatch(assistant, /db\.createDraft|createAssistantDocument/);
 });
 

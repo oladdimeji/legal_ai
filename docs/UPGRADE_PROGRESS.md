@@ -2199,7 +2199,13 @@ Status: Implementation complete; focused-phase verification recorded below.
 - Replaced user-facing confirmation wording from "saved" to "created" or "generated" in prompts, fallbacks, and Live tool guidance.
 - Changed files: `src/lib/voiceDocumentConfirmation.ts`, `server/voiceMode.ts`, `src/hooks/useVoiceMode.ts`, `tests/assistant-voice-mode.test.ts`.
 
-- Voice and typed drafting already shared the same Assistant planner, retrieval, and `createAssistantDeliverable` path. Voice was slower because Gemini Live sat in front of that path: it often spoke before calling `use_assistant_capabilities`, the spoken user instruction could be paraphrased, and the document card waited until Live finished speaking the result.
+### Voice Mode fast non-streaming drafts and confirmation timing
+
+- Fixed confirmation speaking during drafting. Live treated the immediate in-progress tool acknowledgement as the final function return and started confirming early; system instructions, tool ack wording, and client delivery now require a saved document before confirmation speech.
+- Removed Voice draft NDJSON streaming in favor of one fast JSON response using non-streaming draft generation, trimmed voice history/context bounds, parallelized page-context validation with history load, and replaced the post-draft LLM confirmation call with synchronous informational confirmation speech.
+- Changed files: `server.ts`, `server/voiceMode.ts`, `server/assistant/assistantCompletion.ts`, `src/hooks/useVoiceMode.ts`, `src/lib/voiceDocumentConfirmation.ts`, `tests/assistant-voice-mode.test.ts`, `tests/assistant-draft-stream.test.ts`.
+
+- Voice and typed drafting already shared the same Assistant planner, retrieval, and `createAssistantDeliverable` path.
 - Spoken create/revise instructions now start that existing `/voice/assistant` pipeline as soon as Live begins responding, using the user's transcript rather than a Live paraphrase. The same in-flight request is reused if Live later calls the tool, so drafting is not duplicated.
 - The document card is shown as soon as the existing Assistant pipeline returns, instead of waiting for Live's spoken confirmation. Persistence, ownership validation, interruption, acknowledgement audio, lookup, microphone, playback, and typed Assistant behavior are unchanged.
 - Live is instructed to call `use_assistant_capabilities` immediately, before any spoken audio, and then give one short confirmation rather than reading the document aloud.

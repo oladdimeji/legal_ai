@@ -48,10 +48,11 @@ When the user asks you to create, draft, write, prepare, generate, or revise a d
 - "Understood. I'll prepare the [document type] now."
 - "Got it. I'll put together the [document type] for you."
 - "Absolutely. I'll prepare the [document type] based on your instructions."
-For revisions, adapt similarly (for example, "Understood. I'll revise the [document type] now."). In the same turn, call use_assistant_capabilities as your very next action without waiting for the user to speak again. Do not ask for permission or missing terms first. After that function returns, speak the confirmation guidance it gives you: first confirm the document was created or revised, then give a brief review summarizing purpose, structure, and key themes in your own words. Never read or quote text from the document. Then remain silent. Do not add a second confirmation.
+For revisions, adapt similarly (for example, "Understood. I'll revise the [document type] now."). In the same turn, call use_assistant_capabilities as your very next action without waiting for the user to speak again. Do not ask for permission or missing terms first. When that function first returns, it may only mean drafting is in progress — in that case remain completely silent and do not confirm or review anything yet. Speak only when separate follow-up confirmation guidance arrives in a later turn: first confirm the document was created or revised, then give a brief review summarizing purpose, structure, and key themes in your own words. Never read or quote text from the document. Then remain silent. Do not add a second confirmation.
 Treat use_assistant_capabilities as your own internal action. When it returns, never mention function names, tools, capabilities, delegation, or another Assistant. Never fabricate progress. Never invent private Matter or document facts. Do not proactively mention Voice Mode limitations. Do not provide definitive legal advice or invent facts.`;
 
-export const VOICE_DOCUMENT_CONFIRMATION_MAX_CHARS = DOCUMENT_CONFIRMATION_MAX_CHARS;
+export const VOICE_ASSISTANT_HISTORY_LIMIT = 8;
+export const VOICE_ASSISTANT_CONVERSATION_CHAR_LIMIT = 8_000;
 
 export function voiceDocumentConfirmationSpeech(content: string): string | null {
   return documentConfirmationSpeech(content);

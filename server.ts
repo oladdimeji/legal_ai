@@ -67,10 +67,11 @@ import {
   boundedVoiceHistory,
   createVoiceModeCredential,
   generateVoiceSpeechAudio,
-  generateVoiceDocumentReviewSpeech,
   voiceDocumentSavedToolResponse,
   voiceInformationalConfirmationSpeech,
   voiceMessageId,
+  VOICE_ASSISTANT_HISTORY_LIMIT,
+  VOICE_ASSISTANT_CONVERSATION_CHAR_LIMIT,
 } from "./server/voiceMode.js";
 import { detectAssistantDocumentIntent } from "./server/assistant/assistantDocumentIntent.js";
 import {
@@ -2884,9 +2885,11 @@ ${sourceText}`;
       const requestOwnership = ownership(req);
       const thread = await db.getThreadById(req.params.id, requestOwnership);
       if (!thread) return res.status(404).json({ error: "Thread not found" });
-      const validated = await validateVoicePageContext(req.body.pageContext, requestOwnership);
+      const [validated, priorHistory] = await Promise.all([
+        validateVoicePageContext(req.body.pageContext, requestOwnership),
+        db.getRecentMessages(req.params.id, requestOwnership, VOICE_ASSISTANT_HISTORY_LIMIT),
+      ]);
       const currentMatterId = validated.currentMatter?.id || null;
-      const priorHistory = await db.getRecentMessages(thread.id, requestOwnership, 32);
       const syntheticUserMessage: Message = {
         id: `voice_current_${Date.now()}`,
         thread_id: thread.id,
@@ -2898,7 +2901,7 @@ ${sourceText}`;
         metadata: { pageContext: validated.pageContext },
       };
       const conversationMessages = [...priorHistory, syntheticUserMessage];
-      const conversationHistory = boundedConversation(conversationMessages, 12_000);
+      const conversationHistory = boundedConversation(conversationMessages, VOICE_ASSISTANT_CONVERSATION_CHAR_LIMIT);
       const recentConversationContext = conversationHistory
         .map(conversationMessageForPrompt)
         .join("\n\n");
@@ -2938,16 +2941,9 @@ ${sourceText}`;
       }
       const voiceFastDocument = assistantPlan.deliverable.kind !== "message"
         && Boolean(assistantPlan.deliverable.documentAction);
-      // Skip the planner LLM and workspace tool rounds for Voice draft intents so
-      // the first draft token can start as soon as the route is ready.
-      const wantsDocument = assistantPlan.deliverable.kind !== "message"
-        && Boolean(assistantPlan.deliverable.documentAction);
-      if (wantsDocument) {
-        writeAssistantDraftNdjson(res, { type: "draft_started" });
-      }
       let toolRun = emptyVoiceToolRun();
       let planningRounds = 0;
-      if (!voiceFastDocument || !wantsDocument) {
+      if (!voiceFastDocument) {
         const orchestration = await orchestrateAssistantRetrieval({
           request,
           plan: assistantPlan,
@@ -2972,18 +2968,6 @@ ${sourceText}`;
         hasTemporaryFiles: false,
       });
       if (clarificationQuestion) {
-        if (res.headersSent) {
-          writeAssistantDraftNdjson(res, {
-            type: "complete",
-            result: clarificationQuestion,
-            capabilityMetadata: {
-              assistantIntent: assistantPlan.intent,
-              deliverableKind: "message",
-            },
-          });
-          res.end();
-          return;
-        }
         return res.json({
           result: clarificationQuestion,
           capabilityMetadata: {
@@ -2993,7 +2977,6 @@ ${sourceText}`;
         });
       }
 
-      let draftContent = "";
       const completion = await completeAssistantResponse({
         instruction: request,
         plan: assistantPlan,
@@ -3015,33 +2998,8 @@ ${sourceText}`;
         account: (req as AuthenticatedRequest).auth!,
         ownership: requestOwnership,
         generateSuggestions: async () => [],
-        onDraftChunk: wantsDocument
-          ? (event) => {
-            if (event.reset) {
-              draftContent = "";
-              writeAssistantDraftNdjson(res, { type: "draft_reset" });
-              return;
-            }
-            if (event.text) {
-              draftContent += event.text;
-              writeAssistantDraftNdjson(res, { type: "draft_delta", text: event.text });
-            }
-          }
-          : undefined,
       });
       if (completion.clarificationQuestion) {
-        if (res.headersSent) {
-          writeAssistantDraftNdjson(res, {
-            type: "complete",
-            result: completion.clarificationQuestion,
-            capabilityMetadata: {
-              assistantIntent: assistantPlan.intent,
-              deliverableKind: "message",
-            },
-          });
-          res.end();
-          return;
-        }
         return res.json({
           result: completion.clarificationQuestion,
           capabilityMetadata: {
@@ -3059,42 +3017,28 @@ ${sourceText}`;
       const documentTitle = completion.document && typeof completion.document === "object" && "title" in completion.document
         ? String((completion.document as { title?: string }).title || "document")
         : "document";
+      const draftContent = completion.draftContent || completion.content;
       const confirmationSpeech = completion.document
-        ? await generateVoiceDocumentReviewSpeech({
+        ? voiceInformationalConfirmationSpeech({
           title: documentTitle,
-          draftContent: draftContent || completion.content,
+          draftContent,
           revise: assistantPlan.deliverable.documentAction === "revise",
-          request,
         })
         : undefined;
       const toolResponse = confirmationSpeech
         ? voiceDocumentSavedToolResponse(confirmationSpeech)
         : undefined;
-      const payload = {
-        result: completion.content,
-        ...(completion.document ? { draftContent: draftContent || undefined } : {}),
+      return res.json({
+        result: draftContent,
+        ...(completion.document ? { draftContent } : {}),
         ...(toolResponse ? { toolResponse } : {}),
         capabilityMetadata,
-      };
-      if (res.headersSent) {
-        writeAssistantDraftNdjson(res, { type: "complete", ...payload });
-        res.end();
-        return;
-      }
-      return res.json(payload);
+      });
     } catch (error) {
       if (error instanceof VoicePageContextError) {
         return res.status(error.status).json({ error: error.message });
       }
       console.error("Voice Assistant capability request failed.", error);
-      if (res.headersSent) {
-        writeAssistantDraftNdjson(res, {
-          type: "error",
-          error: error instanceof Error ? error.message : "The Assistant capability request failed.",
-        });
-        res.end();
-        return;
-      }
       return res.status(500).json({ error: "The Assistant capability request failed." });
     }
   });
