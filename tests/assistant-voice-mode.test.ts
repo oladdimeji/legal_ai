@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
 import type { Message } from "../src/types.js";
 import { assistantDocumentConfirmationContent } from "../server/assistant/assistantCompletion.js";
 import {
@@ -38,6 +39,7 @@ import {
   hasPendingVoiceDocumentDelivery,
   isVoiceAssistantPlaybackIdle,
   canDeliverVoiceDocumentConfirmation,
+  shouldCompleteVoiceDocumentConfirmation,
   shouldClearVoiceDocumentTranscriptSuppression,
   shouldFilterAssistantVoiceTranscript,
   shouldHoldVoiceCapture,
@@ -49,6 +51,10 @@ import {
   VOICE_STARTUP_BUFFER_PACKETS,
   VOICE_TOKEN_PREFETCH_TTL_MS,
 } from "../src/hooks/useVoiceMode.js";
+import {
+  VOICE_PLAYBACK_PROCESSOR_NAME,
+  VOICE_PLAYBACK_WORKLET_SOURCE,
+} from "../src/lib/voicePlaybackWorklet.js";
 
 function message(id: string, role: "user" | "assistant", content: string): Message {
   return {
@@ -237,6 +243,21 @@ test("a completed turn cannot retire an Assistant capability boundary while its 
     hasToolResponse: true,
     hasDeliverableContent: true,
     alreadyDelivered: false,
+  }), false);
+  assert.equal(shouldCompleteVoiceDocumentConfirmation({
+    audioReceived: true,
+    liveTurnComplete: true,
+    playbackIdle: true,
+  }), true);
+  assert.equal(shouldCompleteVoiceDocumentConfirmation({
+    audioReceived: true,
+    liveTurnComplete: false,
+    playbackIdle: true,
+  }), false);
+  assert.equal(shouldCompleteVoiceDocumentConfirmation({
+    audioReceived: true,
+    liveTurnComplete: true,
+    playbackIdle: false,
   }), false);
   assert.equal(canDeliverVoiceDocumentConfirmation({
     playbackIdle: true,
@@ -431,6 +452,9 @@ test("Voice document completion keeps one card result and speaks an informationa
   assert.match(hook, /confirmationPlaybackStartedRef\.current = true/);
   assert.match(hook, /silentConfirmation\.status = "ready"/);
   assert.match(hook, /liveTurnComplete: liveTurnCompleteRef\.current/);
+  assert.match(hook, /postMessage\(\{ type: "begin-stream" \}\)/);
+  assert.match(hook, /postMessage\(\{ type: "finish-stream" \}\)/);
+  assert.match(hook, /activeConfirmation\.liveTurnComplete = true/);
   assert.match(server, /confirmationSpeech/);
   assert.match(
     hook,
@@ -682,6 +706,9 @@ test("Voice playback uses a worklet jitter buffer so late packets cannot punch h
   assert.match(playback, /this.queued < this.prebuffer/);
   assert.match(playback, /output.fill\(0, filled\)/);
   assert.match(playback, /postMessage\(\{ type: "drained" \}\)/);
+  assert.match(playback, /data\.type === "begin-stream"/);
+  assert.match(playback, /data\.type === "finish-stream"/);
+  assert.match(playback, /&& !this\.streamOpen/);
   assert.match(capture, /Math.floor\(combined.length \/ this.ratio\)/);
   assert.match(capture, /this.leftover = combined.slice\(consumed\)/);
   assert.doesNotMatch(capture, /this.phase \+= this.step/);
@@ -691,6 +718,62 @@ test("Voice playback uses a worklet jitter buffer so late packets cannot punch h
   assert.match(hook, /playbackWorkletRef.current\?\.port.postMessage\(\{ type: "stop" \}\)/);
   assert.match(hook, /createStreamingDownsampler\(context.sampleRate, VOICE_CAPTURE_TARGET_RATE\)/);
   assert.doesNotMatch(hook, /playbackRate/);
+});
+
+test("an open confirmation stream survives a drain-length packet gap and plays a short tail before final drain", () => {
+  const posted: Array<{ type?: string }> = [];
+  let registeredName = "";
+  let RegisteredProcessor: (new (options: unknown) => {
+    port: { onmessage: ((event: { data: unknown }) => void) | null };
+    process: (inputs: unknown[], outputs: Float32Array[][]) => boolean;
+  }) | null = null;
+
+  class MockAudioWorkletProcessor {
+    port = {
+      onmessage: null as ((event: { data: unknown }) => void) | null,
+      postMessage: (message: { type?: string }) => posted.push(message),
+    };
+  }
+
+  runInNewContext(VOICE_PLAYBACK_WORKLET_SOURCE, {
+    AudioWorkletProcessor: MockAudioWorkletProcessor,
+    Float32Array,
+    Int16Array,
+    Math,
+    JSON,
+    sampleRate: 1_000,
+    registerProcessor: (name: string, processor: typeof RegisteredProcessor) => {
+      registeredName = name;
+      RegisteredProcessor = processor;
+    },
+  });
+
+  assert.equal(registeredName, VOICE_PLAYBACK_PROCESSOR_NAME);
+  assert.ok(RegisteredProcessor);
+  const processor = new RegisteredProcessor({
+    processorOptions: { prebufferSeconds: 0.002, drainSeconds: 0.002 },
+  });
+  const send = (data: unknown) => processor.port.onmessage?.({ data });
+  const render = () => {
+    const output = new Float32Array(2);
+    processor.process([], [[output]]);
+    return output;
+  };
+
+  send({ type: "begin-stream" });
+  send({ type: "push", samples: new Int16Array([4_000, 4_000]), sampleRate: 1_000 });
+  assert.ok(render()[0] > 0);
+  render();
+  assert.deepEqual(posted, []);
+
+  send({ type: "push", samples: new Int16Array([6_000]), sampleRate: 1_000 });
+  assert.ok(render()[0] > 0);
+  assert.deepEqual(posted, []);
+
+  send({ type: "finish-stream" });
+  render();
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0]?.type, "drained");
 });
 
 test("Voice Mode lifecycle is separate from standard send and releases microphone, audio, animation, and socket resources", async () => {

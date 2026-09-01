@@ -1,5 +1,15 @@
 # Compact Upgrade Progress
 
+## Voice confirmation stream completion
+
+- Fixed confirmation audio stopping after its first word or two: a temporary 200 ms packet gap could previously be treated as the end of the confirmation, after which the worklet required a fresh 300 ms prebuffer and could strand a short remaining tail.
+- Confirmation playback now opens an explicit worklet stream before Live generation and closes it only on Gemini `turnComplete`. Temporary empty-queue gaps remain open, late packets resume immediately, and `finish-stream` flushes a final tail that is shorter than the normal startup buffer.
+- A confirmation remains pending, microphone capture remains held, and assistant transcript suppression remains active until audio has arrived, the Live turn has completed, and the final playback queue has drained. Only that combined boundary marks the confirmation delivered.
+- Contentless and interrupted confirmations retain the existing retry behavior. Regular Voice playback, acknowledgement wording and sequencing, document generation/card persistence, typed Assistant behavior, and UI remain unchanged.
+- Added an executable AudioWorklet regression simulation covering audio, a drain-length packet gap, a short late tail, Live completion, and one final drain.
+- No schema, migration, dependency, authentication, workspace-isolation, Matter-isolation, or interface changes were made.
+- Verification: all 39 focused Voice tests and the full 500-test suite passed; `npm run lint` and `npm run build` passed with the existing non-fatal large-chunk warning.
+
 ## Voice acknowledgement and confirmation sequencing
 
 - A document acknowledgement is now explicitly once per user turn, including repeated capability calls, and the opaque in-progress response keeps Live silent while the document is being created.

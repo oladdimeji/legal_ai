@@ -18,6 +18,7 @@ class ExeptsVoicePlaybackProcessor extends AudioWorkletProcessor {
     this.queued = 0;
     this.playing = false;
     this.silent = 0;
+    this.streamOpen = false;
     this.port.onmessage = (event) => {
       const data = event.data || {};
       if (data.type === "stop") {
@@ -26,6 +27,16 @@ class ExeptsVoicePlaybackProcessor extends AudioWorkletProcessor {
         this.queued = 0;
         this.playing = false;
         this.silent = 0;
+        this.streamOpen = false;
+        return;
+      }
+      if (data.type === "begin-stream") {
+        this.streamOpen = true;
+        return;
+      }
+      if (data.type === "finish-stream") {
+        this.streamOpen = false;
+        if (!this.playing && this.queued > 0) this.playing = true;
         return;
       }
       if (data.type !== "push" || !data.samples) return;
@@ -85,7 +96,7 @@ class ExeptsVoicePlaybackProcessor extends AudioWorkletProcessor {
     if (filled < output.length) {
       output.fill(0, filled);
       this.silent += output.length - filled;
-      if (this.silent >= this.drainSilence && this.queued === 0) {
+      if (this.silent >= this.drainSilence && this.queued === 0 && !this.streamOpen) {
         this.playing = false;
         this.silent = 0;
         this.port.postMessage({ type: "drained" });
