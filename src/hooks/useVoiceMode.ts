@@ -264,6 +264,41 @@ export function shouldAdvanceVoiceTurnBoundary(
   return boundary === "interrupted" || !hasPendingDocumentDelivery;
 }
 
+export function isVoiceAssistantPlaybackIdle(input: {
+  playbackActive: boolean;
+  playbackSourceCount: number;
+}): boolean {
+  return !input.playbackActive && input.playbackSourceCount === 0;
+}
+
+export function canDeliverVoiceDocumentConfirmation(input: {
+  playbackIdle: boolean;
+  hasDocument: boolean;
+  hasToolResponse: boolean;
+  hasDeliverableContent: boolean;
+  alreadyDelivered: boolean;
+}): boolean {
+  return input.playbackIdle
+    && input.hasDocument
+    && input.hasToolResponse
+    && input.hasDeliverableContent
+    && !input.alreadyDelivered;
+}
+
+export function shouldClearVoiceDocumentTranscriptSuppression(input: {
+  suppressing: boolean;
+  inFlightCapabilityCount: number;
+  hasLiveDeliverable: boolean;
+  pendingDocumentDelivery: boolean;
+  pendingConfirmation: boolean;
+}): boolean {
+  return input.suppressing
+    && input.inFlightCapabilityCount === 0
+    && !input.hasLiveDeliverable
+    && !input.pendingDocumentDelivery
+    && !input.pendingConfirmation;
+}
+
 export function hasPendingVoiceDocumentDelivery(input: {
   inFlightCapabilityCount: number;
   pendingDocumentDelivery: boolean;
@@ -301,6 +336,14 @@ export function shouldFinalizeVoiceDocumentImmediately(
 ): boolean {
   return pausedCapabilityTurn === turnBoundary;
 }
+
+type VoiceCapabilityResult = {
+  ok: boolean;
+  result: string;
+  capabilityMetadata: VoiceCapabilityMetadata | null;
+  toolResponse?: string;
+  error?: string;
+};
 
 export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   const [state, setState] = useState<VoiceModeState>("off");
@@ -346,6 +389,12 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   const suppressDocumentTranscriptRef = useRef(false);
   const pendingVoiceDocumentDeliveryTurnsRef = useRef(new Set<number>());
   const voiceDocumentDeliveryCompletedTurnsRef = useRef(new Set<number>());
+  const pendingVoiceConfirmationRef = useRef<{
+    turnBoundary: number;
+    capability: VoiceCapabilityResult;
+  } | null>(null);
+  const tryDeliverPendingVoiceConfirmationRef = useRef<() => void>(() => undefined);
+  const onAssistantPlaybackIdleRef = useRef<() => void>(() => undefined);
   const tokenPrefetchRef = useRef<{
     threadId: string;
     pageContextKey: string;
@@ -419,6 +468,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       ) {
         updateState("listening");
       }
+      onAssistantPlaybackIdleRef.current();
     }, VOICE_PLAYBACK_SETTLE_MS);
   }, [cancelPlaybackSettle, updateState]);
 
@@ -487,6 +537,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     suppressDocumentTranscriptRef.current = false;
     pendingVoiceDocumentDeliveryTurnsRef.current.clear();
     voiceDocumentDeliveryCompletedTurnsRef.current.clear();
+    pendingVoiceConfirmationRef.current = null;
     tokenPrefetchRef.current = null;
     startupAudioBufferRef.current = [];
     captureLiveRef.current = false;
@@ -597,36 +648,79 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     return true;
   }, [cancelTranscriptFlush, persistFinalTranscript]);
 
-  type VoiceCapabilityResult = {
-    ok: boolean;
-    result: string;
-    capabilityMetadata: VoiceCapabilityMetadata | null;
-    toolResponse?: string;
-    error?: string;
+  const beginVoiceDocumentSpeechSuppression = useCallback(() => {
+    suppressDocumentTranscriptRef.current = true;
+    if (transcriptRef.current.assistant.trim()) {
+      transcriptRef.current = { ...transcriptRef.current, assistant: "" };
+      setLiveTranscripts((current) => ({ ...current, assistant: "" }));
+    }
+  }, []);
+
+  const maybeEndVoiceDocumentSpeechSuppression = useCallback(() => {
+    if (!shouldClearVoiceDocumentTranscriptSuppression({
+      suppressing: suppressDocumentTranscriptRef.current,
+      inFlightCapabilityCount: [...inFlightAssistantCapabilityTurnsRef.current.values()]
+        .reduce((total, count) => total + count, 0),
+      hasLiveDeliverable: Boolean(liveDeliverableRef.current),
+      pendingDocumentDelivery: pendingVoiceDocumentDeliveryTurnsRef.current.size > 0,
+      pendingConfirmation: pendingVoiceConfirmationRef.current !== null,
+    })) {
+      return;
+    }
+    if (!isVoiceAssistantPlaybackIdle({
+      playbackActive: playbackActiveRef.current,
+      playbackSourceCount: playbackSourcesRef.current.size,
+    })) {
+      return;
+    }
+    suppressDocumentTranscriptRef.current = false;
+  }, []);
+
+  const tryDeliverPendingVoiceConfirmation = useCallback(() => {
+    const pending = pendingVoiceConfirmationRef.current;
+    const session = sessionRef.current;
+    if (!pending || !session) return;
+    const { turnBoundary, capability } = pending;
+    const playbackIdle = isVoiceAssistantPlaybackIdle({
+      playbackActive: playbackActiveRef.current,
+      playbackSourceCount: playbackSourcesRef.current.size,
+    });
+    const ready = canDeliverVoiceDocumentConfirmation({
+      playbackIdle,
+      hasDocument: Boolean(capability.ok && capability.capabilityMetadata?.document),
+      hasToolResponse: Boolean(capability.toolResponse),
+      hasDeliverableContent: Boolean(liveDeliverableRef.current?.content?.trim()),
+      alreadyDelivered: voiceDocumentDeliveryCompletedTurnsRef.current.has(turnBoundary),
+    });
+    if (!ready) return;
+
+    pendingVoiceConfirmationRef.current = null;
+    voiceDocumentDeliveryCompletedTurnsRef.current.add(turnBoundary);
+    beginVoiceDocumentSpeechSuppression();
+    finalizePendingVoiceDocument();
+    session.sendClientContent({
+      turns: [{
+        role: "user",
+        parts: [{ text: voiceDocumentConfirmationClientPrompt(capability.toolResponse!) }],
+      }],
+      turnComplete: true,
+    });
+    pendingVoiceDocumentDeliveryTurnsRef.current.delete(turnBoundary);
+  }, [beginVoiceDocumentSpeechSuppression, finalizePendingVoiceDocument]);
+
+  tryDeliverPendingVoiceConfirmationRef.current = tryDeliverPendingVoiceConfirmation;
+  onAssistantPlaybackIdleRef.current = () => {
+    tryDeliverPendingVoiceConfirmation();
+    maybeEndVoiceDocumentSpeechSuppression();
   };
 
-  const completeVoiceDocumentDelivery = useCallback((
-    session: Session,
+  const queueVoiceDocumentConfirmation = useCallback((
     turnBoundary: number,
     capability: VoiceCapabilityResult
   ) => {
-    if (voiceDocumentDeliveryCompletedTurnsRef.current.has(turnBoundary)) return;
-    voiceDocumentDeliveryCompletedTurnsRef.current.add(turnBoundary);
-    if (capability.ok && capability.toolResponse && capability.capabilityMetadata?.document) {
-      suppressDocumentTranscriptRef.current = true;
-      session.sendClientContent({
-        turns: [{
-          role: "user",
-          parts: [{ text: voiceDocumentConfirmationClientPrompt(capability.toolResponse) }],
-        }],
-        turnComplete: true,
-      });
-    }
-    if (capability.ok && capability.capabilityMetadata?.document) {
-      finalizePendingVoiceDocument();
-    }
-    pendingVoiceDocumentDeliveryTurnsRef.current.delete(turnBoundary);
-  }, [finalizePendingVoiceDocument]);
+    pendingVoiceConfirmationRef.current = { turnBoundary, capability };
+    tryDeliverPendingVoiceConfirmation();
+  }, [tryDeliverPendingVoiceConfirmation]);
 
   const deliverVoiceDocumentCapability = useCallback((
     session: Session,
@@ -635,11 +729,12 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     request: string
   ) => {
     if (capability.ok && capability.capabilityMetadata?.document) {
-      completeVoiceDocumentDelivery(session, turnBoundary, capability);
+      queueVoiceDocumentConfirmation(turnBoundary, capability);
       return;
     }
     if (!capability.ok && shouldUseVoiceAssistantCapability(request)) {
-      suppressDocumentTranscriptRef.current = true;
+      pendingVoiceConfirmationRef.current = null;
+      beginVoiceDocumentSpeechSuppression();
       session.sendClientContent({
         turns: [{
           role: "user",
@@ -650,11 +745,10 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       pendingCapabilityMetadataRef.current = null;
       liveDeliverableRef.current = null;
       setLiveDeliverable(null);
-      suppressDocumentTranscriptRef.current = false;
       pendingVoiceDocumentDeliveryTurnsRef.current.delete(turnBoundary);
       voiceDocumentDeliveryCompletedTurnsRef.current.add(turnBoundary);
     }
-  }, [completeVoiceDocumentDelivery]);
+  }, [beginVoiceDocumentSpeechSuppression, queueVoiceDocumentConfirmation]);
 
   const scheduleAudio = useCallback((data: string, mimeType?: string) => {
     const context = audioContextRef.current;
@@ -713,7 +807,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
         });
       }
       if (shouldUseVoiceAssistantCapability(request)) {
-        suppressDocumentTranscriptRef.current = true;
+        beginVoiceDocumentSpeechSuppression();
         pendingVoiceDocumentDeliveryTurnsRef.current.add(turnBoundary);
       }
       const workingCallId = `voice_assistant_${turnBoundary}`;
@@ -759,7 +853,8 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
             };
             liveDeliverableRef.current = deliverable;
             setLiveDeliverable(deliverable);
-            suppressDocumentTranscriptRef.current = true;
+            beginVoiceDocumentSpeechSuppression();
+            tryDeliverPendingVoiceConfirmation();
           } else if (response.ok && shouldApplyDraft()) {
             suppressDocumentTranscriptRef.current = false;
             liveDeliverableRef.current = null;
@@ -845,9 +940,10 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
             });
             return;
           }
-          suppressDocumentTranscriptRef.current = true;
           const isDocumentRequest = shouldUseVoiceAssistantCapability(request);
           if (isDocumentRequest) {
+            beginVoiceDocumentSpeechSuppression();
+            acknowledgedTurnRef.current = turnBoundary;
             session.sendToolResponse({
               functionResponses: [{
                 id: call.id,
@@ -904,13 +1000,15 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       );
       const userTranscript = transcriptRef.current.user.trim();
       if (shouldBeginVoiceDocumentTranscriptSuppression(userTranscript)) {
-        suppressDocumentTranscriptRef.current = true;
+        beginVoiceDocumentSpeechSuppression();
         maybeStartVoiceDocumentDraft();
-      } else if (
-        suppressDocumentTranscriptRef.current
-        && !(inFlightAssistantCapabilityTurnsRef.current.get(turnBoundaryRef.current) || 0)
-        && !liveDeliverableRef.current
-      ) {
+      } else if (shouldClearVoiceDocumentTranscriptSuppression({
+        suppressing: suppressDocumentTranscriptRef.current,
+        inFlightCapabilityCount: inFlightAssistantCapabilityTurnsRef.current.get(turnBoundaryRef.current) || 0,
+        hasLiveDeliverable: Boolean(liveDeliverableRef.current),
+        pendingDocumentDelivery: pendingVoiceDocumentDeliveryTurnsRef.current.has(turnBoundaryRef.current),
+        pendingConfirmation: pendingVoiceConfirmationRef.current !== null,
+      })) {
         suppressDocumentTranscriptRef.current = false;
       }
       if (pausedAssistantCapabilityTurnRef.current === turnBoundaryRef.current
@@ -921,7 +1019,12 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     }
     // Any unexpected opening audio is dropped, not transcribed, and never saved.
     if (content.outputTranscription?.text && !awaitingOpeningTurnRef.current) {
-      if (!suppressDocumentTranscriptRef.current) {
+      if (suppressDocumentTranscriptRef.current) {
+        if (transcriptRef.current.assistant.trim()) {
+          transcriptRef.current = { ...transcriptRef.current, assistant: "" };
+          scheduleTranscriptFlush();
+        }
+      } else {
         transcriptRef.current.assistant = mergeTranscriptChunk(
           transcriptRef.current.assistant,
           content.outputTranscription.text
@@ -955,7 +1058,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
         finalizeTranscripts("turnComplete", false);
       }
     }
-  }, [clearWorking, completeVoiceDocumentDelivery, deliverVoiceDocumentCapability, finalizePendingVoiceDocument, finalizeTranscripts, scheduleAudio, scheduleTranscriptFlush, stopPlayback, updateState]);
+  }, [beginVoiceDocumentSpeechSuppression, clearWorking, deliverVoiceDocumentCapability, finalizePendingVoiceDocument, finalizeTranscripts, maybeEndVoiceDocumentSpeechSuppression, scheduleAudio, scheduleTranscriptFlush, stopPlayback, tryDeliverPendingVoiceConfirmation, updateState]);
 
   const ensureVoiceToken = useCallback((threadId: string, pageContext: WorkspacePageContext) => {
     const pageContextKey = JSON.stringify(pageContext);
@@ -1089,6 +1192,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
           if (event.data?.type !== "drained") return;
           playbackActiveRef.current = false;
           schedulePlaybackSettle();
+          onAssistantPlaybackIdleRef.current();
         };
         playback.connect(assistantAnalyser);
         playbackWorkletRef.current = playback;

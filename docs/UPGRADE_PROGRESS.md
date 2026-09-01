@@ -2205,6 +2205,13 @@ Status: Implementation complete; focused-phase verification recorded below.
 - Removed Voice draft NDJSON streaming in favor of one fast JSON response using non-streaming draft generation, trimmed voice history/context bounds, parallelized page-context validation with history load, and replaced the post-draft LLM confirmation call with synchronous informational confirmation speech.
 - Changed files: `server.ts`, `server/voiceMode.ts`, `server/assistant/assistantCompletion.ts`, `src/hooks/useVoiceMode.ts`, `src/lib/voiceDocumentConfirmation.ts`, `tests/assistant-voice-mode.test.ts`, `tests/assistant-draft-stream.test.ts`.
 
+### Voice Mode acknowledgement and confirmation sequencing
+
+- Fixed acknowledgement and confirmation being mashed together or interrupting each other. Confirmation is now queued until acknowledgement playback is idle and the document card is ready, then the card is persisted before confirmation speech is triggered.
+- Acknowledgement and confirmation Live output is suppressed from live bubbles and chat persistence for the full document flow; assistant transcript buffers are cleared while suppressed.
+- Strengthened Live instructions and confirmation prompts so acknowledgement is spoken once and never repeated with confirmation.
+- Changed files: `server/voiceMode.ts`, `src/hooks/useVoiceMode.ts`, `src/lib/voiceDocumentConfirmation.ts`, `tests/assistant-voice-mode.test.ts`.
+
 - Voice and typed drafting already shared the same Assistant planner, retrieval, and `createAssistantDeliverable` path.
 - Spoken create/revise instructions now start that existing `/voice/assistant` pipeline as soon as Live begins responding, using the user's transcript rather than a Live paraphrase. The same in-flight request is reused if Live later calls the tool, so drafting is not duplicated.
 - The document card is shown as soon as the existing Assistant pipeline returns, instead of waiting for Live's spoken confirmation. Persistence, ownership validation, interruption, acknowledgement audio, lookup, microphone, playback, and typed Assistant behavior are unchanged.

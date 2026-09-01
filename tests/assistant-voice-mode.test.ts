@@ -36,6 +36,9 @@ import {
   shouldFinalizeVoiceDocumentImmediately,
   shouldAdvanceVoiceTurnBoundary,
   hasPendingVoiceDocumentDelivery,
+  isVoiceAssistantPlaybackIdle,
+  canDeliverVoiceDocumentConfirmation,
+  shouldClearVoiceDocumentTranscriptSuppression,
   shouldHoldVoiceCapture,
   voiceCaptureAwaitingFinalize,
   voiceAcknowledgementSpeechFromRequest,
@@ -78,7 +81,8 @@ test("Gemini Live configuration is centralized for native audio, transcription, 
   assert.match(String(config.systemInstruction), /Rotate naturally among these acknowledgement styles/);
   assert.match(String(config.systemInstruction), /Understood\. I'll prepare the \[document type\] now\./);
   assert.match(String(config.systemInstruction), /When that function first returns, it may only mean drafting is in progress/);
-  assert.match(String(config.systemInstruction), /Speak only when separate follow-up confirmation guidance arrives/);
+  assert.match(String(config.systemInstruction), /Never repeat, restate, or speak the acknowledgement again/);
+  assert.match(String(config.systemInstruction), /Never combine acknowledgement and confirmation in one spoken turn/);
   assert.match(String(config.systemInstruction), /Never read or quote text from the document/);
   assert.match(String(config.systemInstruction), /measured conversational pace/);
   assert.match(String(config.systemInstruction), /Never fabricate progress/);
@@ -215,10 +219,43 @@ test("a completed turn cannot retire an Assistant capability boundary while its 
   assert.equal(shouldAdvanceVoiceTurnBoundary("turnComplete", false), true);
   assert.equal(shouldAdvanceVoiceTurnBoundary("interrupted", true), true);
   assert.equal(shouldAdvanceVoiceTurnBoundary("interrupted", false), true);
+  assert.equal(isVoiceAssistantPlaybackIdle({ playbackActive: false, playbackSourceCount: 0 }), true);
+  assert.equal(isVoiceAssistantPlaybackIdle({ playbackActive: true, playbackSourceCount: 0 }), false);
+  assert.equal(canDeliverVoiceDocumentConfirmation({
+    playbackIdle: true,
+    hasDocument: true,
+    hasToolResponse: true,
+    hasDeliverableContent: true,
+    alreadyDelivered: false,
+  }), true);
+  assert.equal(canDeliverVoiceDocumentConfirmation({
+    playbackIdle: false,
+    hasDocument: true,
+    hasToolResponse: true,
+    hasDeliverableContent: true,
+    alreadyDelivered: false,
+  }), false);
+  assert.equal(shouldClearVoiceDocumentTranscriptSuppression({
+    suppressing: true,
+    inFlightCapabilityCount: 0,
+    hasLiveDeliverable: false,
+    pendingDocumentDelivery: false,
+    pendingConfirmation: false,
+  }), true);
+  assert.equal(shouldClearVoiceDocumentTranscriptSuppression({
+    suppressing: true,
+    inFlightCapabilityCount: 0,
+    hasLiveDeliverable: false,
+    pendingDocumentDelivery: false,
+    pendingConfirmation: true,
+  }), false);
 
   assert.match(hook, /hasPendingVoiceDocumentDelivery/);
   assert.match(hook, /shouldAdvanceVoiceTurnBoundary\(\s*"turnComplete",\s*hasPendingDocumentDelivery\s*\)/);
-  assert.match(hook, /completeVoiceDocumentDelivery/);
+  assert.match(hook, /queueVoiceDocumentConfirmation/);
+  assert.match(hook, /tryDeliverPendingVoiceConfirmation/);
+  assert.match(hook, /pendingVoiceConfirmationRef/);
+  assert.match(hook, /beginVoiceDocumentSpeechSuppression/);
   assert.match(hook, /sendClientContent/);
   assert.match(hook, /voiceDocumentConfirmationClientPrompt/);
   assert.doesNotMatch(hook, /shouldAdvanceVoiceTurnBoundary\([^)]*transcriptRef/);
@@ -344,12 +381,17 @@ test("Voice document completion keeps one card result and speaks an informationa
   assert.match(voiceMode, /generateVoiceSpeechAudio/);
   assert.doesNotMatch(voiceMode, /warmupVoiceSpeechAudio|VOICE_MODE_DOCUMENT_CONFIRMATION/);
 
-  assert.match(hook, /completeVoiceDocumentDelivery/);
+  assert.match(hook, /queueVoiceDocumentConfirmation/);
+  assert.match(hook, /tryDeliverPendingVoiceConfirmation/);
   assert.match(hook, /VOICE_DOCUMENT_DRAFTING_TOOL_ACK/);
   assert.match(hook, /deliverVoiceDocumentCapability/);
   assert.match(hook, /voiceDocumentDraftingFailedClientPrompt/);
   assert.match(hook, /sendClientContent/);
   assert.match(hook, /voiceDocumentConfirmationClientPrompt/);
+  assert.match(
+    hook,
+    /tryDeliverPendingVoiceConfirmation[\s\S]*finalizePendingVoiceDocument\(\)[\s\S]*sendClientContent/
+  );
   const toolHandler = hook.slice(hook.indexOf("const handleServerMessage"), hook.indexOf("const ensureVoiceToken"));
   assert.match(toolHandler, /VOICE_DOCUMENT_DRAFTING_TOOL_ACK/);
   assert.match(
@@ -357,8 +399,8 @@ test("Voice document completion keeps one card result and speaks an informationa
     /session\.sendToolResponse\([\s\S]*VOICE_DOCUMENT_DRAFTING_TOOL_ACK[\s\S]*await ensureAssistantCapability\(request, turnBoundary\)/
   );
   assert.match(toolHandler, /deliverVoiceDocumentCapability/);
-  assert.match(toolHandler, /finalizePendingVoiceDocument\(\)/);
-  assert.match(toolHandler, /suppressDocumentTranscriptRef\.current = true/);
+  assert.match(toolHandler, /beginVoiceDocumentSpeechSuppression/);
+  assert.match(toolHandler, /shouldClearVoiceDocumentTranscriptSuppression/);
   assert.doesNotMatch(toolHandler, /playDocumentConfirmation\(/);
   assert.match(assistant, /liveDocumentReady/);
   assert.match(assistant, /confirmationOnly = Boolean\(document && isDocumentConfirmationContent\(m\.content\)\)/);

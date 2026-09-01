@@ -8,7 +8,7 @@ export function voiceDocumentConfirmationClientPrompt(confirmationSpeech: string
   const spoken = confirmationSpeech.replace(/\s+/g, " ").trim();
   return [
     "Internal Voice Mode document deliverable — not part of the user conversation.",
-    `The document was created successfully. Speak to the user now in this turn: first confirm the document was created or revised, then give a brief review in your own words. Use "created" or "generated" for new documents — never say "saved". Use this guidance but do not read or quote any document text aloud: ${spoken}`,
+    `The document was created successfully. Speak to the user now in this turn: first confirm the document was created or revised, then give a brief review in your own words. Use "created" or "generated" for new documents — never say "saved". Do not repeat or restate the earlier acknowledgement. Use this guidance but do not read or quote any document text aloud: ${spoken}`,
     "Speak immediately in audio. After speaking, remain silent until the user speaks.",
   ].join(" ");
 }
