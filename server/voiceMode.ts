@@ -13,8 +13,10 @@ import {
 } from "../src/lib/voiceDocumentConfirmation.js";
 
 export {
+  VOICE_DOCUMENT_DRAFTING_TOOL_ACK,
   VOICE_DOCUMENT_SAVED_TOOL_ACK,
   voiceDocumentConfirmationClientPrompt,
+  voiceDocumentDraftingFailedClientPrompt,
   voiceDocumentSavedToolResponse,
 } from "../src/lib/voiceDocumentConfirmation.js";
 
@@ -77,7 +79,7 @@ export function voiceInformationalConfirmationSpeech(input: {
   if (headings.length > 0) {
     return `${lead} It focuses on ${headings.join(", ")}, and it's ready for you to review.`;
   }
-  return `${lead} It's saved and ready for you to review.`;
+  return `${lead} It's ready for you to review.`;
 }
 
 export async function generateVoiceDocumentReviewSpeech(input: {
@@ -96,7 +98,7 @@ export async function generateVoiceDocumentReviewSpeech(input: {
         "Write a spoken confirmation and review for a lawyer who just received a drafted document in Voice Mode.",
         "Requirements:",
         "- 2 to 4 natural sentences, conversational tone.",
-        "- Start with a clear confirmation that the document has been created or revised, naming the document title.",
+        "- Start with a clear confirmation that the document has been created or revised, naming the document title. Use \"created\" or \"generated\" for new documents — never say \"saved\".",
         "- Then continue with a brief review of the document's purpose, scope, and main sections or themes.",
         "- Explain what the document accomplishes and what the user should notice.",
         "- Do NOT quote, read, or paraphrase specific sentences from the document body.",
@@ -281,7 +283,7 @@ export function liveConnectConfig() {
     tools: [{
       functionDeclarations: [{
         name: "use_assistant_capabilities",
-        description: "Create or revise a saved document only. Speak one tailored acknowledgement sentence and call this in the same turn immediately when the user asks to create, draft, write, prepare, generate, or revise a document.",
+        description: "Create or revise a document only. Speak one tailored acknowledgement sentence and call this in the same turn immediately when the user asks to create, draft, write, prepare, generate, or revise a document.",
         parametersJsonSchema: {
           type: "object",
           properties: {

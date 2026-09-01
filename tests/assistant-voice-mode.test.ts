@@ -148,6 +148,13 @@ test("Voice acknowledgement and confirmation speech are request-aware and use Ko
     }),
     /I've finished revising Acme NDA\./
   );
+  assert.doesNotMatch(
+    voiceInformationalConfirmationSpeech({
+      title: "Plain Memo",
+      draftContent: "Short memo body without headings.",
+    }),
+    /\bsaved\b/i
+  );
 });
 
 test("Voice acknowledgement eligibility is document-capability-only and once per existing turn boundary", () => {
@@ -234,7 +241,8 @@ test("spoken document instructions start drafting in parallel without blocking L
   assert.match(toolHandler, /shouldApplyVoiceDraftUpdate/);
   assert.match(toolHandler, /setLiveDeliverable\(deliverable\)/);
   assert.match(toolHandler, /scheduleAudio\(inlineData\.data, inlineData\.mimeType\)/);
-  assert.match(toolHandler, /const maybeStartVoiceDocumentDraft = \(\) => \{[\s\S]*ensureAssistantCapability\(userTranscript, turnBoundaryRef\.current\)/);
+  assert.match(toolHandler, /const maybeStartVoiceDocumentDraft = \(\) => \{[\s\S]*ensureAssistantCapability\(userTranscript, turnBoundary\)/);
+  assert.match(toolHandler, /deliverVoiceDocumentCapability\(activeSession, turnBoundary, capability, userTranscript\)/);
   assert.doesNotMatch(
     toolHandler.slice(
       toolHandler.indexOf("const maybeStartVoiceDocumentDraft"),
@@ -277,7 +285,8 @@ test("Voice speech endpoint remains available while acknowledgements and confirm
 
   const toolHandler = hook.slice(hook.indexOf("const handleServerMessage"), hook.indexOf("const ensureVoiceToken"));
   assert.match(toolHandler, /await ensureAssistantCapability\(request, turnBoundary\)/);
-  assert.match(toolHandler, /capability\.toolResponse/);
+  assert.match(toolHandler, /deliverVoiceDocumentCapability/);
+  assert.match(hook, /voiceDocumentConfirmationClientPrompt/);
   assert.match(toolHandler, /suppressDocumentTranscriptRef/);
   assert.doesNotMatch(toolHandler, /fetchVoiceSpeech|playAcknowledgement|playDocumentConfirmation/);
   assert.match(toolHandler, /scheduleAudio\(inlineData\.data, inlineData\.mimeType\)/);
@@ -332,11 +341,18 @@ test("Voice document completion keeps one card result and speaks an informationa
   assert.doesNotMatch(voiceMode, /warmupVoiceSpeechAudio|VOICE_MODE_DOCUMENT_CONFIRMATION/);
 
   assert.match(hook, /completeVoiceDocumentDelivery/);
-  assert.match(hook, /VOICE_DOCUMENT_SAVED_TOOL_ACK/);
+  assert.match(hook, /VOICE_DOCUMENT_DRAFTING_TOOL_ACK/);
+  assert.match(hook, /deliverVoiceDocumentCapability/);
+  assert.match(hook, /voiceDocumentDraftingFailedClientPrompt/);
   assert.match(hook, /sendClientContent/);
   assert.match(hook, /voiceDocumentConfirmationClientPrompt/);
   const toolHandler = hook.slice(hook.indexOf("const handleServerMessage"), hook.indexOf("const ensureVoiceToken"));
-  assert.match(toolHandler, /completeVoiceDocumentDelivery/);
+  assert.match(toolHandler, /VOICE_DOCUMENT_DRAFTING_TOOL_ACK/);
+  assert.match(
+    toolHandler,
+    /session\.sendToolResponse\([\s\S]*VOICE_DOCUMENT_DRAFTING_TOOL_ACK[\s\S]*await ensureAssistantCapability\(request, turnBoundary\)/
+  );
+  assert.match(toolHandler, /deliverVoiceDocumentCapability/);
   assert.match(toolHandler, /finalizePendingVoiceDocument\(\)/);
   assert.match(toolHandler, /suppressDocumentTranscriptRef\.current = true/);
   assert.doesNotMatch(toolHandler, /playDocumentConfirmation\(/);
@@ -370,7 +386,7 @@ test("Live tool declarations expose only document creation capability", () => {
   const declarations = liveConnectConfig().tools[0].functionDeclarations;
   assert.deepEqual(declarations.map((declaration) => declaration.name), ["use_assistant_capabilities"]);
   const assistant = declarations.find((declaration) => declaration.name === "use_assistant_capabilities")!;
-  assert.match(assistant.description, /Create or revise a saved document only/);
+  assert.match(assistant.description, /Create or revise a document only/);
   assert.match(assistant.description, /Speak one tailored acknowledgement sentence and call this in the same turn immediately/);
 });
 
