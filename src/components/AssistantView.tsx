@@ -241,9 +241,20 @@ export default function AssistantView({
   const voiceMode = useVoiceMode({
     onTranscript: (message) => {
       if (activeThreadIdRef.current !== message.thread_id) return;
-      setMessages((current) => current.some((item) => item.id === message.id)
-        ? current
-        : [...current, message]);
+      setMessages((current) => {
+        if (current.some((item) => item.id === message.id)) return current;
+        const optimisticIndex = message.metadata?.voiceOptimistic
+          ? -1
+          : current.findIndex((item) =>
+            item.metadata?.voiceOptimistic
+            && item.role === message.role
+            && item.content.trim() === message.content.trim()
+          );
+        if (optimisticIndex >= 0) {
+          return current.map((item, index) => (index === optimisticIndex ? message : item));
+        }
+        return [...current, message];
+      });
     },
   });
   useEffect(() => {
@@ -1203,6 +1214,9 @@ export default function AssistantView({
                 const isLastMessage = index === displayMessages.length - 1;
                 const isLiveVoiceMessage = m.metadata?.liveVoiceTranscript === true;
                 const liveDocumentReady = isLiveVoiceMessage && Boolean(documentReferenceForMessage(m));
+                const showMessageActions = (!isLiveVoiceMessage || liveDocumentReady
+                  || (m.role === "assistant" && m.content.trim().length > 0))
+                  && m.metadata?.error !== true;
                 return (
                   <div key={m.id} className="w-full max-w-3xl mx-auto flex flex-col py-5 animate-fade-in" id={`message-wrapper-${m.id}`}>
                     <div className={`w-full flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
@@ -1288,7 +1302,7 @@ export default function AssistantView({
                           })()}
 
                           {/* Message Action Items — show as soon as a live Voice document card is ready */}
-                          {(!isLiveVoiceMessage || liveDocumentReady) && m.metadata?.error !== true && (
+                          {showMessageActions && (
                             <div className="mt-5 pt-3.5 border-t border-zinc-100 flex items-center justify-between flex-wrap gap-2.5 select-none">
                               <div className="flex items-center gap-3">
                                 {m.citations && m.citations.length > 0 ? (

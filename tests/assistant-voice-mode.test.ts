@@ -40,6 +40,7 @@ import {
   shouldClearVoiceDocumentTranscriptSuppression,
   shouldDropVoiceAssistantTranscript,
   shouldFilterAssistantVoiceTranscript,
+  canOpenVoiceListenMode,
   shouldHoldVoiceCapture,
   voiceCaptureAwaitingFinalize,
   voiceAcknowledgementSpeechFromRequest,
@@ -219,6 +220,11 @@ test("a completed turn cannot retire an Assistant capability boundary while its 
   assert.equal(hasPendingVoiceDocumentDelivery({ inFlightCapabilityCount: 1, pendingDocumentDelivery: false }), true);
   assert.equal(hasPendingVoiceDocumentDelivery({ inFlightCapabilityCount: 0, pendingDocumentDelivery: true }), true);
   assert.equal(hasPendingVoiceDocumentDelivery({ inFlightCapabilityCount: 0, pendingDocumentDelivery: false }), false);
+  assert.equal(hasPendingVoiceDocumentDelivery({
+    inFlightCapabilityCount: 0,
+    pendingDocumentDelivery: false,
+    confirmationSpeechActive: true,
+  }), true);
   assert.equal(shouldAdvanceVoiceTurnBoundary("turnComplete", true), false);
   assert.equal(shouldAdvanceVoiceTurnBoundary("turnComplete", false), true);
   assert.equal(shouldAdvanceVoiceTurnBoundary("interrupted", true), true);
@@ -283,6 +289,20 @@ test("a completed turn cannot retire an Assistant capability boundary while its 
     suppressDocumentSpeech: true,
     expectedConfirmationSpeech: null,
   }), true);
+  assert.equal(canOpenVoiceListenMode({
+    playbackActive: false,
+    playbackSourceCount: 0,
+    pendingVoicePersistence: 0,
+    confirmationSpeechActive: false,
+    documentTurnActive: false,
+  }), true);
+  assert.equal(canOpenVoiceListenMode({
+    playbackActive: false,
+    playbackSourceCount: 0,
+    pendingVoicePersistence: 1,
+    confirmationSpeechActive: false,
+    documentTurnActive: false,
+  }), false);
 
   assert.match(hook, /hasPendingVoiceDocumentDelivery/);
   assert.match(hook, /shouldAdvanceVoiceTurnBoundary\(\s*"turnComplete",\s*hasPendingDocumentDelivery\s*\)/);
@@ -326,6 +346,7 @@ test("spoken document instructions start drafting in parallel without blocking L
     /stopPlayback\(\)/
   );
   assert.match(hook, /persistFinalTranscript\("user", pendingUser\)/);
+  assert.doesNotMatch(hook, /persistFinalTranscript\("user", pendingUser\)[\s\S]{0,200}transcriptRef\.current = \{ \.\.\.transcriptRef\.current, user: "" \}/);
   assert.match(assistant, /voiceMode\.liveDeliverable/);
   assert.match(assistant, /id: "voice-live-deliverable"/);
 });
@@ -426,23 +447,26 @@ test("Voice document completion creates the card before one short doc-type Live 
   );
   assert.match(documentToolCall, /const isPrimaryDocumentCall/);
   assert.match(documentToolCall, /await ensureAssistantCapability\(request, turnBoundary\)/);
-  assert.match(documentToolCall, /finalizePendingVoiceDocument\(\)/);
+  assert.doesNotMatch(documentToolCall, /finalizePendingVoiceDocument\(\)/);
   assert.match(documentToolCall, /output: VOICE_DOCUMENT_COMPLETED_TOOL_ACK[\s\S]*confirmation: confirmationSpeech/);
   assert.match(documentToolCall, /voiceConfirmationSpeechFromRequest\(request\)/);
   assert.ok(documentToolCall.indexOf("await ensureAssistantCapability") < documentToolCall.indexOf("session.sendToolResponse"));
-  assert.ok(documentToolCall.indexOf("finalizePendingVoiceDocument()") < documentToolCall.indexOf("session.sendToolResponse"));
+  assert.match(hook, /finishVoiceDocumentConfirmation[\s\S]*finalizePendingVoiceDocument\(\)/);
   assert.doesNotMatch(
     documentToolCall.slice(0, documentToolCall.indexOf("await ensureAssistantCapability")),
     /sendToolResponse|VOICE_DOCUMENT_DRAFTING_TOOL_ACK/
   );
   assert.doesNotMatch(hook, /DOCUMENT_CONFIRMATION|voiceDocumentConfirmationClientPrompt|voiceDocumentDraftingFailedClientPrompt|fetchVoiceSpeech|playPreparedVoiceConfirmation|voice\/speak/);
   assert.match(toolHandler, /beginVoiceDocumentSpeechSuppression/);
-  assert.match(toolHandler, /shouldDropVoiceAssistantTranscript/);
-  assert.match(toolHandler, /pendingVoiceConfirmationSpeechRef/);
+  assert.match(toolHandler, /voiceDocumentSpokenOnlyRef/);
+  assert.match(toolHandler, /voiceDocumentTurnActiveRef/);
+  assert.match(hook, /canOpenVoiceListenMode/);
   assert.match(hook, /shouldClearVoiceDocumentTranscriptSuppression/);
   assert.doesNotMatch(toolHandler, /shouldClearVoiceDocumentTranscriptSuppression/);
   assert.doesNotMatch(toolHandler, /playDocumentConfirmation\(/);
   assert.match(assistant, /liveDocumentReady/);
+  assert.match(assistant, /showMessageActions/);
+  assert.match(assistant, /voiceOptimistic/);
   assert.match(assistant, /confirmationOnly = Boolean\(document && isDocumentConfirmationContent\(m\.content\)\)/);
 });
 
@@ -650,7 +674,7 @@ test("Voice holds microphone capture while speaking or working and still stops p
     hasLiveDeliverable: false,
     pausedCapabilityTurn: false,
     pendingVoicePersistence: true,
-  }), false);
+  }), true);
   assert.equal(voiceCaptureAwaitingFinalize({
     hasLiveDeliverable: false,
     pausedCapabilityTurn: false,
@@ -960,7 +984,9 @@ test("live Voice transcriptions render as temporary messages and yield to saved 
   assert.match(hook, /liveTranscripts/);
   assert.match(hook, /setLiveTranscripts[\s\S]*inputTranscription/);
   assert.match(hook, /setLiveTranscripts[\s\S]*outputTranscription/);
-  assert.match(hook, /onTranscriptRef\.current\(data\)[\s\S]*current\[role\]\.trim\(\) === normalized/);
+  assert.match(hook, /onTranscriptRef\.current\(optimisticMessage\)/);
+  assert.match(hook, /voiceOptimistic: true/);
+  assert.match(hook, /onTranscriptRef\.current\(\{ \.\.\.data, metadata: \{ \.\.\.data\.metadata, voiceOptimistic: false \} \}\)/);
   assert.match(assistant, /const displayMessages = \[\.\.\.messages, \.\.\.liveTranscriptMessages\]/);
   assert.match(assistant, /displayMessages\.length > 0/);
   assert.match(assistant, /displayMessages\.map/);

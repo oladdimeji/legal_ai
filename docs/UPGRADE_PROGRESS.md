@@ -1,5 +1,13 @@
 # Compact Upgrade Progress
 
+## Voice turn lifecycle and transcript settlement
+
+- Unified each user-visible Voice turn behind a single lifecycle: document user request and document card now persist together only after confirmation playback completes, instead of mid-flow before confirmation audio.
+- Added a spoken-only path (`voiceDocumentSpokenOnlyRef`) so acknowledgement and confirmation audio never enters transcript accumulators during document work.
+- Listen mode now opens only when playback is idle, persistence has drained, and the document turn is complete (`canOpenVoiceListenMode`).
+- Mic capture stays held through document turns, confirmation playback, and pending transcript persistence.
+- Optimistic voice messages appear immediately in chat and are replaced in place when `/voice/messages` returns, so action icons show without waiting on the network and live bubbles are not cleared before saved copies arrive.
+
 ## Voice acknowledgement and confirmation transcript hardening
 
 - Tightened Voice transcript suppression so acknowledgement and confirmation speech can never reach live bubbles or persisted chat, even under pre-suppression races, interruption, or premature suppression clearing.
