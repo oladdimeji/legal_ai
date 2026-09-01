@@ -238,16 +238,20 @@ test("a completed turn cannot retire an Assistant capability boundary while its 
   assert.equal(shouldClearVoiceDocumentTranscriptSuppression({
     suppressing: true,
     inFlightCapabilityCount: 0,
-    hasLiveDeliverable: false,
     pendingDocumentDelivery: false,
     pendingConfirmation: false,
   }), true);
   assert.equal(shouldClearVoiceDocumentTranscriptSuppression({
     suppressing: true,
     inFlightCapabilityCount: 0,
-    hasLiveDeliverable: false,
     pendingDocumentDelivery: false,
     pendingConfirmation: true,
+  }), false);
+  assert.equal(shouldClearVoiceDocumentTranscriptSuppression({
+    suppressing: true,
+    inFlightCapabilityCount: 1,
+    pendingDocumentDelivery: false,
+    pendingConfirmation: false,
   }), false);
 
   assert.match(hook, /hasPendingVoiceDocumentDelivery/);
@@ -667,15 +671,33 @@ test("Voice Mode lifecycle is separate from standard send and releases microphon
 });
 
 test("active Voice sessions receive current navigation context without reconnecting", async () => {
-  const [assistant, hook] = await Promise.all([
+  const [assistant, hook, server, voiceMode] = await Promise.all([
     readFile(new URL("../src/components/AssistantView.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8"),
+    readFile(new URL("../server.ts", import.meta.url), "utf8"),
+    readFile(new URL("../server/voiceMode.ts", import.meta.url), "utf8"),
   ]);
-  assert.match(hook, /const updatePageContext = useCallback\(\(pageContext: WorkspacePageContext\) => \{\s*pageContextRef\.current = pageContext;\s*\}, \[\]\)/);
+  assert.match(hook, /pageContextRef\.current = pageContext/);
+  assert.match(hook, /refreshVoiceLiveContextRef\.current\(pageContext\)/);
+  assert.match(hook, /\/voice\/context/);
+  assert.match(hook, /turnComplete: false/);
   assert.match(assistant, /useEffect\(\(\) => \{\s*voiceMode\.updatePageContext\(pageContext\);\s*\}, \[pageContext, voiceMode\.updatePageContext\]\)/);
-  const update = hook.slice(hook.indexOf("const updatePageContext"), hook.indexOf("return {", hook.indexOf("const updatePageContext")));
+  const update = hook.slice(hook.indexOf("const updatePageContext"), hook.indexOf("const refreshVoiceLiveContext"));
   assert.doesNotMatch(update, /connect|token|transcript|playback|releaseResources|sessionRef/);
   assert.match(hook, /JSON\.stringify\(\{ request, pageContext \}\)/);
+  assert.match(hook, /maybeEndVoiceDocumentSpeechSuppression\(\)/);
+  assert.match(hook, /content\.turnComplete[\s\S]*maybeEndVoiceDocumentSpeechSuppression\(\)/);
+  assert.match(server, /app\.post\("\/api\/threads\/:id\/voice\/context"/);
+  const contextRoute = server.slice(
+    server.indexOf('app.post("/api/threads/:id/voice/context"'),
+    server.indexOf('app.post("/api/threads/:id/voice/speak"')
+  );
+  assert.match(contextRoute, /validateVoicePageContext\(req\.body\.pageContext, requestOwnership\)/);
+  assert.match(contextRoute, /buildVoiceLiveContextPrompt/);
+  assert.match(contextRoute, /selectedEvidence/);
+  assert.match(contextRoute, /conversationMessageForPrompt/);
+  assert.match(voiceMode, /export function buildVoiceLiveContextPrompt/);
+  assert.match(voiceMode, /Do not speak in response to this context update/);
 });
 
 test("finalized transcripts use a narrow idempotent owned route and never invoke standard generation", async () => {

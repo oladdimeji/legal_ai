@@ -1,5 +1,13 @@
 # Compact Upgrade Progress
 
+## Voice transcript hardening and live context refresh
+
+- Regular Voice conversation responses no longer stay suppressed after document acknowledgement/confirmation completes. Transcript suppression clearing no longer waits on a lingering live deliverable, and `turnComplete` now re-evaluates suppression before persisting transcripts so spoken answers reliably reach chat again.
+- Active Voice sessions push refreshed workspace context to Gemini Live without reconnecting: navigation updates and newly persisted document cards trigger a debounced `/voice/context` refresh that embeds the current Matter, opened document, Firm Library selection, and recent thread history via silent `sendClientContent` (`turnComplete: false`).
+- Acknowledgement and confirmation speech remain excluded from chat; document ack/card/confirmation sequencing is unchanged.
+- No schema, migration, dependency, authentication, workspace-isolation, or Matter-isolation changes were made.
+- Verification: `npm run lint` passed, voice tests passed, and `npm run build` passed.
+
 ## Perfect Voice Mode: instant answers, intelligent speech, fast drafts
 
 - Live no longer exposes `lookup_workspace`; ordinary turns answer immediately from supplied context with no tool round-trips. Document turns remain the only tool path (`use_assistant_capabilities`).

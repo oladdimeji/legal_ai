@@ -239,6 +239,23 @@ export type VoiceHistoryTurn = {
   parts: Array<{ text: string }>;
 };
 
+export function buildVoiceLiveContextPrompt(input: {
+  sessionContextText: string;
+  selectedEvidenceText: string;
+  recentConversationText?: string;
+}): string {
+  return [
+    "Internal Voice Mode context refresh — not part of the user conversation. Use this as read-only authorized evidence.",
+    "Authorized current Exepts context:",
+    input.sessionContextText.slice(0, 6_000),
+    input.selectedEvidenceText,
+    input.recentConversationText
+      ? `Recent conversation for continuity:\n${input.recentConversationText.slice(0, 8_000)}`
+      : "",
+    "Do not speak in response to this context update. Remain silent until the user speaks.",
+  ].filter(Boolean).join("\n\n");
+}
+
 export function boundedVoiceHistory(messages: Message[]): VoiceHistoryTurn[] {
   const selected: Message[] = [];
   let characters = 0;

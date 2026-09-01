@@ -288,15 +288,23 @@ export function canDeliverVoiceDocumentConfirmation(input: {
 export function shouldClearVoiceDocumentTranscriptSuppression(input: {
   suppressing: boolean;
   inFlightCapabilityCount: number;
-  hasLiveDeliverable: boolean;
   pendingDocumentDelivery: boolean;
   pendingConfirmation: boolean;
 }): boolean {
   return input.suppressing
     && input.inFlightCapabilityCount === 0
-    && !input.hasLiveDeliverable
     && !input.pendingDocumentDelivery
     && !input.pendingConfirmation;
+}
+
+export function inFlightVoiceCapabilityCount(
+  inFlightTurns: Map<number, number> | Iterable<number>
+): number {
+  let total = 0;
+  for (const count of inFlightTurns instanceof Map ? inFlightTurns.values() : inFlightTurns) {
+    total += count;
+  }
+  return total;
 }
 
 export function hasPendingVoiceDocumentDelivery(input: {
@@ -411,6 +419,10 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     error?: string;
   }>>());
   const liveDeliverableRef = useRef<VoiceLiveDeliverable | null>(null);
+  const voiceContextRefreshTimerRef = useRef<number | null>(null);
+  const voiceContextRefreshKeyRef = useRef("");
+  const voiceContextRefreshInFlightRef = useRef(false);
+  const refreshVoiceLiveContextRef = useRef<(pageContext: WorkspacePageContext, options?: { immediate?: boolean }) => void>(() => undefined);
   const onTranscriptRef = useRef(onTranscript);
   onTranscriptRef.current = onTranscript;
 
@@ -541,6 +553,12 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     tokenPrefetchRef.current = null;
     startupAudioBufferRef.current = [];
     captureLiveRef.current = false;
+    if (voiceContextRefreshTimerRef.current) {
+      window.clearTimeout(voiceContextRefreshTimerRef.current);
+      voiceContextRefreshTimerRef.current = null;
+    }
+    voiceContextRefreshKeyRef.current = "";
+    voiceContextRefreshInFlightRef.current = false;
     clearWorking();
     turnBoundaryRef.current += 1;
     setLiveTranscripts({ user: "", assistant: "" });
@@ -645,6 +663,8 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     pausedAssistantCapabilityTurnRef.current = null;
     assistantCapabilityPromisesRef.current.delete(turnBoundaryRef.current);
     turnBoundaryRef.current += 1;
+    const pageContext = pageContextRef.current;
+    if (pageContext) void refreshVoiceLiveContextRef.current(pageContext, { immediate: true });
     return true;
   }, [cancelTranscriptFlush, persistFinalTranscript]);
 
@@ -659,9 +679,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   const maybeEndVoiceDocumentSpeechSuppression = useCallback(() => {
     if (!shouldClearVoiceDocumentTranscriptSuppression({
       suppressing: suppressDocumentTranscriptRef.current,
-      inFlightCapabilityCount: [...inFlightAssistantCapabilityTurnsRef.current.values()]
-        .reduce((total, count) => total + count, 0),
-      hasLiveDeliverable: Boolean(liveDeliverableRef.current),
+      inFlightCapabilityCount: inFlightVoiceCapabilityCount(inFlightAssistantCapabilityTurnsRef.current),
       pendingDocumentDelivery: pendingVoiceDocumentDeliveryTurnsRef.current.size > 0,
       pendingConfirmation: pendingVoiceConfirmationRef.current !== null,
     })) {
@@ -1004,9 +1022,8 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
         maybeStartVoiceDocumentDraft();
       } else if (shouldClearVoiceDocumentTranscriptSuppression({
         suppressing: suppressDocumentTranscriptRef.current,
-        inFlightCapabilityCount: inFlightAssistantCapabilityTurnsRef.current.get(turnBoundaryRef.current) || 0,
-        hasLiveDeliverable: Boolean(liveDeliverableRef.current),
-        pendingDocumentDelivery: pendingVoiceDocumentDeliveryTurnsRef.current.has(turnBoundaryRef.current),
+        inFlightCapabilityCount: inFlightVoiceCapabilityCount(inFlightAssistantCapabilityTurnsRef.current),
+        pendingDocumentDelivery: pendingVoiceDocumentDeliveryTurnsRef.current.size > 0,
         pendingConfirmation: pendingVoiceConfirmationRef.current !== null,
       })) {
         suppressDocumentTranscriptRef.current = false;
@@ -1034,6 +1051,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     }
     if (content.interrupted) finalizeTranscripts("interrupted");
     if (content.turnComplete) {
+      maybeEndVoiceDocumentSpeechSuppression();
       const turnBoundary = turnBoundaryRef.current;
       const userTranscript = transcriptRef.current.user.trim();
       if (shouldStartVoiceDocumentDraft(userTranscript) && !assistantCapabilityPromisesRef.current.has(turnBoundary)) {
@@ -1320,7 +1338,57 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
 
   const updatePageContext = useCallback((pageContext: WorkspacePageContext) => {
     pageContextRef.current = pageContext;
+    refreshVoiceLiveContextRef.current(pageContext);
   }, []);
+
+  const refreshVoiceLiveContext = useCallback((
+    pageContext: WorkspacePageContext,
+    options?: { immediate?: boolean }
+  ) => {
+    const threadId = sessionThreadRef.current;
+    const session = sessionRef.current;
+    if (!threadId || !session || stateRef.current === "off" || stateRef.current === "error") return;
+    const pageContextKey = JSON.stringify(pageContext);
+    if (!options?.immediate && pageContextKey === voiceContextRefreshKeyRef.current) return;
+
+    const run = async () => {
+      if (voiceContextRefreshInFlightRef.current) return;
+      voiceContextRefreshInFlightRef.current = true;
+      try {
+        const response = await fetch(`/api/threads/${encodeURIComponent(threadId)}/voice/context`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pageContext }),
+        });
+        const data = await response.json().catch(() => ({})) as { contextPrompt?: string; error?: string };
+        if (!response.ok || !data.contextPrompt || sessionRef.current !== session) return;
+        voiceContextRefreshKeyRef.current = pageContextKey;
+        session.sendClientContent({
+          turns: [{ role: "user", parts: [{ text: data.contextPrompt }] }],
+          turnComplete: false,
+        });
+      } catch {
+        // Context refresh is best-effort and must not interrupt Voice Mode.
+      } finally {
+        voiceContextRefreshInFlightRef.current = false;
+      }
+    };
+
+    if (options?.immediate) {
+      if (voiceContextRefreshTimerRef.current) {
+        window.clearTimeout(voiceContextRefreshTimerRef.current);
+        voiceContextRefreshTimerRef.current = null;
+      }
+      void run();
+      return;
+    }
+    if (voiceContextRefreshTimerRef.current) window.clearTimeout(voiceContextRefreshTimerRef.current);
+    voiceContextRefreshTimerRef.current = window.setTimeout(() => {
+      voiceContextRefreshTimerRef.current = null;
+      void run();
+    }, 300);
+  }, []);
+  refreshVoiceLiveContextRef.current = refreshVoiceLiveContext;
 
   return {
     state,

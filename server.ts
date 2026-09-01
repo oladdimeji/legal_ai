@@ -65,6 +65,7 @@ import { adaptiveAssistantThinkingLevel, buildAssistantTaskPrompt } from "./serv
 import { normalizeFollowUpSuggestions } from "./server/assistant/followUpSuggestions.js";
 import {
   boundedVoiceHistory,
+  buildVoiceLiveContextPrompt,
   createVoiceModeCredential,
   generateVoiceSpeechAudio,
   voiceDocumentSavedToolResponse,
@@ -72,6 +73,7 @@ import {
   voiceMessageId,
   VOICE_ASSISTANT_HISTORY_LIMIT,
   VOICE_ASSISTANT_CONVERSATION_CHAR_LIMIT,
+  VOICE_MODE_CONFIG,
 } from "./server/voiceMode.js";
 import { detectAssistantDocumentIntent } from "./server/assistant/assistantDocumentIntent.js";
 import {
@@ -2841,7 +2843,7 @@ ${sourceText}`;
       ].join("\n");
       const [credential, recentMessages] = await Promise.all([
         createVoiceModeCredential(),
-        db.getRecentMessages(thread.id, requestOwnership, 12),
+        db.getRecentMessages(thread.id, requestOwnership, VOICE_MODE_CONFIG.historyMessageLimit),
       ]);
       res.setHeader("Cache-Control", "no-store");
       return res.json({
@@ -2858,6 +2860,47 @@ ${sourceText}`;
       }
       console.error("Unable to create Gemini Live credential.");
       return res.status(502).json({ error: "Voice Mode could not connect. Please try again." });
+    }
+  });
+
+  app.post("/api/threads/:id/voice/context", async (req, res) => {
+    try {
+      const requestOwnership = ownership(req);
+      const thread = await db.getThreadById(req.params.id, requestOwnership);
+      if (!thread) return res.status(404).json({ error: "Thread not found" });
+      const validated = await validateVoicePageContext(req.body.pageContext, requestOwnership);
+      const account = (req as AuthenticatedRequest).auth!;
+      const sessionContext = buildAssistantSessionContext({
+        account,
+        pageContext: validated.pageContext,
+        currentMatter: validated.currentMatter,
+      });
+      const recentMessages = await db.getRecentMessages(
+        thread.id,
+        requestOwnership,
+        VOICE_MODE_CONFIG.historyMessageLimit
+      );
+      const recentConversationText = boundedConversation(
+        recentMessages,
+        VOICE_ASSISTANT_CONVERSATION_CHAR_LIMIT
+      )
+        .map(conversationMessageForPrompt)
+        .join("\n\n");
+      const contextPrompt = buildVoiceLiveContextPrompt({
+        sessionContextText: sessionContextForPrompt(sessionContext),
+        selectedEvidenceText: validated.selectedEvidence
+          ? wrapAuthorizedEvidence([validated.selectedEvidence])
+          : "No page entity is explicitly selected.",
+        recentConversationText,
+      });
+      res.setHeader("Cache-Control", "no-store");
+      return res.json({ contextPrompt });
+    } catch (error) {
+      if (error instanceof VoicePageContextError) {
+        return res.status(error.status).json({ error: error.message });
+      }
+      console.error("Unable to refresh Voice Mode context.");
+      return res.status(502).json({ error: "Voice Mode context could not be refreshed." });
     }
   });
 
