@@ -49,3 +49,45 @@ export function voiceConfirmationSpeech(request: string): string {
     ? `I've finished revising the ${docType}.`
     : `I've finished preparing the ${docType}.`;
 }
+
+export function normalizeVoiceSpokenContent(content: string): string {
+  return content.replace(/\s+/g, " ").trim();
+}
+
+const VOICE_ACKNOWLEDGEMENT_SPEECH_PATTERN =
+  /^(?:Understood|Got it|Absolutely)\.\s+I(?:'ll| will) (?:(?:prepare|put together) the |revise the |update the ).+?(?:now|for you|based on your instructions)\.?$/i;
+
+const VOICE_ACKNOWLEDGEMENT_SPEECH_PREFIX =
+  /^(?:Understood|Got it|Absolutely)\.\s+I(?:'ll| will) (?:(?:prepare|put together)|revise|update) the/i;
+
+const VOICE_CONFIRMATION_SPEECH_PATTERN =
+  /^I've finished (?:preparing|revising) (?:the )?.+\.?$/i;
+
+const VOICE_CONFIRMATION_SPEECH_PREFIX = /^I've finished (?:preparing|revising)(?: the)?/i;
+
+export function isVoiceDocumentAcknowledgementContent(content: string): boolean {
+  const spoken = normalizeVoiceSpokenContent(content);
+  if (!spoken) return false;
+  if (VOICE_ACKNOWLEDGEMENT_SPEECH_PATTERN.test(spoken)) return true;
+  return spoken.length >= 16 && VOICE_ACKNOWLEDGEMENT_SPEECH_PREFIX.test(spoken);
+}
+
+export function isVoiceDocumentConfirmationSpeechContent(content: string): boolean {
+  const spoken = normalizeVoiceSpokenContent(content);
+  if (!spoken) return false;
+  if (VOICE_CONFIRMATION_SPEECH_PATTERN.test(spoken)) return true;
+  return spoken.length >= 20 && VOICE_CONFIRMATION_SPEECH_PREFIX.test(spoken);
+}
+
+export function isVoiceDocumentSpokenContent(
+  content: string,
+  expectedConfirmationSpeech?: string | null
+): boolean {
+  const spoken = normalizeVoiceSpokenContent(content);
+  if (!spoken) return false;
+  if (isVoiceDocumentAcknowledgementContent(spoken)) return true;
+  if (isVoiceDocumentConfirmationSpeechContent(spoken)) return true;
+  const expected = expectedConfirmationSpeech ? normalizeVoiceSpokenContent(expectedConfirmationSpeech) : "";
+  if (!expected) return false;
+  return spoken === expected || spoken.startsWith(expected) || expected.startsWith(spoken);
+}

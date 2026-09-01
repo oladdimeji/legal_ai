@@ -1,5 +1,12 @@
 # Compact Upgrade Progress
 
+## Voice acknowledgement and confirmation transcript hardening
+
+- Tightened Voice transcript suppression so acknowledgement and confirmation speech can never reach live bubbles or persisted chat, even under pre-suppression races, interruption, or premature suppression clearing.
+- While document-flow suppression is active, all assistant output transcription is dropped. A content guard in `voiceAcknowledgement.ts` also discards known acknowledgement/confirmation phrasing and the expected per-turn confirmation string at accumulation, finalization, interruption, and persistence boundaries.
+- Removed input-transcription fallback paths that could clear suppression before confirmation playback finished; suppression now ends only through the existing playback-idle boundary in `maybeEndVoiceDocumentSpeechSuppression`.
+- No schema, migration, dependency, authentication, workspace-isolation, Matter-isolation, document-generation, acknowledgement wording, typed Assistant, or interface changes were made.
+
 ## Voice acknowledgement-parity confirmation
 
 - Moved document confirmation back into the existing Gemini Live session so acknowledgement and confirmation now use the same native Live voice and playback path.

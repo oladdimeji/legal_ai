@@ -38,6 +38,7 @@ import {
   hasPendingVoiceDocumentDelivery,
   isVoiceAssistantPlaybackIdle,
   shouldClearVoiceDocumentTranscriptSuppression,
+  shouldDropVoiceAssistantTranscript,
   shouldFilterAssistantVoiceTranscript,
   shouldHoldVoiceCapture,
   voiceCaptureAwaitingFinalize,
@@ -265,7 +266,23 @@ test("a completed turn cannot retire an Assistant capability boundary while its 
     confirmationSpeechActive: false,
     pendingDocumentDelivery: false,
     inFlightCapabilityCount: 0,
+  }), true);
+  assert.equal(shouldDropVoiceAssistantTranscript("Understood. I'll prepare the NDA now.", {
+    suppressDocumentSpeech: false,
+    expectedConfirmationSpeech: null,
+  }), true);
+  assert.equal(shouldDropVoiceAssistantTranscript("I've finished preparing the NDA.", {
+    suppressDocumentSpeech: false,
+    expectedConfirmationSpeech: "I've finished preparing the NDA.",
+  }), true);
+  assert.equal(shouldDropVoiceAssistantTranscript("Here are the current matters.", {
+    suppressDocumentSpeech: false,
+    expectedConfirmationSpeech: null,
   }), false);
+  assert.equal(shouldDropVoiceAssistantTranscript("Here are the current matters.", {
+    suppressDocumentSpeech: true,
+    expectedConfirmationSpeech: null,
+  }), true);
 
   assert.match(hook, /hasPendingVoiceDocumentDelivery/);
   assert.match(hook, /shouldAdvanceVoiceTurnBoundary\(\s*"turnComplete",\s*hasPendingDocumentDelivery\s*\)/);
@@ -420,7 +437,10 @@ test("Voice document completion creates the card before one short doc-type Live 
   );
   assert.doesNotMatch(hook, /DOCUMENT_CONFIRMATION|voiceDocumentConfirmationClientPrompt|voiceDocumentDraftingFailedClientPrompt|fetchVoiceSpeech|playPreparedVoiceConfirmation|voice\/speak/);
   assert.match(toolHandler, /beginVoiceDocumentSpeechSuppression/);
-  assert.match(toolHandler, /shouldClearVoiceDocumentTranscriptSuppression/);
+  assert.match(toolHandler, /shouldDropVoiceAssistantTranscript/);
+  assert.match(toolHandler, /pendingVoiceConfirmationSpeechRef/);
+  assert.match(hook, /shouldClearVoiceDocumentTranscriptSuppression/);
+  assert.doesNotMatch(toolHandler, /shouldClearVoiceDocumentTranscriptSuppression/);
   assert.doesNotMatch(toolHandler, /playDocumentConfirmation\(/);
   assert.match(assistant, /liveDocumentReady/);
   assert.match(assistant, /confirmationOnly = Boolean\(document && isDocumentConfirmationContent\(m\.content\)\)/);
@@ -713,6 +733,7 @@ test("active Voice sessions receive current navigation context without reconnect
   assert.doesNotMatch(hook, /tryDeliverPendingVoiceConfirmation/);
   assert.match(hook, /confirmationSpeechActiveRef/);
   assert.match(hook, /shouldFilterAssistantVoiceTranscript/);
+  assert.match(hook, /shouldDropVoiceAssistantTranscript/);
   assert.match(server, /app\.post\("\/api\/threads\/:id\/voice\/context"/);
   const contextRoute = server.slice(
     server.indexOf('app.post("/api/threads/:id/voice/context"'),
