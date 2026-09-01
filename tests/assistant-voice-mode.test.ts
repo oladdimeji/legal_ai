@@ -39,6 +39,7 @@ import {
   isVoiceAssistantPlaybackIdle,
   canDeliverVoiceDocumentConfirmation,
   shouldClearVoiceDocumentTranscriptSuppression,
+  shouldFilterAssistantVoiceTranscript,
   shouldHoldVoiceCapture,
   voiceCaptureAwaitingFinalize,
   voiceAcknowledgementSpeechFromRequest,
@@ -240,18 +241,42 @@ test("a completed turn cannot retire an Assistant capability boundary while its 
     inFlightCapabilityCount: 0,
     pendingDocumentDelivery: false,
     pendingConfirmation: false,
+    confirmationSpeechActive: false,
   }), true);
   assert.equal(shouldClearVoiceDocumentTranscriptSuppression({
     suppressing: true,
     inFlightCapabilityCount: 0,
     pendingDocumentDelivery: false,
     pendingConfirmation: true,
+    confirmationSpeechActive: false,
+  }), false);
+  assert.equal(shouldClearVoiceDocumentTranscriptSuppression({
+    suppressing: true,
+    inFlightCapabilityCount: 0,
+    pendingDocumentDelivery: false,
+    pendingConfirmation: false,
+    confirmationSpeechActive: true,
   }), false);
   assert.equal(shouldClearVoiceDocumentTranscriptSuppression({
     suppressing: true,
     inFlightCapabilityCount: 1,
     pendingDocumentDelivery: false,
     pendingConfirmation: false,
+    confirmationSpeechActive: false,
+  }), false);
+  assert.equal(shouldFilterAssistantVoiceTranscript({
+    suppressDocumentSpeech: true,
+    pendingConfirmation: true,
+    confirmationSpeechActive: false,
+    pendingDocumentDelivery: false,
+    inFlightCapabilityCount: 0,
+  }), true);
+  assert.equal(shouldFilterAssistantVoiceTranscript({
+    suppressDocumentSpeech: true,
+    pendingConfirmation: false,
+    confirmationSpeechActive: false,
+    pendingDocumentDelivery: false,
+    inFlightCapabilityCount: 0,
   }), false);
 
   assert.match(hook, /hasPendingVoiceDocumentDelivery/);
@@ -686,7 +711,10 @@ test("active Voice sessions receive current navigation context without reconnect
   assert.doesNotMatch(update, /connect|token|transcript|playback|releaseResources|sessionRef/);
   assert.match(hook, /JSON\.stringify\(\{ request, pageContext \}\)/);
   assert.match(hook, /maybeEndVoiceDocumentSpeechSuppression\(\)/);
-  assert.match(hook, /content\.turnComplete[\s\S]*maybeEndVoiceDocumentSpeechSuppression\(\)/);
+  assert.match(hook, /content\.turnComplete[\s\S]*tryDeliverPendingVoiceConfirmation\(\)/);
+  assert.doesNotMatch(hook, /content\.turnComplete[\s\S]*maybeEndVoiceDocumentSpeechSuppression\(\)/);
+  assert.match(hook, /confirmationSpeechActiveRef/);
+  assert.match(hook, /shouldFilterAssistantVoiceTranscript/);
   assert.match(server, /app\.post\("\/api\/threads\/:id\/voice\/context"/);
   const contextRoute = server.slice(
     server.indexOf('app.post("/api/threads/:id/voice/context"'),

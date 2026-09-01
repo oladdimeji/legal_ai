@@ -1,5 +1,14 @@
 # Compact Upgrade Progress
 
+## Voice confirmation and transcript hardening
+
+- Removed premature transcript-suppression clearing on `turnComplete`, which could release confirmation speech into chat or mash it with a later answer.
+- Confirmation delivery now retries on every `turnComplete` and when user speech arrives while a card is waiting; `confirmationSpeechActive` keeps ack/card/confirmation sequencing intact until playback finishes.
+- Regular conversation answers always persist: finalize no longer drops assistant text just because suppression was left over from an earlier document turn.
+- Live page-context refresh remains on navigation; document-card refresh now runs after persistence instead of during confirmation delivery.
+- No schema, migration, dependency, authentication, workspace-isolation, or Matter-isolation changes were made.
+- Verification: `npm run lint` passed, voice tests passed, and `npm run build` passed.
+
 ## Voice transcript hardening and live context refresh
 
 - Regular Voice conversation responses no longer stay suppressed after document acknowledgement/confirmation completes. Transcript suppression clearing no longer waits on a lingering live deliverable, and `turnComplete` now re-evaluates suppression before persisting transcripts so spoken answers reliably reach chat again.
