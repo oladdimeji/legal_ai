@@ -3072,7 +3072,7 @@ ${sourceText}`;
         ? voiceDocumentSavedToolResponse(confirmationSpeech)
         : undefined;
       return res.json({
-        result: draftContent,
+        result: completion.content,
         ...(completion.document ? { draftContent } : {}),
         ...(confirmationSpeech ? { confirmationSpeech } : {}),
         ...(toolResponse ? { toolResponse } : {}),

@@ -1,5 +1,15 @@
 # Compact Upgrade Progress
 
+## Voice single-turn acknowledgement and confirmation repair
+
+- Fixed the `413 Voice transcript is too long` regression at its source: the Voice capability route now returns the normal concise Assistant confirmation as the transcript result while keeping the full draft exclusively in `draftContent` and the document metadata/card.
+- Kept the existing Live acknowledgement behavior and removed the extra intermediate tool response that could make Gemini produce a second acknowledgement. Repeated capability calls for the same user turn receive only the existing silent `IN_PROGRESS` token.
+- Confirmation now uses the original `use_assistant_capabilities` Live turn—the same native Live audio path as the acknowledgement. The document is finalized and the card gets a render opportunity before that original function call returns one `DOCUMENT_CONFIRMATION` result.
+- Removed the synthetic client confirmation turn and its confirmation-specific AudioWorklet stream controls. The established Voice playback path is unchanged and now handles acknowledgement and confirmation consistently.
+- Assistant transcript suppression remains active from the document request through confirmation completion, so neither acknowledgement nor confirmation is written to chat.
+- No schema, migration, dependency, authentication, workspace-isolation, Matter-isolation, document-generation, typed Assistant, or interface changes were made.
+- Verification: all 44 focused Voice and draft-stream tests and the full 499-test suite passed; `npm run lint` and `npm run build` passed with the existing non-fatal large-chunk warning.
+
 ## Voice confirmation stream completion
 
 - Fixed confirmation audio stopping after its first word or two: a temporary 200 ms packet gap could previously be treated as the end of the confirmation, after which the worklet required a fresh 300 ms prebuffer and could strand a short remaining tail.
