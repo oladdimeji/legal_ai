@@ -3074,6 +3074,7 @@ ${sourceText}`;
       return res.json({
         result: draftContent,
         ...(completion.document ? { draftContent } : {}),
+        ...(confirmationSpeech ? { confirmationSpeech } : {}),
         ...(toolResponse ? { toolResponse } : {}),
         capabilityMetadata,
       });

@@ -1,5 +1,14 @@
 # Compact Upgrade Progress
 
+## Voice acknowledgement and confirmation sequencing
+
+- A document acknowledgement is now explicitly once per user turn, including repeated capability calls, and the opaque in-progress response keeps Live silent while the document is being created.
+- The document card is finalized before the confirmation turn is dispatched. Confirmation delivery waits for both the acknowledgement turn to complete and its playback to become idle, then counts as delivered only after confirmation audio actually arrives.
+- Silent or interrupted confirmation turns retry internally instead of waiting for another voice request. Microphone capture and assistant-transcript suppression remain held through confirmation playback, so neither acknowledgement nor confirmation enters chat.
+- The confirmation uses a compact hidden Live protocol and the raw server-generated confirmation speech, avoiding nested instructions while retaining the existing Kore voice and document-generation flow.
+- No schema, migration, dependency, authentication, workspace-isolation, Matter-isolation, regular Assistant, document-generation, or interface changes were made.
+- Verification: `npm run lint` passed, 38 focused Voice tests passed, and `npm run build` passed with the existing non-fatal large-chunk warning.
+
 ## Voice finalized-transcript route isolation
 
 - Restored the finalized-transcript persistence callback's narrow boundary by moving document-card retirement and Live context refresh into a dedicated post-persistence helper.

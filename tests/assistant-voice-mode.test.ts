@@ -81,7 +81,7 @@ test("Gemini Live configuration is centralized for native audio, transcription, 
   assert.match(String(config.systemInstruction), /Answer ordinary conversation[\s\S]*directly and immediately/);
   assert.match(String(config.systemInstruction), /Rotate naturally among these acknowledgement styles/);
   assert.match(String(config.systemInstruction), /Understood\. I'll prepare the \[document type\] now\./);
-  assert.match(String(config.systemInstruction), /When that function first returns, it may only mean drafting is in progress/);
+  assert.match(String(config.systemInstruction), /exact token IN_PROGRESS/);
   assert.match(String(config.systemInstruction), /Never repeat, restate, or speak the acknowledgement again/);
   assert.match(String(config.systemInstruction), /Never combine acknowledgement and confirmation in one spoken turn/);
   assert.match(String(config.systemInstruction), /Never read or quote text from the document/);
@@ -224,6 +224,7 @@ test("a completed turn cannot retire an Assistant capability boundary while its 
   assert.equal(isVoiceAssistantPlaybackIdle({ playbackActive: true, playbackSourceCount: 0 }), false);
   assert.equal(canDeliverVoiceDocumentConfirmation({
     playbackIdle: true,
+    liveTurnComplete: true,
     hasDocument: true,
     hasToolResponse: true,
     hasDeliverableContent: true,
@@ -231,6 +232,15 @@ test("a completed turn cannot retire an Assistant capability boundary while its 
   }), true);
   assert.equal(canDeliverVoiceDocumentConfirmation({
     playbackIdle: false,
+    liveTurnComplete: true,
+    hasDocument: true,
+    hasToolResponse: true,
+    hasDeliverableContent: true,
+    alreadyDelivered: false,
+  }), false);
+  assert.equal(canDeliverVoiceDocumentConfirmation({
+    playbackIdle: true,
+    liveTurnComplete: false,
     hasDocument: true,
     hasToolResponse: true,
     hasDeliverableContent: true,
@@ -400,8 +410,8 @@ test("Voice document completion keeps one card result and speaks an informationa
 
   assert.match(hook, /deliverVoiceDocumentCapability/);
   assert.match(hook, /capability\.ok && capability\.capabilityMetadata\?\.document/);
-  assert.match(voiceMode, /When that function first returns, it may only mean drafting is in progress/);
-  assert.match(voiceMode, /Speak only when separate follow-up confirmation guidance arrives/);
+  assert.match(voiceMode, /exact marker DOCUMENT_CONFIRMATION:/);
+  assert.match(voiceMode, /Speak exactly and only the words after the marker once/);
   assert.match(server, /voiceInformationalConfirmationSpeech/);
   assert.doesNotMatch(server, /generateVoiceDocumentReviewSpeech/);
   assert.match(server, /voiceDocumentSavedToolResponse/);
@@ -417,6 +427,11 @@ test("Voice document completion keeps one card result and speaks an informationa
   assert.match(hook, /voiceDocumentDraftingFailedClientPrompt/);
   assert.match(hook, /sendClientContent/);
   assert.match(hook, /voiceDocumentConfirmationClientPrompt/);
+  assert.match(hook, /pending\.status = "awaiting-audio"/);
+  assert.match(hook, /confirmationPlaybackStartedRef\.current = true/);
+  assert.match(hook, /silentConfirmation\.status = "ready"/);
+  assert.match(hook, /liveTurnComplete: liveTurnCompleteRef\.current/);
+  assert.match(server, /confirmationSpeech/);
   assert.match(
     hook,
     /tryDeliverPendingVoiceConfirmation[\s\S]*finalizePendingVoiceDocument\(\)[\s\S]*sendClientContent/
@@ -462,7 +477,8 @@ test("Live tool declarations expose only document creation capability", () => {
   assert.deepEqual(declarations.map((declaration) => declaration.name), ["use_assistant_capabilities"]);
   const assistant = declarations.find((declaration) => declaration.name === "use_assistant_capabilities")!;
   assert.match(assistant.description, /Create or revise a document only/);
-  assert.match(assistant.description, /Speak one tailored acknowledgement sentence and call this in the same turn immediately/);
+  assert.match(assistant.description, /first call for a user turn, speak one tailored acknowledgement sentence/);
+  assert.match(assistant.description, /Repeat calls for that same user turn must be silent/);
 });
 
 test("Firm Library title resolution is normalized, deterministic, and refuses ambiguity", () => {
@@ -639,6 +655,11 @@ test("Voice holds microphone capture while speaking or working and still stops p
     pausedCapabilityTurn: false,
     pendingVoicePersistence: true,
   }), false);
+  assert.equal(voiceCaptureAwaitingFinalize({
+    hasLiveDeliverable: false,
+    pausedCapabilityTurn: false,
+    confirmationPendingOrActive: true,
+  }), true);
 
   const hook = await readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8");
   const send = hook.slice(hook.indexOf("const sendOrBufferCapture"), hook.indexOf("if (capture.kind === \"worklet\")"));
