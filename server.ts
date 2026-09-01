@@ -68,8 +68,7 @@ import {
   buildVoiceLiveContextPrompt,
   createVoiceModeCredential,
   generateVoiceSpeechAudio,
-  voiceDocumentSavedToolResponse,
-  voiceInformationalConfirmationSpeech,
+  voiceDocumentConfirmationSpeech,
   voiceMessageId,
   VOICE_ASSISTANT_HISTORY_LIMIT,
   VOICE_ASSISTANT_CONVERSATION_CHAR_LIMIT,
@@ -3062,20 +3061,13 @@ ${sourceText}`;
         : "document";
       const draftContent = completion.draftContent || completion.content;
       const confirmationSpeech = completion.document
-        ? voiceInformationalConfirmationSpeech({
-          title: documentTitle,
-          draftContent,
-          revise: assistantPlan.deliverable.documentAction === "revise",
-        })
-        : undefined;
-      const toolResponse = confirmationSpeech
-        ? voiceDocumentSavedToolResponse(confirmationSpeech)
+        ? voiceDocumentConfirmationSpeech(completion.content)
+          || `The ${documentTitle} is ready for your review.`
         : undefined;
       return res.json({
         result: completion.content,
         ...(completion.document ? { draftContent } : {}),
         ...(confirmationSpeech ? { confirmationSpeech } : {}),
-        ...(toolResponse ? { toolResponse } : {}),
         capabilityMetadata,
       });
     } catch (error) {

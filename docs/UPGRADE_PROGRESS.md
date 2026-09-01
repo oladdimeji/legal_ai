@@ -1,5 +1,15 @@
 # Compact Upgrade Progress
 
+## Voice prepared confirmation playback
+
+- Replaced the Live-generated document confirmation with one short prepared Kore speech clip through the existing authenticated `/voice/speak` path. The acknowledgement behavior and wording remain unchanged.
+- The prepared confirmation is derived from the saved Assistant confirmation, so it remains tailored to the created or revised document title without reviewing or reading the document body.
+- The document is finalized and the card receives a render opportunity before confirmation audio is requested and played.
+- Removed the `DOCUMENT_CONFIRMATION` Live marker, confirmation tool payload, Live-turn completion dependency, and associated response plumbing. Live receives only the existing silent `IN_PROGRESS` function response after document completion.
+- Prepared confirmation audio never enters Gemini Live output transcription, while document-speech transcript suppression remains active until the clip finishes.
+- No schema, migration, dependency, authentication, workspace-isolation, Matter-isolation, document-generation, acknowledgement, typed Assistant, or interface changes were made.
+- Verification: all 44 focused Voice and draft-stream tests and the full 499-test suite passed; `npm run lint` and `npm run build` passed with the existing non-fatal large-chunk warning.
+
 ## Voice single-turn acknowledgement and confirmation repair
 
 - Fixed the `413 Voice transcript is too long` regression at its source: the Voice capability route now returns the normal concise Assistant confirmation as the transcript result while keeping the full draft exclusively in `draftContent` and the document metadata/card.

@@ -310,7 +310,7 @@ test("spoken document instructions start drafting in parallel without blocking L
   assert.match(assistant, /id: "voice-live-deliverable"/);
 });
 
-test("Voice speech endpoint remains available while acknowledgement and confirmation stay on the original Live turn", async () => {
+test("Voice prepared confirmation reuses the existing owned Kore speech endpoint without changing Live acknowledgement", async () => {
   const [server, hook, voiceMode] = await Promise.all([
     readFile(new URL("../server.ts", import.meta.url), "utf8"),
     readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8"),
@@ -328,14 +328,15 @@ test("Voice speech endpoint remains available while acknowledgement and confirma
   assert.match(voiceMode, /runWithTransientModelRetries/);
   assert.match(voiceMode, /VOICE_MODE_TTS_FALLBACK_MODEL/);
   assert.match(voiceMode, /generateVoiceSpeechAudio/);
-  assert.match(voiceMode, /voiceDocumentSavedToolResponse/);
   assert.equal((voiceMode.match(/models\.generateContent/g) ?? []).length, 1);
 
   const toolHandler = hook.slice(hook.indexOf("const handleServerMessage"), hook.indexOf("const ensureVoiceToken"));
   assert.match(toolHandler, /await ensureAssistantCapability\(request, turnBoundary\)/);
-  assert.match(toolHandler, /capability\.toolResponse/);
+  assert.match(hook, /const fetchVoiceSpeech/);
+  assert.match(hook, /playPreparedVoiceConfirmation/);
+  assert.match(hook, /\/voice\/speak/);
   assert.match(toolHandler, /suppressDocumentTranscriptRef/);
-  assert.doesNotMatch(toolHandler, /fetchVoiceSpeech|playAcknowledgement|playDocumentConfirmation/);
+  assert.doesNotMatch(toolHandler, /playAcknowledgement|playDocumentConfirmation/);
   assert.match(toolHandler, /scheduleAudio\(inlineData\.data, inlineData\.mimeType\)/);
   assert.match(toolHandler, /voice\/assistant/);
   assert.doesNotMatch(toolHandler, /voice\/lookup/);
@@ -351,7 +352,7 @@ test("Voice speech endpoint remains available while acknowledgement and confirma
   assert.doesNotMatch(hook, /playbackRate/);
 });
 
-test("Voice document completion creates the card before one confirmation on the original Live tool turn", async () => {
+test("Voice document completion creates the card before one short prepared confirmation", async () => {
   const [server, hook, voiceMode, completion, assistant] = await Promise.all([
     readFile(new URL("../server.ts", import.meta.url), "utf8"),
     readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8"),
@@ -379,21 +380,21 @@ test("Voice document completion creates the card before one confirmation on the 
   assert.equal(usesVoiceRevisionConfirmation({ sourceDocument: { id: "doc_1" } }), true);
 
   assert.match(hook, /capability\.ok && capability\.capabilityMetadata\?\.document/);
-  assert.match(voiceMode, /exact marker DOCUMENT_CONFIRMATION:/);
-  assert.match(voiceMode, /Speak exactly and only the words after the marker once/);
-  assert.match(voiceMode, /result of use_assistant_capabilities may begin with the exact marker/);
-  assert.match(server, /voiceInformationalConfirmationSpeech/);
+  assert.doesNotMatch(voiceMode, /DOCUMENT_CONFIRMATION:/);
+  assert.match(server, /voiceDocumentConfirmationSpeech\(completion\.content\)/);
+  assert.doesNotMatch(server, /voiceInformationalConfirmationSpeech/);
   assert.doesNotMatch(server, /generateVoiceDocumentReviewSpeech/);
-  assert.match(server, /voiceDocumentSavedToolResponse/);
-  assert.match(server, /toolResponse/);
+  assert.doesNotMatch(server, /voiceDocumentSavedToolResponse|toolResponse/);
   assert.doesNotMatch(server, /voice\/acknowledgement|voice\/confirmation|voice\/lookup/);
   assert.match(voiceMode, /generateVoiceSpeechAudio/);
   assert.doesNotMatch(voiceMode, /warmupVoiceSpeechAudio|VOICE_MODE_DOCUMENT_CONFIRMATION/);
 
   assert.match(hook, /VOICE_DOCUMENT_DRAFTING_TOOL_ACK/);
   assert.match(hook, /finalizePendingVoiceDocument\(\)/);
-  assert.match(hook, /confirmationPlaybackStartedRef\.current = true/);
+  assert.match(hook, /confirmationPlaybackStartedRef\.current = scheduleAudio/);
   assert.match(hook, /finishVoiceDocumentConfirmation/);
+  assert.match(hook, /playPreparedVoiceConfirmation/);
+  assert.match(hook, /fetchVoiceSpeech/);
   assert.match(hook, /requestAnimationFrame\(\(\) => resolve\(\)\)/);
   assert.match(server, /confirmationSpeech/);
   assert.match(server, /result: completion\.content/);
@@ -407,14 +408,16 @@ test("Voice document completion creates the card before one confirmation on the 
   assert.match(documentToolCall, /const isPrimaryDocumentCall/);
   assert.match(documentToolCall, /await ensureAssistantCapability\(request, turnBoundary\)/);
   assert.match(documentToolCall, /finalizePendingVoiceDocument\(\)/);
-  assert.match(documentToolCall, /output: shouldConfirm[\s\S]*capability\.toolResponse/);
+  assert.match(documentToolCall, /response: \{ output: VOICE_DOCUMENT_DRAFTING_TOOL_ACK \}/);
+  assert.match(documentToolCall, /playPreparedVoiceConfirmation\([\s\S]*capability\.confirmationSpeech/);
   assert.ok(documentToolCall.indexOf("await ensureAssistantCapability") < documentToolCall.indexOf("session.sendToolResponse"));
   assert.ok(documentToolCall.indexOf("finalizePendingVoiceDocument()") < documentToolCall.indexOf("session.sendToolResponse"));
+  assert.ok(documentToolCall.indexOf("session.sendToolResponse") < documentToolCall.indexOf("playPreparedVoiceConfirmation"));
   assert.doesNotMatch(
     documentToolCall.slice(0, documentToolCall.indexOf("await ensureAssistantCapability")),
     /sendToolResponse|VOICE_DOCUMENT_DRAFTING_TOOL_ACK/
   );
-  assert.doesNotMatch(hook, /voiceDocumentConfirmationClientPrompt|voiceDocumentDraftingFailedClientPrompt/);
+  assert.doesNotMatch(hook, /DOCUMENT_CONFIRMATION|voiceDocumentConfirmationClientPrompt|voiceDocumentDraftingFailedClientPrompt|toolResponse/);
   assert.match(toolHandler, /beginVoiceDocumentSpeechSuppression/);
   assert.match(toolHandler, /shouldClearVoiceDocumentTranscriptSuppression/);
   assert.doesNotMatch(toolHandler, /playDocumentConfirmation\(/);
@@ -705,7 +708,7 @@ test("active Voice sessions receive current navigation context without reconnect
   assert.doesNotMatch(update, /connect|token|transcript|playback|releaseResources|sessionRef/);
   assert.match(hook, /JSON\.stringify\(\{ request, pageContext \}\)/);
   assert.match(hook, /maybeEndVoiceDocumentSpeechSuppression\(\)/);
-  assert.match(hook, /content\.turnComplete[\s\S]*finishVoiceDocumentConfirmation\(\)/);
+  assert.match(hook, /onAssistantPlaybackIdleRef\.current = \(\) => \{[\s\S]*finishVoiceDocumentConfirmation\(\)/);
   assert.doesNotMatch(hook, /tryDeliverPendingVoiceConfirmation/);
   assert.match(hook, /confirmationSpeechActiveRef/);
   assert.match(hook, /shouldFilterAssistantVoiceTranscript/);
@@ -842,9 +845,8 @@ test("Voice Assistant capability routing reuses the owned Assistant pipeline wit
   assert.match(route, /buildAssistantSessionContext/);
   assert.match(route, /fallbackAssistantPlan/);
   assert.match(route, /detectAssistantDocumentIntent/);
-  assert.match(route, /toolResponse/);
-  assert.match(route, /voiceDocumentSavedToolResponse/);
-  assert.match(route, /voiceInformationalConfirmationSpeech/);
+  assert.match(route, /voiceDocumentConfirmationSpeech\(completion\.content\)/);
+  assert.doesNotMatch(route, /toolResponse|voiceDocumentSavedToolResponse|voiceInformationalConfirmationSpeech/);
   assert.match(route, /VOICE_ASSISTANT_HISTORY_LIMIT/);
   assert.match(route, /return res\.json\(/);
   assert.doesNotMatch(route, /writeAssistantDraftNdjson|draft_started|onDraftChunk|generateVoiceDocumentReviewSpeech/);

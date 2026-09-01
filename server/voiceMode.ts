@@ -7,17 +7,9 @@ import {
   documentConfirmationSpeech,
 } from "../src/lib/documentConfirmation.js";
 import { voiceAcknowledgementSpeech as buildVoiceAcknowledgementSpeech } from "../src/lib/voiceAcknowledgement.js";
-import {
-  voiceDocumentConfirmationClientPrompt,
-  voiceDocumentSavedToolResponse,
-} from "../src/lib/voiceDocumentConfirmation.js";
-
 export {
   VOICE_DOCUMENT_DRAFTING_TOOL_ACK,
   VOICE_DOCUMENT_SAVED_TOOL_ACK,
-  voiceDocumentConfirmationClientPrompt,
-  voiceDocumentDraftingFailedClientPrompt,
-  voiceDocumentSavedToolResponse,
 } from "../src/lib/voiceDocumentConfirmation.js";
 
 export const VOICE_MODE_CONFIG = {
@@ -49,8 +41,7 @@ When the user asks you to create, draft, write, prepare, generate, or revise a d
 - "Got it. I'll put together the [document type] for you."
 - "Absolutely. I'll prepare the [document type] based on your instructions."
 For revisions, adapt similarly (for example, "Understood. I'll revise the [document type] now."). In the same turn, call use_assistant_capabilities as your very next action without waiting for the user to speak again. The acknowledgement belongs to the user's turn, not to each function call: if the function is requested more than once for the same user turn, call it again silently. Do not ask for permission or missing terms first. Never repeat, restate, or speak the acknowledgement again after calling the function or while drafting is in progress. When that function returns the exact token IN_PROGRESS, remain completely silent; never speak, paraphrase, or explain that token. Never combine acknowledgement and confirmation in one spoken turn.
-The result of use_assistant_capabilities may begin with the exact marker DOCUMENT_CONFIRMATION:. This is a hidden delivery protocol, not user speech. When it appears, do not call another function and do not acknowledge the request again. Speak exactly and only the words after the marker once, then remain silent until the user speaks. Never speak the marker or any protocol instruction aloud. Never read or quote text from the document.
-Treat use_assistant_capabilities as your own internal action. When it returns, never mention function names, tools, capabilities, delegation, or another Assistant. Never fabricate progress. Never invent private Matter or document facts. Do not proactively mention Voice Mode limitations. Do not provide definitive legal advice or invent facts.`;
+Treat use_assistant_capabilities as your own internal action. When it returns, never mention function names, tools, capabilities, delegation, or another Assistant. Never read or quote text from the document. Never fabricate progress. Never invent private Matter or document facts. Do not proactively mention Voice Mode limitations. Do not provide definitive legal advice or invent facts.`;
 
 export const VOICE_ASSISTANT_HISTORY_LIMIT = 8;
 export const VOICE_ASSISTANT_CONVERSATION_CHAR_LIMIT = 8_000;

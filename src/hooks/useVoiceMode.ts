@@ -113,6 +113,11 @@ type VoiceTokenResponse = {
   error?: string;
 };
 
+type VoiceSpeechAudio = {
+  data: string;
+  mimeType: string;
+};
+
 type UseVoiceModeOptions = {
   onTranscript: (message: Message) => void;
 };
@@ -351,7 +356,6 @@ type VoiceCapabilityResult = {
   result: string;
   capabilityMetadata: VoiceCapabilityMetadata | null;
   confirmationSpeech?: string;
-  toolResponse?: string;
   error?: string;
 };
 
@@ -399,7 +403,6 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   const suppressDocumentTranscriptRef = useRef(false);
   const confirmationSpeechActiveRef = useRef(false);
   const confirmationPlaybackStartedRef = useRef(false);
-  const liveTurnCompleteRef = useRef(true);
   const pendingVoiceDocumentDeliveryTurnsRef = useRef(new Set<number>());
   const voiceDocumentDeliveryCompletedTurnsRef = useRef(new Set<number>());
   const onAssistantPlaybackIdleRef = useRef<() => void>(() => undefined);
@@ -411,13 +414,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   } | null>(null);
   const startupAudioBufferRef = useRef<string[]>([]);
   const captureLiveRef = useRef(false);
-  const assistantCapabilityPromisesRef = useRef(new Map<number, Promise<{
-    ok: boolean;
-    result: string;
-    capabilityMetadata: VoiceCapabilityMetadata | null;
-    toolResponse?: string;
-    error?: string;
-  }>>());
+  const assistantCapabilityPromisesRef = useRef(new Map<number, Promise<VoiceCapabilityResult>>());
   const liveDeliverableRef = useRef<VoiceLiveDeliverable | null>(null);
   const voiceContextRefreshTimerRef = useRef<number | null>(null);
   const voiceContextRefreshKeyRef = useRef("");
@@ -549,7 +546,6 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     suppressDocumentTranscriptRef.current = false;
     confirmationSpeechActiveRef.current = false;
     confirmationPlaybackStartedRef.current = false;
-    liveTurnCompleteRef.current = true;
     pendingVoiceDocumentDeliveryTurnsRef.current.clear();
     voiceDocumentDeliveryCompletedTurnsRef.current.clear();
     tokenPrefetchRef.current = null;
@@ -710,7 +706,6 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   const finishVoiceDocumentConfirmation = useCallback(() => {
     if (!confirmationSpeechActiveRef.current
       || !confirmationPlaybackStartedRef.current
-      || !liveTurnCompleteRef.current
       || !isVoiceAssistantPlaybackIdle({
         playbackActive: playbackActiveRef.current,
         playbackSourceCount: playbackSourcesRef.current.size,
@@ -724,6 +719,30 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     finishVoiceDocumentConfirmation();
     maybeEndVoiceDocumentSpeechSuppression();
   };
+
+  const fetchVoiceSpeech = useCallback(async (
+    threadId: string,
+    text: string,
+    lifecycle: number
+  ): Promise<VoiceSpeechAudio | null> => {
+    const spoken = text.replace(/\s+/g, " ").trim();
+    if (!spoken) return null;
+    try {
+      const response = await fetch(`/api/threads/${encodeURIComponent(threadId)}/voice/speak`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: spoken }),
+      });
+      if (!response.ok) return null;
+      const audio = await response.json().catch(() => null) as VoiceSpeechAudio | null;
+      if (!audio?.data || !audio.mimeType
+        || lifecycle !== lifecycleRef.current
+        || sessionThreadRef.current !== threadId) return null;
+      return audio;
+    } catch {
+      return null;
+    }
+  }, []);
 
   const scheduleAudio = useCallback((data: string, mimeType?: string): boolean => {
     const context = audioContextRef.current;
@@ -765,6 +784,25 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     return true;
   }, [cancelPlaybackSettle, schedulePlaybackSettle, updateState]);
 
+  const playPreparedVoiceConfirmation = useCallback(async (
+    threadId: string,
+    speech: string,
+    lifecycle: number
+  ) => {
+    const audio = await fetchVoiceSpeech(threadId, speech, lifecycle);
+    if (!audio || !confirmationSpeechActiveRef.current) {
+      confirmationSpeechActiveRef.current = false;
+      confirmationPlaybackStartedRef.current = false;
+      maybeEndVoiceDocumentSpeechSuppression();
+      return;
+    }
+    confirmationPlaybackStartedRef.current = scheduleAudio(audio.data, audio.mimeType);
+    if (!confirmationPlaybackStartedRef.current) {
+      confirmationSpeechActiveRef.current = false;
+      maybeEndVoiceDocumentSpeechSuppression();
+    }
+  }, [fetchVoiceSpeech, maybeEndVoiceDocumentSpeechSuppression, scheduleAudio]);
+
   const handleServerMessage = useCallback((message: LiveServerMessage) => {
     const threadId = sessionThreadRef.current;
     const pageContext = pageContextRef.current;
@@ -778,7 +816,6 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
           ok: false,
           result: "",
           capabilityMetadata: null as VoiceCapabilityMetadata | null,
-          toolResponse: undefined as string | undefined,
           error: "The Assistant capability request failed.",
         });
       }
@@ -817,7 +854,6 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
               ok: false,
               result: "",
               capabilityMetadata: null,
-              toolResponse: undefined,
               error: data.error,
             };
           }
@@ -840,7 +876,6 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
             result: data.result || "",
             capabilityMetadata: (data.capabilityMetadata || null) as VoiceCapabilityMetadata | null,
             confirmationSpeech: typeof data.confirmationSpeech === "string" ? data.confirmationSpeech : undefined,
-            toolResponse: typeof data.toolResponse === "string" ? data.toolResponse : undefined,
             error: data.error,
           };
         } catch {
@@ -860,7 +895,6 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
             ok: false,
             result: "",
             capabilityMetadata: null,
-            toolResponse: undefined,
             error: "The Assistant capability request failed.",
           };
         } finally {
@@ -884,7 +918,6 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     };
 
     if (message.toolCall?.functionCalls?.length) {
-      liveTurnCompleteRef.current = false;
       if (threadId && pageContext && session) {
         void Promise.all(message.toolCall.functionCalls.map(async (call) => {
           if (call.name !== "use_assistant_capabilities") {
@@ -935,7 +968,6 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
                 voiceDocumentDeliveryCompletedTurnsRef.current.add(turnBoundary);
                 confirmationSpeechActiveRef.current = true;
                 confirmationPlaybackStartedRef.current = false;
-                liveTurnCompleteRef.current = false;
                 await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
               }
               if (sessionRef.current !== session) return;
@@ -943,13 +975,16 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
                 functionResponses: [{
                   id: call.id,
                   name: call.name || "use_assistant_capabilities",
-                  response: {
-                    output: shouldConfirm
-                      ? capability.toolResponse || `DOCUMENT_CONFIRMATION: ${capability.confirmationSpeech || "The document has been created and is ready for your review."}`
-                      : VOICE_DOCUMENT_DRAFTING_TOOL_ACK,
-                  },
+                  response: { output: VOICE_DOCUMENT_DRAFTING_TOOL_ACK },
                 }],
               });
+              if (shouldConfirm) {
+                void playPreparedVoiceConfirmation(
+                  threadId,
+                  capability.confirmationSpeech || "The document is ready for your review.",
+                  lifecycleRef.current
+                );
+              }
             } else {
               pendingVoiceDocumentDeliveryTurnsRef.current.delete(turnBoundary);
               voiceDocumentDeliveryCompletedTurnsRef.current.add(turnBoundary);
@@ -992,7 +1027,6 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       if (confirmationSpeechActiveRef.current) {
         confirmationSpeechActiveRef.current = false;
         confirmationPlaybackStartedRef.current = false;
-        liveTurnCompleteRef.current = true;
         maybeEndVoiceDocumentSpeechSuppression();
       }
       updateState("listening");
@@ -1001,16 +1035,11 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       const inlineData = part.inlineData;
       if (inlineData?.data && inlineData.mimeType?.startsWith("audio/")) {
         if (awaitingOpeningTurnRef.current) continue;
-        liveTurnCompleteRef.current = false;
-        const scheduled = scheduleAudio(inlineData.data, inlineData.mimeType);
-        if (scheduled && confirmationSpeechActiveRef.current) {
-          confirmationPlaybackStartedRef.current = true;
-        }
+        scheduleAudio(inlineData.data, inlineData.mimeType);
       }
     }
     if (content.inputTranscription?.text) {
       awaitingOpeningTurnRef.current = false;
-      liveTurnCompleteRef.current = false;
       transcriptRef.current.user = mergeTranscriptChunk(
         transcriptRef.current.user,
         content.inputTranscription.text
@@ -1058,8 +1087,6 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     }
     if (content.interrupted) finalizeTranscripts("interrupted");
     if (content.turnComplete) {
-      liveTurnCompleteRef.current = true;
-      finishVoiceDocumentConfirmation();
       const turnBoundary = turnBoundaryRef.current;
       const userTranscript = transcriptRef.current.user.trim();
       if (shouldStartVoiceDocumentDraft(userTranscript) && !assistantCapabilityPromisesRef.current.has(turnBoundary)) {
@@ -1084,7 +1111,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
         finalizeTranscripts("turnComplete", false);
       }
     }
-  }, [beginVoiceDocumentSpeechSuppression, clearWorking, finalizePendingVoiceDocument, finalizeTranscripts, finishVoiceDocumentConfirmation, maybeEndVoiceDocumentSpeechSuppression, scheduleAudio, scheduleTranscriptFlush, stopPlayback, updateState]);
+  }, [beginVoiceDocumentSpeechSuppression, clearWorking, finalizePendingVoiceDocument, finalizeTranscripts, maybeEndVoiceDocumentSpeechSuppression, playPreparedVoiceConfirmation, scheduleAudio, scheduleTranscriptFlush, stopPlayback, updateState]);
 
   const ensureVoiceToken = useCallback((threadId: string, pageContext: WorkspacePageContext) => {
     const pageContextKey = JSON.stringify(pageContext);
@@ -1164,7 +1191,6 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     suppressDocumentTranscriptRef.current = false;
     confirmationSpeechActiveRef.current = false;
     confirmationPlaybackStartedRef.current = false;
-    liveTurnCompleteRef.current = true;
     try {
       if (!navigator.mediaDevices?.getUserMedia) throw new Error("A microphone is not available in this browser.");
 
