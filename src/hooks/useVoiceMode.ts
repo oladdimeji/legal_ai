@@ -587,6 +587,13 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     releaseResources("error");
   }, [releaseResources]);
 
+  const retirePersistedVoiceDeliverable = useCallback(() => {
+    liveDeliverableRef.current = null;
+    setLiveDeliverable(null);
+    const pageContext = pageContextRef.current;
+    if (pageContext) void refreshVoiceLiveContextRef.current(pageContext, { immediate: true });
+  }, []);
+
   const persistFinalTranscript = useCallback((
     role: "user" | "assistant",
     content: string,
@@ -607,10 +614,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       if (!response.ok) throw new Error(data.error || "This Voice Mode transcript could not be saved.");
       onTranscriptRef.current(data);
       if (capabilityMetadata?.document) {
-        liveDeliverableRef.current = null;
-        setLiveDeliverable(null);
-        const pageContext = pageContextRef.current;
-        if (pageContext) void refreshVoiceLiveContextRef.current(pageContext, { immediate: true });
+        retirePersistedVoiceDeliverable();
       }
       setLiveTranscripts((current) => current[role].trim() === normalized
         ? { ...current, [role]: "" }
@@ -622,7 +626,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       voicePersistencePendingRef.current = Math.max(0, voicePersistencePendingRef.current - 1);
     });
     voicePersistencePendingRef.current += 1;
-  }, []);
+  }, [retirePersistedVoiceDeliverable]);
 
   const finalizeTranscripts = useCallback((
     boundary: "turnComplete" | "interrupted",

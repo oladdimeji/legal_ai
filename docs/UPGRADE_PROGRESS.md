@@ -1,5 +1,12 @@
 # Compact Upgrade Progress
 
+## Voice finalized-transcript route isolation
+
+- Restored the finalized-transcript persistence callback's narrow boundary by moving document-card retirement and Live context refresh into a dedicated post-persistence helper.
+- Finalized transcripts continue to use only the authenticated, idempotent `/voice/messages` route and never enter standard Assistant generation.
+- No schema, migration, dependency, authentication, workspace-isolation, or Matter-isolation changes were made.
+- Verification: `npm run lint` passed, all 499 tests passed, and `npm run build` passed with the existing non-fatal large-chunk warning.
+
 ## Voice confirmation and transcript hardening
 
 - Removed premature transcript-suppression clearing on `turnComplete`, which could release confirmation speech into chat or mash it with a later answer.
