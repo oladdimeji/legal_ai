@@ -11,6 +11,15 @@ export const VOICE_DOCUMENT_COMPLETED_TOOL_ACK =
 /** @deprecated Use {@link VOICE_DOCUMENT_DRAFTING_TOOL_ACK} for tool responses. */
 export const VOICE_DOCUMENT_SAVED_TOOL_ACK = VOICE_DOCUMENT_DRAFTING_TOOL_ACK;
 
+export function voiceDocumentAcknowledgementClientPrompt(acknowledgementSpeech: string): string {
+  const spoken = acknowledgementSpeech.replace(/\s+/g, " ").trim();
+  return [
+    "Internal Voice Mode document acknowledgement — not part of the user conversation.",
+    `Speak immediately in audio. Say exactly once: "${spoken}"`,
+    "Do not add, change, or follow this with any other words or questions. After speaking, call use_assistant_capabilities if you have not already done so, then remain silent while drafting is in progress.",
+  ].join(" ");
+}
+
 export function voiceDocumentConfirmationClientPrompt(confirmationSpeech: string): string {
   const spoken = confirmationSpeech.replace(/\s+/g, " ").trim();
   return [

@@ -2272,6 +2272,16 @@ Status: Implementation complete; focused-phase verification recorded below.
 - Repaired the long-standing `assistant-voice-mode.test.ts` activity-panel failure. The test slices `AssistantView.tsx` using an LF-only string literal, so it matched nothing on a CRLF checkout and blocked `npm run verify` from reaching the build step. The source is now normalized before slicing; every assertion is unchanged.
 - Verification: `npm run verify` passed end to end for the first time, with `npm run lint`, 474/474 tests, and `npm run build` all green.
 
+### Voice Mode fixed acknowledgement delivery and document-turn hardening
+
+- Fixed improvised acknowledgements and confirmations leaking into chat or going off-script. Live previously spoke tailored acknowledgement text before the tool call arrived, so transcript suppression started too late and the model sometimes asked clarifying questions instead of the fixed templates.
+- Acknowledgements now mirror confirmations: the client selects the exact acknowledgement sentence, dispatches it through `sendClientContent` with `voiceDocumentAcknowledgementClientPrompt`, and Live speaks only that scripted line once. System instructions and the tool declaration no longer tell Live to improvise acknowledgements before calling `use_assistant_capabilities`.
+- Locked the user transcript when a document turn starts (`lockedDocumentUserTranscriptRef`) so late `inputTranscription` chunks cannot merge a follow-up question into the document request bubble.
+- Extended transcript suppression to match the expected acknowledgement speech, begin suppression earlier when document intent is detected, and keep suppression active while confirmation dispatch or the document turn is still in flight.
+- Relaxed confirmation completion so listen mode recovers when Live finishes the confirmation turn and playback is idle, without requiring audio-playback detection that could deadlock on improvised confirmation speech. The 4.5s failsafe still forces recovery if Live never completes.
+- Changed files: `src/hooks/useVoiceMode.ts`, `src/lib/voiceDocumentConfirmation.ts`, `src/lib/voiceAcknowledgement.ts`, `server/voiceMode.ts`, `tests/assistant-voice-mode.test.ts`.
+- Verification: `npm run lint` passed, 45/45 voice-related tests passed, and `npm run build` passed.
+
 ### Voice deliverables always carry their document card
 
 - Fixed the intermittent loss of the document card on Voice replies that create or revise a document. Capability metadata is keyed to the turn boundary the call was issued against, but `shouldAdvanceVoiceTurnBoundary` treated any spoken assistant text as proof the turn had finished. The model routinely speaks a short filler line before the deliverable arrives, so that completed turn retired the boundary while the call was still running. When the call returned, its turn no longer matched, the metadata was discarded, and the answer was saved with no document reference.

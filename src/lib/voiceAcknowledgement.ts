@@ -81,12 +81,17 @@ export function isVoiceDocumentConfirmationSpeechContent(content: string): boole
 
 export function isVoiceDocumentSpokenContent(
   content: string,
-  expectedConfirmationSpeech?: string | null
+  expectedConfirmationSpeech?: string | null,
+  expectedAcknowledgementSpeech?: string | null
 ): boolean {
   const spoken = normalizeVoiceSpokenContent(content);
   if (!spoken) return false;
   if (isVoiceDocumentAcknowledgementContent(spoken)) return true;
   if (isVoiceDocumentConfirmationSpeechContent(spoken)) return true;
+  const expectedAck = expectedAcknowledgementSpeech ? normalizeVoiceSpokenContent(expectedAcknowledgementSpeech) : "";
+  if (expectedAck && (spoken === expectedAck || spoken.startsWith(expectedAck) || expectedAck.startsWith(spoken))) {
+    return true;
+  }
   const expected = expectedConfirmationSpeech ? normalizeVoiceSpokenContent(expectedConfirmationSpeech) : "";
   if (!expected) return false;
   return spoken === expected || spoken.startsWith(expected) || expected.startsWith(spoken);
