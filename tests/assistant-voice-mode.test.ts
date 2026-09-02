@@ -18,6 +18,7 @@ import {
   voiceCredentialRequest,
   voiceAcknowledgementRequest,
   voiceAcknowledgementSpeech,
+  combineVoiceSpeechAudioParts,
   voiceInformationalConfirmationSpeech,
   generateVoiceDocumentReviewSpeech,
   voiceDocumentConfirmationSpeech,
@@ -28,7 +29,9 @@ import {
   voiceDocumentConfirmationClientPrompt,
   voiceDocumentDraftingFailedClientPrompt,
   VOICE_DOC_CONFIRM_FAILSAFE_MS,
+  VOICE_DOC_CONFIRM_FAILSAFE_GRACE_MS,
   VOICE_DOC_HANDOFF_FAILSAFE_MS,
+  voiceDocumentConfirmationFailsafeMs,
 } from "../src/lib/voiceDocumentConfirmation.js";
 import {
   audioSampleRate,
@@ -59,6 +62,7 @@ import {
   shouldSkipVoiceAssistantPersistence,
   canOpenVoiceListenMode,
   shouldRunVoiceDocumentConfirmationFailsafe,
+  shouldIgnoreLiveInterruptionDuringPreparedConfirmation,
   shouldWaitForVoiceAckPlaybackBeforeConfirmation,
   shouldFinishVoiceDocumentConfirmation,
   shouldHoldVoiceCapture,
@@ -188,6 +192,22 @@ test("Voice acknowledgement and confirmation speech are request-aware and use Ko
     }),
     /\bsaved\b/i
   );
+});
+
+test("prepared Voice speech preserves every compatible PCM response part", () => {
+  const first = Buffer.from([1, 2, 3, 4]);
+  const second = Buffer.from([5, 6, 7, 8]);
+  const combined = combineVoiceSpeechAudioParts([
+    { inlineData: { data: first.toString("base64"), mimeType: "audio/pcm;rate=24000" } },
+    {},
+    { inlineData: { data: second.toString("base64"), mimeType: "audio/pcm;rate=24000" } },
+  ]);
+  assert.equal(combined.mimeType, "audio/pcm;rate=24000");
+  assert.deepEqual(Buffer.from(combined.data, "base64"), Buffer.concat([first, second]));
+  assert.throws(() => combineVoiceSpeechAudioParts([
+    { inlineData: { data: first.toString("base64"), mimeType: "audio/pcm;rate=24000" } },
+    { inlineData: { data: second.toString("base64"), mimeType: "audio/pcm;rate=16000" } },
+  ]), /incompatible Voice speech audio parts/);
 });
 
 test("Voice acknowledgement eligibility is document-capability-only and once per existing turn boundary", () => {
@@ -363,6 +383,7 @@ test("Voice document confirmation has a failsafe when prepared audio never drain
   const hook = await readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8");
 
   assert.equal(VOICE_DOC_CONFIRM_FAILSAFE_MS, 4_500);
+  assert.equal(VOICE_DOC_CONFIRM_FAILSAFE_GRACE_MS, 2_000);
   assert.equal(VOICE_DOC_HANDOFF_FAILSAFE_MS, 6_500);
   assert.equal(VOICE_PERSISTENCE_TIMEOUT_MS, 10_000);
   assert.equal(VOICE_CONFIRMATION_AUDIO_TIMEOUT_MS, 5_000);
@@ -375,19 +396,23 @@ test("Voice document confirmation has a failsafe when prepared audio never drain
   assert.equal(activeRecentVoiceDocumentSpeech(recentSpeech, 5_000), null);
   assert.equal(shouldRunVoiceDocumentConfirmationFailsafe({
     confirmationSpeechActive: true,
-    failsafeDeadlineMs: 1_000,
-    now: 1_000,
+    scheduledDispatchSequence: 4,
+    currentDispatchSequence: 4,
   }), true);
   assert.equal(shouldRunVoiceDocumentConfirmationFailsafe({
     confirmationSpeechActive: true,
-    failsafeDeadlineMs: 2_000,
-    now: 1_000,
+    scheduledDispatchSequence: 4,
+    currentDispatchSequence: 5,
   }), false);
   assert.equal(shouldRunVoiceDocumentConfirmationFailsafe({
     confirmationSpeechActive: false,
-    failsafeDeadlineMs: 1_000,
-    now: 2_000,
+    scheduledDispatchSequence: 4,
+    currentDispatchSequence: 4,
   }), false);
+  assert.equal(voiceDocumentConfirmationFailsafeMs(2_000), 4_500);
+  assert.equal(voiceDocumentConfirmationFailsafeMs(7_250.2), 9_251);
+  assert.equal(shouldIgnoreLiveInterruptionDuringPreparedConfirmation(true), true);
+  assert.equal(shouldIgnoreLiveInterruptionDuringPreparedConfirmation(false), false);
 
   assert.equal(shouldWaitForVoiceAckPlaybackBeforeConfirmation({
     playbackIdle: false,
@@ -432,14 +457,28 @@ test("Voice document confirmation has a failsafe when prepared audio never drain
   assert.match(hook, /confirmationDispatchSequenceRef\.current !== dispatchSequence/);
   assert.match(hook, /prepareVoiceDocumentConfirmation\(turnBoundary, confirmationSpeech\)/);
   assert.match(hook, /\/voice\/speak/);
-  assert.match(hook, /playback\?\.port\.postMessage\(\{ type: "begin-stream" \}\)/);
-  assert.match(hook, /playback\?\.port\.postMessage\(\{ type: "finish-stream" \}\)/);
   const confirmationDispatch = hook.slice(
     hook.indexOf("const tryDispatchPendingVoiceDocumentConfirmation"),
     hook.indexOf("const finishVoiceDocumentConfirmation")
   );
   assert.doesNotMatch(confirmationDispatch, /dispatchVoiceDocumentConfirmation|sendClientContent/);
-  assert.match(confirmationDispatch, /scheduleAudioRef\.current\(audio\.data, audio\.mimeType\)/);
+  assert.doesNotMatch(confirmationDispatch, /begin-stream|finish-stream|scheduleAudioRef/);
+  assert.match(confirmationDispatch, /finalizePendingVoiceDocument\(\)/);
+  assert.match(confirmationDispatch, /schedulePreparedVoiceConfirmationAudio\(audio\.data, audio\.mimeType\)/);
+  assert.ok(
+    confirmationDispatch.indexOf("finalizePendingVoiceDocument()")
+      < confirmationDispatch.indexOf("schedulePreparedVoiceConfirmationAudio(audio.data, audio.mimeType)")
+  );
+  assert.match(confirmationDispatch, /scheduleVoiceDocumentConfirmationFailsafe\(playback\.durationMs, dispatchSequence\)/);
+  assert.doesNotMatch(confirmationDispatch, /Date\.now/);
+  const interruptedHandler = hook.slice(
+    hook.indexOf("const content = message.serverContent"),
+    hook.indexOf("for (const part of content.interrupted")
+  );
+  assert.ok(
+    interruptedHandler.indexOf("shouldIgnoreLiveInterruptionDuringPreparedConfirmation")
+      < interruptedHandler.indexOf("stopPlayback()")
+  );
   assert.match(hook, /acknowledgedTurnRef\.current !== turnBoundary[\s\S]*dispatchVoiceDocumentAcknowledgement/);
   assert.match(hook, /recordVoiceDocumentCapability[\s\S]*shouldApplyVoiceDraftUpdate/);
   assert.match(hook, /data\.capabilityMetadata\?\.document && shouldApplyDraft\(\)/);
@@ -576,7 +615,7 @@ test("Voice document completion creates the card before one short prepared confi
 
   assert.match(hook, /VOICE_DOCUMENT_DRAFTING_TOOL_ACK/);
   assert.match(hook, /finalizePendingVoiceDocument\(\)/);
-  assert.match(hook, /confirmationPlaybackStartedRef\.current = scheduled/);
+  assert.match(hook, /confirmationPlaybackStartedRef\.current = playback\.scheduled/);
   assert.match(hook, /dispatchVoiceDocumentAcknowledgement/);
   assert.match(hook, /lockedDocumentUserTranscriptRef/);
   assert.match(hook, /pendingVoiceAcknowledgementSpeechRef/);
@@ -604,7 +643,7 @@ test("Voice document completion creates the card before one short prepared confi
   assert.match(documentToolCall, /output: VOICE_DOCUMENT_DRAFTING_TOOL_ACK/);
   assert.match(hook, /deliverVoiceDocumentCapability[\s\S]*tryDispatchPendingVoiceDocumentConfirmation\(\)/);
   assert.match(documentToolCall, /dispatchVoiceDocumentAcknowledgement\(session, acknowledgementSpeech\)/);
-  assert.match(hook, /scheduleAudioRef\.current\(audio\.data, audio\.mimeType\)/);
+  assert.match(hook, /schedulePreparedVoiceConfirmationAudio\(audio\.data, audio\.mimeType\)/);
   assert.match(documentToolCall, /voiceConfirmationSpeechFromRequest\(request\)/);
   assert.ok(documentToolCall.indexOf("session.sendToolResponse") < documentToolCall.indexOf("void ensureAssistantCapability"));
   const documentBranch = documentToolCall.slice(

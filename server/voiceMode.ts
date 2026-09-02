@@ -31,6 +31,25 @@ export type VoiceAcknowledgementAudio = {
   mimeType: string;
 };
 
+export function combineVoiceSpeechAudioParts(parts: Array<{
+  inlineData?: { data?: string; mimeType?: string };
+}>): VoiceAcknowledgementAudio {
+  const audioParts = parts
+    .map((part) => part.inlineData)
+    .filter((part): part is { data: string; mimeType?: string } => Boolean(part?.data));
+  if (audioParts.length === 0) throw new Error("Gemini did not return Voice speech audio.");
+  const mimeType = audioParts[0].mimeType || "audio/pcm;rate=24000";
+  if (audioParts.some((part) => (part.mimeType || mimeType) !== mimeType)) {
+    throw new Error("Gemini returned incompatible Voice speech audio parts.");
+  }
+  return {
+    data: audioParts.length === 1
+      ? audioParts[0].data
+      : Buffer.concat(audioParts.map((part) => Buffer.from(part.data, "base64"))).toString("base64"),
+    mimeType,
+  };
+}
+
 const voiceSpeechAudioCache = new Map<string, Promise<VoiceAcknowledgementAudio>>();
 
 export const VOICE_MODE_SYSTEM_INSTRUCTION = `You are Exepts in Voice Mode, a calm, knowledgeable legal and productivity assistant.
@@ -138,12 +157,7 @@ async function generateVoiceSpeechAudioWithModel(
     const response = await getAiClient().models.generateContent(
       voiceSpeechRequest(text, model)
     );
-    const inlineData = response.candidates?.[0]?.content?.parts?.find((part) => part.inlineData?.data)?.inlineData;
-    if (!inlineData?.data) throw new Error("Gemini did not return Voice speech audio.");
-    return {
-      data: inlineData.data,
-      mimeType: inlineData.mimeType || "audio/pcm;rate=24000",
-    };
+    return combineVoiceSpeechAudioParts(response.candidates?.[0]?.content?.parts || []);
   }, {
     onRetry: (details) => {
       const status = details.statusCode ? ` status=${details.statusCode}` : "";

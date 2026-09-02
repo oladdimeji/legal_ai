@@ -4,6 +4,19 @@ export const VOICE_DOCUMENT_DRAFTING_TOOL_ACK =
 /** Time to allow normal confirmation audio before forcing listen-mode recovery. */
 export const VOICE_DOC_CONFIRM_FAILSAFE_MS = 4_500;
 
+/** Extra recovery margin after the decoded confirmation clip should have ended. */
+export const VOICE_DOC_CONFIRM_FAILSAFE_GRACE_MS = 2_000;
+
+export function voiceDocumentConfirmationFailsafeMs(audioDurationMs: number): number {
+  const boundedDuration = Number.isFinite(audioDurationMs)
+    ? Math.max(0, Math.ceil(audioDurationMs))
+    : 0;
+  return Math.max(
+    VOICE_DOC_CONFIRM_FAILSAFE_MS,
+    boundedDuration + VOICE_DOC_CONFIRM_FAILSAFE_GRACE_MS
+  );
+}
+
 /** Maximum time a ready document may wait for acknowledgement playback to drain. */
 export const VOICE_DOC_HANDOFF_FAILSAFE_MS = 6_500;
 
