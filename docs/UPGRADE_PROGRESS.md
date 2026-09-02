@@ -1,5 +1,11 @@
 # Compact Upgrade Progress
 
+## Voice confirmation deferred until acknowledgement playback ends
+
+- Fixed rigid freezes when a document card became ready while acknowledgement audio was still playing. Confirmation is now queued until assistant playback is idle, `confirmationSpeechActive` is set only when `sendClientContent` is actually dispatched, and acknowledgement tail audio can no longer be mistaken for confirmation playback.
+- Playback-idle and interruption handlers retry the queued confirmation dispatch after acknowledgement audio stops.
+- Changed files: `src/hooks/useVoiceMode.ts`, `tests/assistant-voice-mode.test.ts`.
+
 ## Voice post-document chat ordering fix
 
 - Fixed document cards pinning to the bottom of Voice chat after the first draft: `finalizePendingVoiceDocument()` called `persistFinalTranscript()` while document-speech suppression was still active, so the assistant document card was dropped and `liveDeliverable` never retired. Subsequent turns only showed live user bubbles above the stale preview card and hid assistant streaming until each turn completed.

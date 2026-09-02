@@ -51,6 +51,8 @@ import {
   shouldSkipVoiceAssistantPersistence,
   canOpenVoiceListenMode,
   shouldRunVoiceDocumentConfirmationFailsafe,
+  shouldWaitForVoiceAckPlaybackBeforeConfirmation,
+  shouldMarkVoiceConfirmationPlaybackStarted,
   shouldHoldVoiceCapture,
   voiceCaptureAwaitingFinalize,
   voiceAcknowledgementSpeechFromRequest,
@@ -346,10 +348,33 @@ test("Voice document confirmation has a failsafe when Live never completes the c
     now: 2_000,
   }), false);
 
+  assert.equal(shouldWaitForVoiceAckPlaybackBeforeConfirmation({
+    playbackIdle: false,
+    hasPendingConfirmationDispatch: true,
+  }), true);
+  assert.equal(shouldWaitForVoiceAckPlaybackBeforeConfirmation({
+    playbackIdle: true,
+    hasPendingConfirmationDispatch: true,
+  }), false);
+  assert.equal(shouldMarkVoiceConfirmationPlaybackStarted({
+    confirmationSpeechActive: true,
+    confirmationDispatched: true,
+  }), true);
+  assert.equal(shouldMarkVoiceConfirmationPlaybackStarted({
+    confirmationSpeechActive: true,
+    confirmationDispatched: false,
+  }), false);
+
   assert.match(hook, /scheduleVoiceDocumentConfirmationFailsafe/);
   assert.match(hook, /abandonVoiceDocumentConfirmation/);
   assert.match(hook, /cancelVoiceDocumentConfirmationFailsafe/);
-  assert.match(hook, /dispatchVoiceDocumentConfirmation\(activeSession, confirmationSpeech\);[\s\S]*scheduleVoiceDocumentConfirmationFailsafe\(\)/);
+  assert.match(hook, /pendingVoiceConfirmationDispatchRef/);
+  assert.match(hook, /tryDispatchPendingVoiceDocumentConfirmation/);
+  assert.match(hook, /confirmationDispatchedRef/);
+  assert.match(hook, /shouldMarkVoiceConfirmationPlaybackStarted/);
+  assert.match(hook, /pendingVoiceConfirmationDispatchRef\.current = \{[\s\S]*tryDispatchPendingVoiceDocumentConfirmation\(\)/);
+  assert.match(hook, /tryDispatchPendingVoiceDocumentConfirmation\(\);[\s\S]*reconcileVoiceListenMode\(\)/);
+  assert.doesNotMatch(hook, /voiceDocumentDeliveryCompletedTurnsRef\.current\.add\(turnBoundary\);[\s\S]{0,220}confirmationSpeechActiveRef\.current = true[\s\S]{0,220}dispatchVoiceDocumentConfirmation/);
   assert.match(hook, /abandonVoiceDocumentConfirmation[\s\S]*finalizePendingVoiceDocument\(\)/);
   assert.match(hook, /finishVoiceDocumentConfirmation[\s\S]*confirmationTurnCompleteRef/);
   assert.match(hook, /reconcileVoiceListenMode/);
@@ -420,7 +445,8 @@ test("Voice acknowledgement and confirmation use the same Live session while the
   const toolHandler = hook.slice(hook.indexOf("const handleServerMessage"), hook.indexOf("const ensureVoiceToken"));
   assert.match(toolHandler, /await ensureAssistantCapability\(request, turnBoundary\)/);
   assert.match(voiceMode, /internal Voice Mode document deliverable guidance/);
-  assert.match(toolHandler, /dispatchVoiceDocumentConfirmation/);
+  assert.match(toolHandler, /tryDispatchPendingVoiceDocumentConfirmation/);
+  assert.match(hook, /dispatchVoiceDocumentConfirmation/);
   assert.match(toolHandler, /voiceConfirmationSpeechFromRequest\(request\)/);
   assert.match(toolHandler, /suppressDocumentTranscriptRef/);
   assert.doesNotMatch(toolHandler, /fetchVoiceSpeech|playPreparedVoiceConfirmation|playAcknowledgement|playDocumentConfirmation|voice\/speak/);
@@ -498,7 +524,8 @@ test("Voice document completion creates the card before one short doc-type Live 
   assert.match(documentToolCall, /void ensureAssistantCapability\(request, turnBoundary\)/);
   assert.doesNotMatch(documentToolCall, /finalizePendingVoiceDocument\(\)/);
   assert.match(documentToolCall, /output: VOICE_DOCUMENT_DRAFTING_TOOL_ACK/);
-  assert.match(documentToolCall, /dispatchVoiceDocumentConfirmation\(activeSession, confirmationSpeech\)/);
+  assert.match(documentToolCall, /tryDispatchPendingVoiceDocumentConfirmation\(\)/);
+  assert.match(hook, /dispatchVoiceDocumentConfirmation\(session, confirmationSpeech\)/);
   assert.match(documentToolCall, /voiceConfirmationSpeechFromRequest\(request\)/);
   assert.ok(documentToolCall.indexOf("session.sendToolResponse") < documentToolCall.indexOf("void ensureAssistantCapability"));
   const documentBranch = documentToolCall.slice(
