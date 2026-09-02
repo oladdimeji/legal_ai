@@ -1,5 +1,12 @@
 # Compact Upgrade Progress
 
+## Voice confirmation listen recovery fix
+
+- Fixed document turns staying frozen after confirmation audio: `finishVoiceDocumentConfirmation` no longer depends on `liveTurnCompleteRef`, which any later Live audio packet could reset to `false` before playback drained. Confirmation completion now uses a dedicated `confirmationTurnCompleteRef` set only on the confirmation turn's `turnComplete`.
+- Stopped re-pausing the capability turn when confirmation audio is still playing. The confirmation `turnComplete` handler now returns before `pausedAssistantCapabilityTurnRef` is set, so the mic is not left blocked while waiting for playback to finish.
+- Added `reconcileVoiceListenMode` so playback-idle, persistence, and turn boundaries all retry confirmation completion before reopening listen mode.
+- Changed files: `src/hooks/useVoiceMode.ts`, `tests/assistant-voice-mode.test.ts`.
+
 ## Voice confirmation failsafe recovery
 
 - Added a 4.5s confirmation watchdog so Voice cannot stay frozen when Gemini Live never completes the `sendClientContent` confirmation turn. If confirmation is still active when the timer fires, the client mirrors the existing contentless/interrupted recovery: clear confirmation gates, persist the pending document card if needed, release the paused capability turn, and reopen listen mode.

@@ -347,7 +347,9 @@ test("Voice document confirmation has a failsafe when Live never completes the c
   assert.match(hook, /cancelVoiceDocumentConfirmationFailsafe/);
   assert.match(hook, /dispatchVoiceDocumentConfirmation\(activeSession, confirmationSpeech\);[\s\S]*scheduleVoiceDocumentConfirmationFailsafe\(\)/);
   assert.match(hook, /abandonVoiceDocumentConfirmation[\s\S]*finalizePendingVoiceDocument\(\)/);
-  assert.match(hook, /finishVoiceDocumentConfirmation[\s\S]*cancelVoiceDocumentConfirmationFailsafe\(\)/);
+  assert.match(hook, /finishVoiceDocumentConfirmation[\s\S]*confirmationTurnCompleteRef/);
+  assert.match(hook, /reconcileVoiceListenMode/);
+  assert.match(hook, /if \(confirmationSpeechActiveRef\.current\) \{[\s\S]*reconcileVoiceListenMode\(\);[\s\S]*return;/);
 });
 
 test("spoken document instructions start drafting in parallel without blocking Live acknowledgements", async () => {
@@ -858,7 +860,7 @@ test("active Voice sessions receive current navigation context without reconnect
   assert.doesNotMatch(update, /connect|token|transcript|playback|releaseResources|sessionRef/);
   assert.match(hook, /JSON\.stringify\(\{ request, pageContext \}\)/);
   assert.match(hook, /maybeEndVoiceDocumentSpeechSuppression\(\)/);
-  assert.match(hook, /onAssistantPlaybackIdleRef\.current = \(\) => \{[\s\S]*finishVoiceDocumentConfirmation\(\)/);
+  assert.match(hook, /onAssistantPlaybackIdleRef\.current = \(\) => \{[\s\S]*reconcileVoiceListenMode\(\)/);
   assert.doesNotMatch(hook, /tryDeliverPendingVoiceConfirmation/);
   assert.match(hook, /confirmationSpeechActiveRef/);
   assert.match(hook, /shouldFilterAssistantVoiceTranscript/);
