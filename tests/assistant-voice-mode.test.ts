@@ -39,6 +39,7 @@ import {
   shouldRouteVoiceAssistantCapability,
   shouldUseVoiceAssistantCapability,
   shouldBeginVoiceDocumentSpeechSuppression,
+  shouldStartVoiceDocumentDraftOnTurnComplete,
   shouldFinalizeVoiceDocumentImmediately,
   shouldAdvanceVoiceTurnBoundary,
   hasPendingVoiceDocumentDelivery,
@@ -330,7 +331,7 @@ test("spoken document instructions start drafting in parallel without blocking L
   assert.equal(voiceAssistantInstruction("Draft an NDA.", "Please create a document"), "Draft an NDA.");
 
   assert.match(toolHandler, /maybeStartVoiceDocumentDraft/);
-  assert.match(toolHandler, /shouldStartVoiceDocumentDraft/);
+  assert.match(toolHandler, /shouldStartVoiceDocumentDraftOnTurnComplete/);
   assert.match(toolHandler, /use_assistant_capabilities/);
   assert.match(toolHandler, /consumeVoiceAssistantCapabilityResponse/);
   assert.doesNotMatch(toolHandler, /onDraftDelta/);
@@ -468,6 +469,9 @@ test("Voice document completion creates the card before one short doc-type Live 
   );
   assert.doesNotMatch(documentBranch, /await ensureAssistantCapability/);
   assert.match(hook, /finishVoiceDocumentConfirmation[\s\S]*finalizePendingVoiceDocument\(\)/);
+  assert.match(hook, /transcriptRef\.current = \{ user: "", assistant: "" \}/);
+  assert.match(hook, /voiceDocumentJustFinalizedRef/);
+  assert.match(hook, /shouldStartVoiceDocumentDraftOnTurnComplete/);
   assert.match(hook, /voiceDocumentConfirmationClientPrompt|dispatchVoiceDocumentConfirmation/);
   assert.match(hook, /voiceDocumentDraftingFailedClientPrompt|dispatchVoiceDocumentDraftingFailedNotice/);
   assert.doesNotMatch(hook, /DOCUMENT_CONFIRMATION|fetchVoiceSpeech|playPreparedVoiceConfirmation|voice\/speak/);
@@ -484,6 +488,34 @@ test("Voice document completion creates the card before one short doc-type Live 
   assert.match(assistant, /voiceStableKey/);
   assert.match(assistant, /shouldAnimateEntry/);
   assert.match(assistant, /confirmationOnly = Boolean\(document && isDocumentConfirmationContent\(m\.content\)\)/);
+});
+
+test("Voice document delivery resets transcript state and blocks duplicate draft restarts", () => {
+  const delivered = new Set([2]);
+  assert.equal(shouldStartVoiceDocumentDraftOnTurnComplete({
+    userTranscript: "Draft an NDA for Acme.",
+    turnBoundary: 2,
+    deliveredTurnBoundaries: delivered,
+    hasInFlightPromise: false,
+  }), false);
+  assert.equal(shouldStartVoiceDocumentDraftOnTurnComplete({
+    userTranscript: "Draft an NDA for Acme.",
+    turnBoundary: 3,
+    deliveredTurnBoundaries: delivered,
+    hasInFlightPromise: false,
+  }), true);
+  assert.equal(shouldStartVoiceDocumentDraftOnTurnComplete({
+    userTranscript: "What does clause 2 mean?",
+    turnBoundary: 3,
+    deliveredTurnBoundaries: delivered,
+    hasInFlightPromise: false,
+  }), false);
+  assert.equal(shouldStartVoiceDocumentDraftOnTurnComplete({
+    userTranscript: "Draft an NDA for Acme.",
+    turnBoundary: 3,
+    deliveredTurnBoundaries: delivered,
+    hasInFlightPromise: true,
+  }), false);
 });
 
 test("Voice heavy calls keep the normal working lifecycle without any progress heartbeat", async () => {

@@ -268,6 +268,18 @@ export function shouldStartVoiceDocumentDraft(userTranscript: string): boolean {
   return looksLikeVoiceDocumentRequest(userTranscript);
 }
 
+export function shouldStartVoiceDocumentDraftOnTurnComplete(input: {
+  userTranscript: string;
+  turnBoundary: number;
+  deliveredTurnBoundaries: ReadonlySet<number>;
+  hasInFlightPromise: boolean;
+}): boolean {
+  if (!shouldStartVoiceDocumentDraft(input.userTranscript)) return false;
+  if (input.hasInFlightPromise) return false;
+  if (input.deliveredTurnBoundaries.has(input.turnBoundary)) return false;
+  return true;
+}
+
 export function shouldPlayVoiceAcknowledgement(
   functionName: string | undefined,
   request: string,
@@ -470,6 +482,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   const liveTurnCompleteRef = useRef(true);
   const pendingVoiceDocumentDeliveryTurnsRef = useRef(new Set<number>());
   const voiceDocumentDeliveryCompletedTurnsRef = useRef(new Set<number>());
+  const voiceDocumentJustFinalizedRef = useRef(false);
   const onAssistantPlaybackIdleRef = useRef<() => void>(() => undefined);
   const maybeOpenListenModeRef = useRef<() => void>(() => undefined);
   const tokenPrefetchRef = useRef<{
@@ -635,6 +648,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     liveTurnCompleteRef.current = true;
     pendingVoiceDocumentDeliveryTurnsRef.current.clear();
     voiceDocumentDeliveryCompletedTurnsRef.current.clear();
+    voiceDocumentJustFinalizedRef.current = false;
     tokenPrefetchRef.current = null;
     startupAudioBufferRef.current = [];
     captureLiveRef.current = false;
@@ -790,13 +804,17 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       persistFinalTranscript("user", pendingUser);
     }
     persistFinalTranscript("assistant", documentContent, capabilityMetadata);
-    transcriptRef.current = { ...transcriptRef.current, assistant: "" };
+    transcriptRef.current = { user: "", assistant: "" };
+    setLiveTranscripts({ user: "", assistant: "" });
     pendingCapabilityMetadataRef.current = null;
     pausedAssistantCapabilityTurnRef.current = null;
+    suppressDocumentTranscriptRef.current = false;
+    pendingVoiceConfirmationSpeechRef.current = null;
     assistantCapabilityPromisesRef.current.delete(turnBoundaryRef.current);
     turnBoundaryRef.current += 1;
     voiceDocumentTurnActiveRef.current = false;
     voiceDocumentSpokenOnlyRef.current = false;
+    voiceDocumentJustFinalizedRef.current = true;
     return true;
   }, [cancelTranscriptFlush, persistFinalTranscript]);
 
@@ -841,6 +859,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     confirmationPlaybackStartedRef.current = false;
     pendingVoiceConfirmationSpeechRef.current = null;
     pendingVoiceDocumentDeliveryTurnsRef.current.delete(turnBoundaryRef.current);
+    pausedAssistantCapabilityTurnRef.current = null;
     finalizePendingVoiceDocument();
     maybeEndVoiceDocumentSpeechSuppression();
     maybeOpenListenModeRef.current();
@@ -1134,6 +1153,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
         liveTurnCompleteRef.current = true;
         pendingVoiceConfirmationSpeechRef.current = null;
         pendingVoiceDocumentDeliveryTurnsRef.current.delete(turnBoundaryRef.current);
+        pausedAssistantCapabilityTurnRef.current = null;
         finalizePendingVoiceDocument();
         maybeEndVoiceDocumentSpeechSuppression();
       }
@@ -1195,6 +1215,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
         confirmationPlaybackStartedRef.current = false;
         pendingVoiceConfirmationSpeechRef.current = null;
         pendingVoiceDocumentDeliveryTurnsRef.current.delete(turnBoundaryRef.current);
+        pausedAssistantCapabilityTurnRef.current = null;
         finalizePendingVoiceDocument();
         maybeEndVoiceDocumentSpeechSuppression();
         maybeOpenListenModeRef.current();
@@ -1203,8 +1224,19 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       }
       const turnBoundary = turnBoundaryRef.current;
       const userTranscript = transcriptRef.current.user.trim();
-      if (shouldStartVoiceDocumentDraft(userTranscript) && !assistantCapabilityPromisesRef.current.has(turnBoundary)) {
+      if (shouldStartVoiceDocumentDraftOnTurnComplete({
+        userTranscript,
+        turnBoundary,
+        deliveredTurnBoundaries: voiceDocumentDeliveryCompletedTurnsRef.current,
+        hasInFlightPromise: assistantCapabilityPromisesRef.current.has(turnBoundary),
+      })) {
         maybeStartVoiceDocumentDraft();
+      }
+      if (voiceDocumentJustFinalizedRef.current) {
+        voiceDocumentJustFinalizedRef.current = false;
+        clearWorking();
+        maybeOpenListenModeRef.current();
+        return;
       }
       const hasPendingDocumentDelivery = hasPendingVoiceDocumentDelivery({
         inFlightCapabilityCount: inFlightAssistantCapabilityTurnsRef.current.get(turnBoundaryRef.current) || 0,

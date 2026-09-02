@@ -1,5 +1,11 @@
 # Compact Upgrade Progress
 
+## Voice post-document conversation recovery
+
+- Fixed Voice getting stuck after the first document turn: the document user transcript now clears when the card is persisted, `pausedAssistantCapabilityTurnRef` is released when confirmation delivery completes, and confirmation `turnComplete` no longer re-triggers document drafting for an already-delivered turn.
+- Skipped a second `finalizeTranscripts("turnComplete")` on the same confirmation boundary after `finalizePendingVoiceDocument()` already advanced the turn, preventing merged follow-up user bubbles and duplicate user persistence.
+- Changed files: `src/hooks/useVoiceMode.ts`, `tests/assistant-voice-mode.test.ts`.
+
 ## Voice message handoff flicker fix
 
 - Fixed the split-second duplicate/reflow flash when a Voice turn completes. Live bubbles and optimistic saved copies were both visible until `/voice/messages` returned, then React remounted the bubble when the server id replaced the optimistic id and replayed `animate-fade-in`.
