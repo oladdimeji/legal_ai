@@ -1,6 +1,9 @@
 export const VOICE_DOCUMENT_DRAFTING_TOOL_ACK =
   "IN_PROGRESS";
 
+/** Time to allow normal confirmation audio before forcing listen-mode recovery. */
+export const VOICE_DOC_CONFIRM_FAILSAFE_MS = 4_500;
+
 /** @deprecated Confirmation is delivered through sendClientContent, not tool responses. */
 export const VOICE_DOCUMENT_COMPLETED_TOOL_ACK =
   "COMPLETED";

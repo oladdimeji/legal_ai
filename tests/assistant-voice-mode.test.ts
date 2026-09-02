@@ -21,6 +21,7 @@ import {
 import {
   voiceDocumentConfirmationClientPrompt,
   voiceDocumentDraftingFailedClientPrompt,
+  VOICE_DOC_CONFIRM_FAILSAFE_MS,
 } from "../src/lib/voiceDocumentConfirmation.js";
 import {
   audioSampleRate,
@@ -48,6 +49,7 @@ import {
   shouldDropVoiceAssistantTranscript,
   shouldFilterAssistantVoiceTranscript,
   canOpenVoiceListenMode,
+  shouldRunVoiceDocumentConfirmationFailsafe,
   shouldHoldVoiceCapture,
   voiceCaptureAwaitingFinalize,
   voiceAcknowledgementSpeechFromRequest,
@@ -318,6 +320,34 @@ test("a completed turn cannot retire an Assistant capability boundary while its 
   assert.match(hook, /finishVoiceDocumentConfirmation/);
   assert.doesNotMatch(hook, /pendingVoiceConfirmationRef|tryDeliverPendingVoiceConfirmation/);
   assert.doesNotMatch(hook, /shouldAdvanceVoiceTurnBoundary\([^)]*transcriptRef/);
+});
+
+test("Voice document confirmation has a failsafe when Live never completes the confirmation turn", async () => {
+  const hook = await readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8");
+
+  assert.equal(VOICE_DOC_CONFIRM_FAILSAFE_MS, 4_500);
+  assert.equal(shouldRunVoiceDocumentConfirmationFailsafe({
+    confirmationSpeechActive: true,
+    failsafeDeadlineMs: 1_000,
+    now: 1_000,
+  }), true);
+  assert.equal(shouldRunVoiceDocumentConfirmationFailsafe({
+    confirmationSpeechActive: true,
+    failsafeDeadlineMs: 2_000,
+    now: 1_000,
+  }), false);
+  assert.equal(shouldRunVoiceDocumentConfirmationFailsafe({
+    confirmationSpeechActive: false,
+    failsafeDeadlineMs: 1_000,
+    now: 2_000,
+  }), false);
+
+  assert.match(hook, /scheduleVoiceDocumentConfirmationFailsafe/);
+  assert.match(hook, /abandonVoiceDocumentConfirmation/);
+  assert.match(hook, /cancelVoiceDocumentConfirmationFailsafe/);
+  assert.match(hook, /dispatchVoiceDocumentConfirmation\(activeSession, confirmationSpeech\);[\s\S]*scheduleVoiceDocumentConfirmationFailsafe\(\)/);
+  assert.match(hook, /abandonVoiceDocumentConfirmation[\s\S]*finalizePendingVoiceDocument\(\)/);
+  assert.match(hook, /finishVoiceDocumentConfirmation[\s\S]*cancelVoiceDocumentConfirmationFailsafe\(\)/);
 });
 
 test("spoken document instructions start drafting in parallel without blocking Live acknowledgements", async () => {

@@ -32,6 +32,7 @@ import {
   voiceConfirmationSpeech as voiceConfirmationSpeechFromRequest,
 } from "../lib/voiceAcknowledgement.js";
 import {
+  VOICE_DOC_CONFIRM_FAILSAFE_MS,
   VOICE_DOCUMENT_DRAFTING_TOOL_ACK,
   voiceDocumentConfirmationClientPrompt,
   voiceDocumentDraftingFailedClientPrompt,
@@ -418,6 +419,15 @@ export function canOpenVoiceListenMode(input: {
     && !input.documentTurnActive;
 }
 
+export function shouldRunVoiceDocumentConfirmationFailsafe(input: {
+  confirmationSpeechActive: boolean;
+  failsafeDeadlineMs: number;
+  now?: number;
+}): boolean {
+  return input.confirmationSpeechActive
+    && (input.now ?? Date.now()) >= input.failsafeDeadlineMs;
+}
+
 export function shouldFinalizeVoiceDocumentImmediately(
   pausedCapabilityTurn: number | null,
   turnBoundary: number
@@ -483,6 +493,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
   const pendingVoiceDocumentDeliveryTurnsRef = useRef(new Set<number>());
   const voiceDocumentDeliveryCompletedTurnsRef = useRef(new Set<number>());
   const voiceDocumentJustFinalizedRef = useRef(false);
+  const confirmationFailsafeTimerRef = useRef<number | null>(null);
   const onAssistantPlaybackIdleRef = useRef<() => void>(() => undefined);
   const maybeOpenListenModeRef = useRef<() => void>(() => undefined);
   const tokenPrefetchRef = useRef<{
@@ -649,6 +660,10 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     pendingVoiceDocumentDeliveryTurnsRef.current.clear();
     voiceDocumentDeliveryCompletedTurnsRef.current.clear();
     voiceDocumentJustFinalizedRef.current = false;
+    if (confirmationFailsafeTimerRef.current !== null) {
+      window.clearTimeout(confirmationFailsafeTimerRef.current);
+      confirmationFailsafeTimerRef.current = null;
+    }
     tokenPrefetchRef.current = null;
     startupAudioBufferRef.current = [];
     captureLiveRef.current = false;
@@ -847,6 +862,44 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     suppressDocumentTranscriptRef.current = false;
   }, []);
 
+  const cancelVoiceDocumentConfirmationFailsafe = useCallback(() => {
+    if (confirmationFailsafeTimerRef.current === null) return;
+    window.clearTimeout(confirmationFailsafeTimerRef.current);
+    confirmationFailsafeTimerRef.current = null;
+  }, []);
+
+  const abandonVoiceDocumentConfirmation = useCallback(() => {
+    if (!confirmationSpeechActiveRef.current) return;
+    cancelVoiceDocumentConfirmationFailsafe();
+    confirmationSpeechActiveRef.current = false;
+    confirmationPlaybackStartedRef.current = false;
+    liveTurnCompleteRef.current = true;
+    pendingVoiceConfirmationSpeechRef.current = null;
+    pendingVoiceDocumentDeliveryTurnsRef.current.delete(turnBoundaryRef.current);
+    pausedAssistantCapabilityTurnRef.current = null;
+    finalizePendingVoiceDocument();
+    voiceDocumentTurnActiveRef.current = false;
+    voiceDocumentSpokenOnlyRef.current = false;
+    suppressDocumentTranscriptRef.current = false;
+    maybeEndVoiceDocumentSpeechSuppression();
+    maybeOpenListenModeRef.current();
+  }, [cancelVoiceDocumentConfirmationFailsafe, finalizePendingVoiceDocument, maybeEndVoiceDocumentSpeechSuppression]);
+
+  const scheduleVoiceDocumentConfirmationFailsafe = useCallback(() => {
+    cancelVoiceDocumentConfirmationFailsafe();
+    const failsafeDeadlineMs = Date.now() + VOICE_DOC_CONFIRM_FAILSAFE_MS;
+    confirmationFailsafeTimerRef.current = window.setTimeout(() => {
+      confirmationFailsafeTimerRef.current = null;
+      if (!shouldRunVoiceDocumentConfirmationFailsafe({
+        confirmationSpeechActive: confirmationSpeechActiveRef.current,
+        failsafeDeadlineMs,
+      })) {
+        return;
+      }
+      abandonVoiceDocumentConfirmation();
+    }, VOICE_DOC_CONFIRM_FAILSAFE_MS);
+  }, [abandonVoiceDocumentConfirmation, cancelVoiceDocumentConfirmationFailsafe]);
+
   const finishVoiceDocumentConfirmation = useCallback(() => {
     if (!confirmationSpeechActiveRef.current
       || !confirmationPlaybackStartedRef.current
@@ -855,6 +908,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
         playbackActive: playbackActiveRef.current,
         playbackSourceCount: playbackSourcesRef.current.size,
       })) return;
+    cancelVoiceDocumentConfirmationFailsafe();
     confirmationSpeechActiveRef.current = false;
     confirmationPlaybackStartedRef.current = false;
     pendingVoiceConfirmationSpeechRef.current = null;
@@ -1100,6 +1154,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
                 requestAnimationFrame(() => {
                   if (sessionRef.current !== activeSession) return;
                   dispatchVoiceDocumentConfirmation(activeSession, confirmationSpeech);
+                  scheduleVoiceDocumentConfirmationFailsafe();
                 });
                 return;
               }
@@ -1148,6 +1203,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       clearWorking();
       stopPlayback();
       if (confirmationSpeechActiveRef.current) {
+        cancelVoiceDocumentConfirmationFailsafe();
         confirmationSpeechActiveRef.current = false;
         confirmationPlaybackStartedRef.current = false;
         liveTurnCompleteRef.current = true;
@@ -1211,6 +1267,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     if (content.turnComplete) {
       liveTurnCompleteRef.current = true;
       if (confirmationSpeechActiveRef.current && !confirmationPlaybackStartedRef.current) {
+        cancelVoiceDocumentConfirmationFailsafe();
         confirmationSpeechActiveRef.current = false;
         confirmationPlaybackStartedRef.current = false;
         pendingVoiceConfirmationSpeechRef.current = null;
@@ -1256,7 +1313,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
         finalizeTranscripts("turnComplete", false);
       }
     }
-  }, [beginVoiceDocumentSpeechSuppression, clearWorking, finalizePendingVoiceDocument, finalizeTranscripts, finishVoiceDocumentConfirmation, maybeEndVoiceDocumentSpeechSuppression, scheduleAudio, scheduleTranscriptFlush, stopPlayback, updateState]);
+  }, [beginVoiceDocumentSpeechSuppression, cancelVoiceDocumentConfirmationFailsafe, clearWorking, finalizePendingVoiceDocument, finalizeTranscripts, finishVoiceDocumentConfirmation, maybeEndVoiceDocumentSpeechSuppression, scheduleAudio, scheduleTranscriptFlush, scheduleVoiceDocumentConfirmationFailsafe, stopPlayback, updateState]);
 
   const ensureVoiceToken = useCallback((threadId: string, pageContext: WorkspacePageContext) => {
     const pageContextKey = JSON.stringify(pageContext);
