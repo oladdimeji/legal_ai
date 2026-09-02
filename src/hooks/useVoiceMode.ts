@@ -684,12 +684,12 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       setLiveTranscripts((current) => current[role].trim() === normalized
         ? { ...current, [role]: "" }
         : current);
-      maybeOpenListenModeRef.current();
     }).catch((persistenceError) => {
       console.error("Voice transcript persistence failed.");
       setError(persistenceError instanceof Error ? persistenceError.message : "This Voice Mode transcript could not be saved.");
     }).finally(() => {
       voicePersistencePendingRef.current = Math.max(0, voicePersistencePendingRef.current - 1);
+      maybeOpenListenModeRef.current();
     });
     voicePersistencePendingRef.current += 1;
   }, [retirePersistedVoiceDeliverable]);

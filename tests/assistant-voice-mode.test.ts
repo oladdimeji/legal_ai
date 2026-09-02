@@ -986,7 +986,8 @@ test("live Voice transcriptions render as temporary messages and yield to saved 
   assert.match(hook, /setLiveTranscripts[\s\S]*outputTranscription/);
   assert.match(hook, /onTranscriptRef\.current\(optimisticMessage\)/);
   assert.match(hook, /voiceOptimistic: true/);
-  assert.match(hook, /onTranscriptRef\.current\(\{ \.\.\.data, metadata: \{ \.\.\.data\.metadata, voiceOptimistic: false \} \}\)/);
+  assert.match(hook, /maybeOpenListenModeRef\.current\(\)/);
+  assert.match(hook, /finally\(\(\) => \{[\s\S]*voicePersistencePendingRef\.current = Math\.max\(0[\s\S]*maybeOpenListenModeRef\.current\(\)/);
   assert.match(assistant, /const displayMessages = \[\.\.\.messages, \.\.\.liveTranscriptMessages\]/);
   assert.match(assistant, /displayMessages\.length > 0/);
   assert.match(assistant, /displayMessages\.map/);
