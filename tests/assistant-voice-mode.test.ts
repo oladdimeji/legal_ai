@@ -55,6 +55,7 @@ import {
   shouldRunVoiceDocumentConfirmationFailsafe,
   shouldWaitForVoiceAckPlaybackBeforeConfirmation,
   shouldMarkVoiceConfirmationPlaybackStarted,
+  shouldFinishVoiceDocumentConfirmation,
   shouldHoldVoiceCapture,
   voiceCaptureAwaitingFinalize,
   voiceAcknowledgementSpeechFromRequest,
@@ -387,6 +388,20 @@ test("Voice document confirmation has a failsafe when Live never completes the c
     confirmationSpeechActive: true,
     confirmationDispatched: false,
   }), false);
+  assert.equal(shouldFinishVoiceDocumentConfirmation({
+    confirmationSpeechActive: true,
+    confirmationTurnComplete: true,
+    confirmationDispatched: true,
+    confirmationPlaybackStarted: true,
+    playbackIdle: true,
+  }), true);
+  assert.equal(shouldFinishVoiceDocumentConfirmation({
+    confirmationSpeechActive: true,
+    confirmationTurnComplete: true,
+    confirmationDispatched: true,
+    confirmationPlaybackStarted: false,
+    playbackIdle: true,
+  }), false);
 
   assert.match(hook, /scheduleVoiceDocumentConfirmationFailsafe/);
   assert.match(hook, /abandonVoiceDocumentConfirmation/);
@@ -541,7 +556,7 @@ test("Voice document completion creates the card before one short doc-type Live 
     hook.indexOf("const finishVoiceDocumentConfirmation"),
     hook.indexOf("const reconcileVoiceListenMode")
   );
-  assert.doesNotMatch(finishConfirmation, /!confirmationPlaybackStartedRef\.current/);
+  assert.match(finishConfirmation, /confirmationPlaybackStartedRef\.current/);
   assert.match(hook, /finishVoiceDocumentConfirmation/);
   assert.match(hook, /voiceConfirmationSpeechFromRequest\(request\)/);
   assert.match(hook, /requestAnimationFrame\(\(\) => \{[\s\S]*dispatchVoiceDocumentConfirmation/);
@@ -557,7 +572,7 @@ test("Voice document completion creates the card before one short doc-type Live 
   assert.match(documentToolCall, /void ensureAssistantCapability\(request, turnBoundary\)/);
   assert.doesNotMatch(documentToolCall, /finalizePendingVoiceDocument\(\)/);
   assert.match(documentToolCall, /output: VOICE_DOCUMENT_DRAFTING_TOOL_ACK/);
-  assert.match(documentToolCall, /tryDispatchPendingVoiceDocumentConfirmation\(\)/);
+  assert.match(hook, /deliverVoiceDocumentCapability[\s\S]*tryDispatchPendingVoiceDocumentConfirmation\(\)/);
   assert.match(documentToolCall, /dispatchVoiceDocumentAcknowledgement\(session, acknowledgementSpeech\)/);
   assert.match(hook, /dispatchVoiceDocumentConfirmation\(session, confirmationSpeech\)/);
   assert.match(documentToolCall, /voiceConfirmationSpeechFromRequest\(request\)/);
@@ -569,7 +584,10 @@ test("Voice document completion creates the card before one short doc-type Live 
   assert.doesNotMatch(documentBranch, /await ensureAssistantCapability/);
   assert.match(hook, /finishVoiceDocumentConfirmation[\s\S]*finalizePendingVoiceDocument\(\)/);
   assert.match(hook, /transcriptRef\.current = \{ user: "", assistant: "" \}/);
-  assert.match(hook, /voiceDocumentJustFinalizedRef/);
+  assert.doesNotMatch(hook, /voiceDocumentJustFinalizedRef/);
+  assert.match(hook, /let finalizedDocumentThisEvent = false/);
+  assert.match(hook, /completedVoiceCapabilityResultsRef/);
+  assert.match(hook, /recordVoiceDocumentCapability/);
   assert.match(hook, /shouldStartVoiceDocumentDraftOnTurnComplete/);
   assert.match(hook, /voiceDocumentConfirmationClientPrompt|dispatchVoiceDocumentConfirmation/);
   assert.match(hook, /voiceDocumentDraftingFailedClientPrompt|dispatchVoiceDocumentDraftingFailedNotice/);
