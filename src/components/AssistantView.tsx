@@ -251,7 +251,16 @@ export default function AssistantView({
             && item.content.trim() === message.content.trim()
           );
         if (optimisticIndex >= 0) {
-          return current.map((item, index) => (index === optimisticIndex ? message : item));
+          const stableKey = current[optimisticIndex].metadata?.voiceStableKey;
+          return current.map((item, index) => (index === optimisticIndex
+            ? {
+                ...message,
+                metadata: {
+                  ...message.metadata,
+                  voiceStableKey: typeof stableKey === "string" ? stableKey : message.metadata?.voiceStableKey,
+                },
+              }
+            : item));
         }
         return [...current, message];
       });
@@ -288,7 +297,15 @@ export default function AssistantView({
       metadata: { liveVoiceTranscript: true, ...voiceMode.liveDeliverable.metadata },
     }];
   }, [voiceMode.liveDeliverable, voiceMode.liveTranscripts]);
-  const displayMessages = [...messages, ...liveTranscriptMessages];
+  const displayMessages = useMemo(() => {
+    const persistedKeys = new Set(
+      messages.map((message) => `${message.role}:${message.content.trim()}`)
+    );
+    const filteredLive = liveTranscriptMessages.filter(
+      (message) => !persistedKeys.has(`${message.role}:${message.content.trim()}`)
+    );
+    return [...messages, ...filteredLive];
+  }, [messages, liveTranscriptMessages]);
 
   // New docked side editor state declarations
   const [sideEditorMessageId, setSideEditorMessageId] = useState<string | null>(null);
@@ -1217,8 +1234,14 @@ export default function AssistantView({
                 const showMessageActions = (!isLiveVoiceMessage || liveDocumentReady
                   || (m.role === "assistant" && m.content.trim().length > 0))
                   && m.metadata?.error !== true;
+                const messageStableKey = typeof m.metadata?.voiceStableKey === "string"
+                  ? m.metadata.voiceStableKey
+                  : m.id;
+                const shouldAnimateEntry = !isLiveVoiceMessage
+                  && !m.metadata?.voiceOptimistic
+                  && typeof m.metadata?.voiceStableKey !== "string";
                 return (
-                  <div key={m.id} className="w-full max-w-3xl mx-auto flex flex-col py-5 animate-fade-in" id={`message-wrapper-${m.id}`}>
+                  <div key={messageStableKey} className={`w-full max-w-3xl mx-auto flex flex-col py-5${shouldAnimateEntry ? " animate-fade-in" : ""}`} id={`message-wrapper-${m.id}`}>
                     <div className={`w-full flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
                       {m.role === "user" ? (
                         <div id={`message-bubble-${m.id}`} className="bg-zinc-100 text-zinc-900 rounded-2xl px-5 py-3 max-w-[75%] text-sm leading-relaxed">

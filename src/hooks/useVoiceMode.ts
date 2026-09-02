@@ -680,6 +680,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     }
     const eventId = `${role}_${++eventSequenceRef.current[role]}`;
     const optimisticId = `voice_opt_${sessionId}_${eventId}`;
+    const voiceStableKey = `voice_${sessionId}_${eventId}`;
     const optimisticMessage: Message = {
       id: optimisticId,
       thread_id: threadId,
@@ -691,10 +692,18 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       metadata: {
         interactionMode: "voice",
         voiceOptimistic: true,
+        voiceStableKey,
         ...(capabilityMetadata || {}),
       },
     };
     onTranscriptRef.current(optimisticMessage);
+    setLiveTranscripts((current) => current[role].trim() === normalized
+      ? { ...current, [role]: "" }
+      : current);
+    if (capabilityMetadata?.document) {
+      liveDeliverableRef.current = null;
+      setLiveDeliverable(null);
+    }
     persistQueueRef.current = persistQueueRef.current.then(async () => {
       const response = await fetch(`/api/threads/${encodeURIComponent(threadId)}/voice/messages`, {
         method: "POST",
@@ -703,13 +712,18 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       });
       const data = await response.json().catch(() => ({})) as Message & { error?: string };
       if (!response.ok) throw new Error(data.error || "This Voice Mode transcript could not be saved.");
-      onTranscriptRef.current({ ...data, metadata: { ...data.metadata, voiceOptimistic: false } });
+      onTranscriptRef.current({
+        ...data,
+        metadata: {
+          ...data.metadata,
+          voiceOptimistic: false,
+          voiceStableKey,
+        },
+      });
       if (capabilityMetadata?.document) {
-        retirePersistedVoiceDeliverable();
+        const pageContext = pageContextRef.current;
+        if (pageContext) void refreshVoiceLiveContextRef.current(pageContext, { immediate: true });
       }
-      setLiveTranscripts((current) => current[role].trim() === normalized
-        ? { ...current, [role]: "" }
-        : current);
     }).catch((persistenceError) => {
       console.error("Voice transcript persistence failed.");
       setError(persistenceError instanceof Error ? persistenceError.message : "This Voice Mode transcript could not be saved.");
@@ -718,7 +732,7 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
       maybeOpenListenModeRef.current();
     });
     voicePersistencePendingRef.current += 1;
-  }, [retirePersistedVoiceDeliverable]);
+  }, []);
 
   const finalizeTranscripts = useCallback((
     boundary: "turnComplete" | "interrupted",

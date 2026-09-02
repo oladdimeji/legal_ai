@@ -1,5 +1,11 @@
 # Compact Upgrade Progress
 
+## Voice message handoff flicker fix
+
+- Fixed the split-second duplicate/reflow flash when a Voice turn completes. Live bubbles and optimistic saved copies were both visible until `/voice/messages` returned, then React remounted the bubble when the server id replaced the optimistic id and replayed `animate-fade-in`.
+- Live transcripts and document cards now retire synchronously when the optimistic message is inserted. `displayMessages` dedupes any overlapping live/saved content, voice handoffs keep a stable `voiceStableKey` across persistence, and saved voice messages no longer replay the entry animation.
+- Changed files: `src/hooks/useVoiceMode.ts`, `src/components/AssistantView.tsx`, `tests/assistant-voice-mode.test.ts`.
+
 ## Voice sendClientContent confirmation delivery
 
 - Document tool calls now return `IN_PROGRESS` immediately so Gemini Live is not blocked for the full drafting window.

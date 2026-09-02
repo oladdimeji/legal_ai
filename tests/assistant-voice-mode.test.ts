@@ -481,6 +481,8 @@ test("Voice document completion creates the card before one short doc-type Live 
   assert.match(assistant, /liveDocumentReady/);
   assert.match(assistant, /showMessageActions/);
   assert.match(assistant, /voiceOptimistic/);
+  assert.match(assistant, /voiceStableKey/);
+  assert.match(assistant, /shouldAnimateEntry/);
   assert.match(assistant, /confirmationOnly = Boolean\(document && isDocumentConfirmationContent\(m\.content\)\)/);
 });
 
@@ -836,7 +838,10 @@ test("finalized transcripts use a narrow idempotent owned route and never invoke
   assert.match(hook, /content\.interrupted[\s\S]*finalizeTranscripts\("interrupted"\)/);
   assert.match(hook, /persistQueueRef/);
   const transcriptPersistence = hook.slice(hook.indexOf("const persistFinalTranscript"), hook.indexOf("const finalizeTranscripts"));
-  assert.doesNotMatch(transcriptPersistence, /pageContext|handleSend/);
+  assert.doesNotMatch(transcriptPersistence, /handleSend/);
+  assert.match(transcriptPersistence, /voiceStableKey/);
+  assert.match(transcriptPersistence, /setLiveTranscripts\(\(current\) => current\[role\]\.trim\(\) === normalized/);
+  assert.match(transcriptPersistence, /capabilityMetadata\?\.document[\s\S]*refreshVoiceLiveContextRef/);
 });
 
 test("ephemeral credential route is authenticated by the established API gate and never exposes the permanent key", async () => {
@@ -1027,9 +1032,12 @@ test("live Voice transcriptions render as temporary messages and yield to saved 
   assert.match(hook, /setLiveTranscripts[\s\S]*outputTranscription/);
   assert.match(hook, /onTranscriptRef\.current\(optimisticMessage\)/);
   assert.match(hook, /voiceOptimistic: true/);
+  assert.match(hook, /voiceStableKey/);
   assert.match(hook, /maybeOpenListenModeRef\.current\(\)/);
   assert.match(hook, /finally\(\(\) => \{[\s\S]*voicePersistencePendingRef\.current = Math\.max\(0[\s\S]*maybeOpenListenModeRef\.current\(\)/);
-  assert.match(assistant, /const displayMessages = \[\.\.\.messages, \.\.\.liveTranscriptMessages\]/);
+  assert.match(assistant, /const displayMessages = useMemo\(\(\) => \{/);
+  assert.match(assistant, /persistedKeys/);
+  assert.match(assistant, /messageStableKey/);
   assert.match(assistant, /displayMessages\.length > 0/);
   assert.match(assistant, /displayMessages\.map/);
   assert.match(assistant, /liveVoiceTranscript/);
