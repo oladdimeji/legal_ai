@@ -23,6 +23,7 @@ import {
   voiceDocumentConfirmationClientPrompt,
   voiceDocumentDraftingFailedClientPrompt,
   VOICE_DOC_CONFIRM_FAILSAFE_MS,
+  VOICE_DOC_HANDOFF_FAILSAFE_MS,
 } from "../src/lib/voiceDocumentConfirmation.js";
 import {
   audioSampleRate,
@@ -34,6 +35,7 @@ import {
   dispatchVoiceDocumentAcknowledgement,
   dispatchVoiceDocumentConfirmation,
   dispatchVoiceDocumentDraftingFailedNotice,
+  activeRecentVoiceDocumentSpeech,
   finalizeVoiceTranscripts,
   initializeLiveHistory,
   looksLikeVoiceDocumentRequest,
@@ -65,6 +67,7 @@ import {
   voicePrefetchStillValid,
   VOICE_STARTUP_BUFFER_PACKETS,
   VOICE_TOKEN_PREFETCH_TTL_MS,
+  VOICE_PERSISTENCE_TIMEOUT_MS,
 } from "../src/hooks/useVoiceMode.js";
 
 function message(id: string, role: "user" | "assistant", content: string): Message {
@@ -356,6 +359,15 @@ test("Voice document confirmation has a failsafe when Live never completes the c
   const hook = await readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8");
 
   assert.equal(VOICE_DOC_CONFIRM_FAILSAFE_MS, 4_500);
+  assert.equal(VOICE_DOC_HANDOFF_FAILSAFE_MS, 6_500);
+  assert.equal(VOICE_PERSISTENCE_TIMEOUT_MS, 10_000);
+  const recentSpeech = {
+    acknowledgementSpeech: "Understood. I'll prepare the NDA now.",
+    confirmationSpeech: "I've finished preparing the NDA.",
+    expiresAt: 5_000,
+  };
+  assert.equal(activeRecentVoiceDocumentSpeech(recentSpeech, 4_999), recentSpeech);
+  assert.equal(activeRecentVoiceDocumentSpeech(recentSpeech, 5_000), null);
   assert.equal(shouldRunVoiceDocumentConfirmationFailsafe({
     confirmationSpeechActive: true,
     failsafeDeadlineMs: 1_000,
@@ -404,6 +416,7 @@ test("Voice document confirmation has a failsafe when Live never completes the c
   }), false);
 
   assert.match(hook, /scheduleVoiceDocumentConfirmationFailsafe/);
+  assert.match(hook, /scheduleVoiceDocumentHandoffFailsafe/);
   assert.match(hook, /abandonVoiceDocumentConfirmation/);
   assert.match(hook, /cancelVoiceDocumentConfirmationFailsafe/);
   assert.match(hook, /pendingVoiceConfirmationDispatchRef/);
@@ -414,6 +427,16 @@ test("Voice document confirmation has a failsafe when Live never completes the c
   assert.match(hook, /tryDispatchPendingVoiceDocumentConfirmation\(\);[\s\S]*reconcileVoiceListenMode\(\)/);
   assert.doesNotMatch(hook, /voiceDocumentDeliveryCompletedTurnsRef\.current\.add\(turnBoundary\);[\s\S]{0,220}confirmationSpeechActiveRef\.current = true[\s\S]{0,220}dispatchVoiceDocumentConfirmation/);
   assert.match(hook, /abandonVoiceDocumentConfirmation[\s\S]*finalizePendingVoiceDocument\(\)/);
+  assert.match(hook, /scheduleVoiceDocumentHandoffFailsafe[\s\S]*VOICE_DOC_HANDOFF_FAILSAFE_MS/);
+  assert.match(hook, /scheduleVoiceDocumentHandoffFailsafe\(\);[\s\S]*tryDispatchPendingVoiceDocumentConfirmation\(\)/);
+  assert.match(hook, /flushPendingVoiceDocumentRef\.current\(\)[\s\S]*lifecycleRef\.current \+= 1/);
+  assert.match(hook, /AbortController[\s\S]*VOICE_PERSISTENCE_TIMEOUT_MS/);
+  assert.match(hook, /voicePersistenceRecoveryBypassRef\.current = true;[\s\S]*finalizePendingVoiceDocument\(\)/);
+  assert.match(hook, /pendingVoicePersistence: voicePersistencePendingRef\.current > 0[\s\S]*!voicePersistenceRecoveryBypassRef\.current/);
+  assert.match(hook, /confirmationDispatchSequenceRef\.current !== dispatchSequence/);
+  assert.match(hook, /acknowledgedTurnRef\.current !== turnBoundary[\s\S]*dispatchVoiceDocumentAcknowledgement/);
+  assert.match(hook, /recordVoiceDocumentCapability[\s\S]*shouldApplyVoiceDraftUpdate/);
+  assert.match(hook, /data\.capabilityMetadata\?\.document && shouldApplyDraft\(\)/);
   assert.match(hook, /finishVoiceDocumentConfirmation[\s\S]*confirmationTurnCompleteRef/);
   assert.match(hook, /reconcileVoiceListenMode/);
   assert.match(hook, /if \(confirmationSpeechActiveRef\.current\) \{[\s\S]*reconcileVoiceListenMode\(\);[\s\S]*return;/);

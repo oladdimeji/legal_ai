@@ -31,5 +31,20 @@ test("Voice document spoken content is recognized for transcript suppression", (
   assert.equal(isVoiceDocumentConfirmationSpeechContent("I've finished preparing the"), true);
   assert.equal(isVoiceDocumentSpokenContent("Absolutely. I'll prepare the Contract based on your instructions."), true);
   assert.equal(isVoiceDocumentSpokenContent("I've finished revising the SOW.", voiceConfirmationSpeech("Revise the SOW.")), true);
+  assert.equal(isVoiceDocumentSpokenContent(
+    "now.",
+    null,
+    "Understood. I'll prepare the NDA now."
+  ), true);
+  assert.equal(isVoiceDocumentSpokenContent(
+    "for you.",
+    null,
+    "Got it. I'll put together the NDA for you."
+  ), true);
+  assert.equal(isVoiceDocumentSpokenContent(
+    "the NDA.",
+    "I've finished preparing the NDA."
+  ), true);
   assert.equal(isVoiceDocumentSpokenContent("Here are the current matters."), false);
+  assert.equal(isVoiceDocumentSpokenContent("now."), false);
 });

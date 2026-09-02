@@ -54,6 +54,26 @@ export function normalizeVoiceSpokenContent(content: string): string {
   return content.replace(/\s+/g, " ").trim();
 }
 
+function normalizeVoiceSpokenMatch(content: string): string {
+  return normalizeVoiceSpokenContent(content)
+    .toLowerCase()
+    .replace(/[’]/g, "'")
+    .replace(/[^a-z0-9']+/g, " ")
+    .trim();
+}
+
+function matchesExpectedVoiceDocumentSpeech(spoken: string, expected: string): boolean {
+  if (!spoken || !expected) return false;
+  if (spoken === expected || spoken.startsWith(expected) || expected.startsWith(spoken)) return true;
+  const spokenMatch = normalizeVoiceSpokenMatch(spoken);
+  const expectedMatch = normalizeVoiceSpokenMatch(expected);
+  if (!spokenMatch || !expectedMatch) return false;
+  // Gemini can emit output transcription after playback drain as a final fragment
+  // such as "now.". Match any bounded contiguous fragment of the exact scripted
+  // sentence while its document-speech guard is active.
+  return spokenMatch.length >= 3 && expectedMatch.includes(spokenMatch);
+}
+
 const VOICE_ACKNOWLEDGEMENT_SPEECH_PATTERN =
   /^(?:Understood|Got it|Absolutely)\.\s+I(?:'ll| will) (?:(?:prepare|put together) the |revise the |update the ).+?(?:now|for you|based on your instructions)\.?$/i;
 
@@ -89,10 +109,10 @@ export function isVoiceDocumentSpokenContent(
   if (isVoiceDocumentAcknowledgementContent(spoken)) return true;
   if (isVoiceDocumentConfirmationSpeechContent(spoken)) return true;
   const expectedAck = expectedAcknowledgementSpeech ? normalizeVoiceSpokenContent(expectedAcknowledgementSpeech) : "";
-  if (expectedAck && (spoken === expectedAck || spoken.startsWith(expectedAck) || expectedAck.startsWith(spoken))) {
+  if (matchesExpectedVoiceDocumentSpeech(spoken, expectedAck)) {
     return true;
   }
   const expected = expectedConfirmationSpeech ? normalizeVoiceSpokenContent(expectedConfirmationSpeech) : "";
   if (!expected) return false;
-  return spoken === expected || spoken.startsWith(expected) || expected.startsWith(spoken);
+  return matchesExpectedVoiceDocumentSpeech(spoken, expected);
 }
