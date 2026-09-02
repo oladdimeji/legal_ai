@@ -1,5 +1,13 @@
 # Compact Upgrade Progress
 
+## Voice sendClientContent confirmation delivery
+
+- Document tool calls now return `IN_PROGRESS` immediately so Gemini Live is not blocked for the full drafting window.
+- When `/voice/assistant` completes, confirmation is dispatched through `sendClientContent` with `voiceDocumentConfirmationClientPrompt`, triggering instant Live audio for the fixed doc-type line (`I've finished preparing the ${docType}.` / revise variant).
+- Drafting failures use `dispatchVoiceDocumentDraftingFailedNotice` instead of a late tool error after `IN_PROGRESS`.
+- Removed the `COMPLETED` tool-response confirmation field path. Turn lifecycle, transcript suppression, confirmation playback gates, and document-card persistence timing are unchanged.
+- Changed files: `src/lib/voiceDocumentConfirmation.ts`, `server/voiceMode.ts`, `src/hooks/useVoiceMode.ts`, `tests/assistant-voice-mode.test.ts`.
+
 ## Voice turn lifecycle and transcript settlement
 
 - Unified each user-visible Voice turn behind a single lifecycle: document user request and document card now persist together only after confirmation playback completes, instead of mid-flow before confirmation audio.

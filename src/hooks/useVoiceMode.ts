@@ -32,8 +32,9 @@ import {
   voiceConfirmationSpeech as voiceConfirmationSpeechFromRequest,
 } from "../lib/voiceAcknowledgement.js";
 import {
-  VOICE_DOCUMENT_COMPLETED_TOOL_ACK,
   VOICE_DOCUMENT_DRAFTING_TOOL_ACK,
+  voiceDocumentConfirmationClientPrompt,
+  voiceDocumentDraftingFailedClientPrompt,
 } from "../lib/voiceDocumentConfirmation.js";
 
 export { voiceAcknowledgementSpeechFromRequest, voiceConfirmationSpeechFromRequest };
@@ -199,6 +200,31 @@ export function initializeLiveHistory(
   const turns = Array.isArray(history) ? history : [];
   if (turns.length === 0) return;
   session.sendClientContent({ turns, turnComplete: true });
+}
+
+export function dispatchVoiceDocumentConfirmation(
+  session: Pick<Session, "sendClientContent">,
+  confirmationSpeech: string
+): void {
+  session.sendClientContent({
+    turns: [{
+      role: "user",
+      parts: [{ text: voiceDocumentConfirmationClientPrompt(confirmationSpeech) }],
+    }],
+    turnComplete: true,
+  });
+}
+
+export function dispatchVoiceDocumentDraftingFailedNotice(
+  session: Pick<Session, "sendClientContent">
+): void {
+  session.sendClientContent({
+    turns: [{
+      role: "user",
+      parts: [{ text: voiceDocumentDraftingFailedClientPrompt() }],
+    }],
+    turnComplete: true,
+  });
 }
 
 export const VOICE_DIRECT_ANSWER_TOOL_RESPONSE =
@@ -1018,55 +1044,57 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
             pendingVoiceConfirmationSpeechRef.current = confirmationSpeech;
             beginVoiceDocumentSpeechSuppression();
             if (isPrimaryDocumentCall) acknowledgedTurnRef.current = turnBoundary;
-          }
-          const capability = await ensureAssistantCapability(request, turnBoundary);
-          if (isDocumentRequest) {
-            if (capability.ok && capability.capabilityMetadata?.document) {
-              const shouldConfirm = isPrimaryDocumentCall
-                && !voiceDocumentDeliveryCompletedTurnsRef.current.has(turnBoundary);
-              if (shouldConfirm) {
-                voiceDocumentDeliveryCompletedTurnsRef.current.add(turnBoundary);
-                confirmationSpeechActiveRef.current = true;
-                confirmationPlaybackStartedRef.current = false;
-                liveTurnCompleteRef.current = false;
-                await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-              }
-              if (sessionRef.current !== session) return;
-              session.sendToolResponse({
-                functionResponses: [{
-                  id: call.id,
-                  name: call.name || "use_assistant_capabilities",
-                  response: shouldConfirm
-                    ? {
-                        output: VOICE_DOCUMENT_COMPLETED_TOOL_ACK,
-                        confirmation: confirmationSpeech,
-                      }
-                    : { output: VOICE_DOCUMENT_DRAFTING_TOOL_ACK },
-                }],
-              });
-            } else {
-              pendingVoiceDocumentDeliveryTurnsRef.current.delete(turnBoundary);
-              voiceDocumentDeliveryCompletedTurnsRef.current.add(turnBoundary);
-              session.sendToolResponse({
-                functionResponses: [{
-                  id: call.id,
-                  name: call.name || "use_assistant_capabilities",
-                  response: { error: capability.error || "The document could not be created." },
-                }],
-              });
-            }
-          } else {
             session.sendToolResponse({
               functionResponses: [{
                 id: call.id,
                 name: call.name || "use_assistant_capabilities",
-                response: capability.ok
-                  ? { output: capability.result || "Answer the user directly." }
-                  : { error: capability.error || "The Assistant capability request failed." },
+                response: { output: VOICE_DOCUMENT_DRAFTING_TOOL_ACK },
               }],
             });
-            pendingVoiceDocumentDeliveryTurnsRef.current.delete(turnBoundary);
+            void ensureAssistantCapability(request, turnBoundary).then((capability) => {
+              const activeSession = sessionRef.current;
+              if (!activeSession || activeSession !== session) return;
+              if (voiceDocumentDeliveryCompletedTurnsRef.current.has(turnBoundary)) return;
+              if (capability.ok && capability.capabilityMetadata?.document) {
+                if (!isPrimaryDocumentCall) {
+                  pendingVoiceDocumentDeliveryTurnsRef.current.delete(turnBoundary);
+                  return;
+                }
+                voiceDocumentDeliveryCompletedTurnsRef.current.add(turnBoundary);
+                confirmationSpeechActiveRef.current = true;
+                confirmationPlaybackStartedRef.current = false;
+                liveTurnCompleteRef.current = false;
+                requestAnimationFrame(() => {
+                  if (sessionRef.current !== activeSession) return;
+                  dispatchVoiceDocumentConfirmation(activeSession, confirmationSpeech);
+                });
+                return;
+              }
+              if (!isPrimaryDocumentCall) return;
+              pendingVoiceDocumentDeliveryTurnsRef.current.delete(turnBoundary);
+              voiceDocumentDeliveryCompletedTurnsRef.current.add(turnBoundary);
+              pendingVoiceConfirmationSpeechRef.current = null;
+              pendingCapabilityMetadataRef.current = null;
+              liveDeliverableRef.current = null;
+              setLiveDeliverable(null);
+              voiceDocumentTurnActiveRef.current = false;
+              voiceDocumentSpokenOnlyRef.current = false;
+              suppressDocumentTranscriptRef.current = false;
+              dispatchVoiceDocumentDraftingFailedNotice(activeSession);
+            });
+            return;
           }
+          const capability = await ensureAssistantCapability(request, turnBoundary);
+          session.sendToolResponse({
+            functionResponses: [{
+              id: call.id,
+              name: call.name || "use_assistant_capabilities",
+              response: capability.ok
+                ? { output: capability.result || "Answer the user directly." }
+                : { error: capability.error || "The Assistant capability request failed." },
+            }],
+          });
+          pendingVoiceDocumentDeliveryTurnsRef.current.delete(turnBoundary);
         }));
       }
     }
