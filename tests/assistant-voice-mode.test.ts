@@ -555,6 +555,7 @@ test("Voice acknowledgement stays Live while one prepared Kore confirmation uses
   assert.match(hook, /prepareVoiceDocumentConfirmation/);
   assert.match(hook, /fetchVoiceSpeech/);
   assert.match(hook, /\/voice\/speak/);
+  assert.match(hook, /!audio && cached\?\.promise === promise[\s\S]*preparedVoiceConfirmationAudioRef\.current\.delete\(turnBoundary\)/);
   assert.match(toolHandler, /voiceConfirmationSpeechFromRequest\(request\)/);
   assert.match(toolHandler, /suppressDocumentTranscriptRef/);
   assert.doesNotMatch(toolHandler, /dispatchVoiceDocumentConfirmation|playAcknowledgement|playDocumentConfirmation/);
@@ -1237,6 +1238,24 @@ test("Voice Assistant capability routing reuses the owned Assistant pipeline wit
   assert.doesNotMatch(toolHandler, /voice\/lookup/);
   assert.match(toolHandler, /session\.sendToolResponse/);
   assert.doesNotMatch(toolHandler, /session\.close|live\.connect|releaseResources/);
+});
+
+test("Voice server document metadata overrides a missed local document heuristic and still schedules confirmation speech", async () => {
+  const hook = await readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8");
+  const assistantResponse = hook.slice(
+    hook.indexOf("if (response.ok && data.capabilityMetadata?.document && shouldApplyDraft())"),
+    hook.indexOf("} else if (response.ok && shouldApplyDraft())")
+  );
+  assert.match(assistantResponse, /pendingVoiceDocumentDeliveryTurnsRef\.current\.add\(turnBoundary\)/);
+  assert.match(assistantResponse, /prepareVoiceDocumentConfirmation\(turnBoundary, confirmationSpeech\)/);
+
+  const fallbackStart = hook.indexOf("const capability = await ensureAssistantCapability(request, turnBoundary);");
+  const fallbackEnd = hook.indexOf("pendingVoiceDocumentDeliveryTurnsRef.current.delete(turnBoundary);", fallbackStart);
+  const fallback = hook.slice(fallbackStart, fallbackEnd);
+  assert.match(fallback, /capability\.ok && capability\.capabilityMetadata\?\.document/);
+  assert.match(fallback, /VOICE_DOCUMENT_DRAFTING_TOOL_ACK/);
+  assert.match(fallback, /deliverVoiceDocumentCapability/);
+  assert.match(fallback, /pendingVoiceDocumentDeliveryTurnsRef\.current\.add\(turnBoundary\)/);
 });
 
 test("full Voice Assistant delegation retains deliverables and artifact continuity on a fast path", async () => {

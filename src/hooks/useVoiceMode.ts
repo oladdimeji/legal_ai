@@ -668,6 +668,14 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     if (!threadId || !speech) return Promise.resolve(null);
     const promise = fetchVoiceSpeech(threadId, speech, lifecycleRef.current);
     preparedVoiceConfirmationAudioRef.current.set(turnBoundary, { speech, promise });
+    // Do not permanently memoize a transient TTS failure. A later authoritative
+    // document result must be allowed to issue a fresh /voice/speak request.
+    void promise.then((audio) => {
+      const cached = preparedVoiceConfirmationAudioRef.current.get(turnBoundary);
+      if (!audio && cached?.promise === promise) {
+        preparedVoiceConfirmationAudioRef.current.delete(turnBoundary);
+      }
+    });
     return promise;
   }, [fetchVoiceSpeech]);
 
@@ -1415,6 +1423,15 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
             liveDeliverableRef.current = deliverable;
             setLiveDeliverable(deliverable);
             beginVoiceDocumentSpeechSuppression();
+            // The server response is authoritative. Local speech heuristics are
+            // only an optimisation for early acknowledgement and can miss natural
+            // revision/continuation wording. Once a document actually exists,
+            // always arm delivery and TTS so that miss cannot strand the turn.
+            const confirmationSpeech = pendingVoiceConfirmationSpeechRef.current
+              || voiceConfirmationSpeechFromRequest(request);
+            pendingVoiceConfirmationSpeechRef.current = confirmationSpeech;
+            pendingVoiceDocumentDeliveryTurnsRef.current.add(turnBoundary);
+            void prepareVoiceDocumentConfirmation(turnBoundary, confirmationSpeech);
           } else if (response.ok && shouldApplyDraft()) {
             suppressDocumentTranscriptRef.current = false;
             pendingVoiceConfirmationSpeechRef.current = null;
@@ -1637,6 +1654,31 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
             return;
           }
           const capability = await ensureAssistantCapability(request, turnBoundary);
+          // A capability call may have been locally classified as conversational
+          // even though the authoritative server plan created/revised a document.
+          // Never feed that document result back to Live as ordinary text: doing so
+          // leaves document speech suppression active with no confirmation path.
+          if (capability.ok && capability.capabilityMetadata?.document) {
+            const authoritativeConfirmationSpeech = pendingVoiceConfirmationSpeechRef.current
+              || voiceConfirmationSpeechFromRequest(request);
+            pendingVoiceConfirmationSpeechRef.current = authoritativeConfirmationSpeech;
+            pendingVoiceDocumentDeliveryTurnsRef.current.add(turnBoundary);
+            rememberVoiceDocumentSpeech(null, authoritativeConfirmationSpeech);
+            session.sendToolResponse({
+              functionResponses: [{
+                id: call.id,
+                name: call.name || "use_assistant_capabilities",
+                response: { output: VOICE_DOCUMENT_DRAFTING_TOOL_ACK },
+              }],
+            });
+            deliverVoiceDocumentCapability(
+              session,
+              turnBoundary,
+              capability,
+              authoritativeConfirmationSpeech
+            );
+            return;
+          }
           session.sendToolResponse({
             functionResponses: [{
               id: call.id,
