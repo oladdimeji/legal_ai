@@ -18,6 +18,8 @@ class ExeptsVoicePlaybackProcessor extends AudioWorkletProcessor {
     this.queued = 0;
     this.playing = false;
     this.silent = 0;
+    this.priming = 0;
+    this.streamOpen = false;
     this.port.onmessage = (event) => {
       const data = event.data || {};
       if (data.type === "stop") {
@@ -26,6 +28,22 @@ class ExeptsVoicePlaybackProcessor extends AudioWorkletProcessor {
         this.queued = 0;
         this.playing = false;
         this.silent = 0;
+        this.priming = 0;
+        this.streamOpen = false;
+        return;
+      }
+      if (data.type === "begin-stream") {
+        this.streamOpen = true;
+        return;
+      }
+      if (data.type === "finish-stream") {
+        this.streamOpen = false;
+        // A complete short clip or late terminal packet must not wait forever
+        // for a startup prebuffer it can no longer reach.
+        if (!this.playing && this.queued > 0) {
+          this.playing = true;
+          this.priming = 0;
+        }
         return;
       }
       if (data.type !== "push" || !data.samples) return;
@@ -62,11 +80,18 @@ class ExeptsVoicePlaybackProcessor extends AudioWorkletProcessor {
     const output = outputs[0] && outputs[0][0];
     if (!output) return true;
     if (!this.playing) {
-      if (this.queued < this.prebuffer) {
+      if (this.queued === 0) {
+        this.priming = 0;
+        output.fill(0);
+        return true;
+      }
+      if (this.queued < this.prebuffer && this.priming < this.prebuffer) {
+        this.priming += output.length;
         output.fill(0);
         return true;
       }
       this.playing = true;
+      this.priming = 0;
     }
     let filled = 0;
     while (filled < output.length && this.queue.length) {
@@ -85,9 +110,10 @@ class ExeptsVoicePlaybackProcessor extends AudioWorkletProcessor {
     if (filled < output.length) {
       output.fill(0, filled);
       this.silent += output.length - filled;
-      if (this.silent >= this.drainSilence && this.queued === 0) {
+      if (this.silent >= this.drainSilence && this.queued === 0 && !this.streamOpen) {
         this.playing = false;
         this.silent = 0;
+        this.priming = 0;
         this.port.postMessage({ type: "drained" });
       }
     } else {

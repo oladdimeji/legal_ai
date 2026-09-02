@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
 import type { Message } from "../src/types.js";
 import { assistantDocumentConfirmationContent } from "../server/assistant/assistantCompletion.js";
+import {
+  VOICE_PLAYBACK_PROCESSOR_NAME,
+  VOICE_PLAYBACK_WORKLET_SOURCE,
+} from "../src/lib/voicePlaybackWorklet.js";
 import {
   VOICE_MODE_CONFIG,
   VOICE_MODE_SPEECH_MODEL,
@@ -33,7 +38,6 @@ import {
 } from "../src/lib/voiceAudio.js";
 import {
   dispatchVoiceDocumentAcknowledgement,
-  dispatchVoiceDocumentConfirmation,
   dispatchVoiceDocumentDraftingFailedNotice,
   activeRecentVoiceDocumentSpeech,
   finalizeVoiceTranscripts,
@@ -56,7 +60,6 @@ import {
   canOpenVoiceListenMode,
   shouldRunVoiceDocumentConfirmationFailsafe,
   shouldWaitForVoiceAckPlaybackBeforeConfirmation,
-  shouldMarkVoiceConfirmationPlaybackStarted,
   shouldFinishVoiceDocumentConfirmation,
   shouldHoldVoiceCapture,
   voiceCaptureAwaitingFinalize,
@@ -68,6 +71,7 @@ import {
   VOICE_STARTUP_BUFFER_PACKETS,
   VOICE_TOKEN_PREFETCH_TTL_MS,
   VOICE_PERSISTENCE_TIMEOUT_MS,
+  VOICE_CONFIRMATION_AUDIO_TIMEOUT_MS,
 } from "../src/hooks/useVoiceMode.js";
 
 function message(id: string, role: "user" | "assistant", content: string): Message {
@@ -102,7 +106,7 @@ test("Gemini Live configuration is centralized for native audio, transcription, 
   assert.match(String(config.systemInstruction), /do not speak any acknowledgement before calling use_assistant_capabilities/);
   assert.match(String(config.systemInstruction), /client will deliver the exact acknowledgement sentence through internal Voice Mode guidance/);
   assert.match(String(config.systemInstruction), /exact token IN_PROGRESS/);
-  assert.match(String(config.systemInstruction), /internal Voice Mode document deliverable guidance/);
+  assert.match(String(config.systemInstruction), /client plays the completed-document confirmation independently/);
   assert.doesNotMatch(String(config.systemInstruction), /Rotate naturally among these acknowledgement styles/);
   assert.match(String(config.systemInstruction), /Never combine acknowledgement and confirmation in one spoken turn/);
   assert.match(String(config.systemInstruction), /Never read or quote text from the document/);
@@ -125,7 +129,7 @@ test("Voice Mode stays silent on open, drops unexpected opening audio, and never
 
   assert.match(hook, /const awaitingOpeningTurnRef = useRef\(false\)/);
   assert.match(hook, /awaitingOpeningTurnRef\.current = true/);
-  assert.match(hook, /if \(awaitingOpeningTurnRef\.current\) continue;/);
+  assert.match(hook, /if \(awaitingOpeningTurnRef\.current \|\| confirmationSpeechActiveRef\.current\) continue;/);
   assert.match(hook, /content\.outputTranscription\?\.text && !awaitingOpeningTurnRef\.current/);
   assert.match(hook, /content\.inputTranscription\?\.text\) \{\s*awaitingOpeningTurnRef\.current = false/);
   assert.match(hook, /content\.interrupted\) \{\s*awaitingOpeningTurnRef\.current = false/);
@@ -355,12 +359,13 @@ test("a completed turn cannot retire an Assistant capability boundary while its 
   assert.doesNotMatch(hook, /shouldAdvanceVoiceTurnBoundary\([^)]*transcriptRef/);
 });
 
-test("Voice document confirmation has a failsafe when Live never completes the confirmation turn", async () => {
+test("Voice document confirmation has a failsafe when prepared audio never drains", async () => {
   const hook = await readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8");
 
   assert.equal(VOICE_DOC_CONFIRM_FAILSAFE_MS, 4_500);
   assert.equal(VOICE_DOC_HANDOFF_FAILSAFE_MS, 6_500);
   assert.equal(VOICE_PERSISTENCE_TIMEOUT_MS, 10_000);
+  assert.equal(VOICE_CONFIRMATION_AUDIO_TIMEOUT_MS, 5_000);
   const recentSpeech = {
     acknowledgementSpeech: "Understood. I'll prepare the NDA now.",
     confirmationSpeech: "I've finished preparing the NDA.",
@@ -392,14 +397,6 @@ test("Voice document confirmation has a failsafe when Live never completes the c
     playbackIdle: true,
     hasPendingConfirmationDispatch: true,
   }), false);
-  assert.equal(shouldMarkVoiceConfirmationPlaybackStarted({
-    confirmationSpeechActive: true,
-    confirmationDispatched: true,
-  }), true);
-  assert.equal(shouldMarkVoiceConfirmationPlaybackStarted({
-    confirmationSpeechActive: true,
-    confirmationDispatched: false,
-  }), false);
   assert.equal(shouldFinishVoiceDocumentConfirmation({
     confirmationSpeechActive: true,
     confirmationTurnComplete: true,
@@ -422,7 +419,6 @@ test("Voice document confirmation has a failsafe when Live never completes the c
   assert.match(hook, /pendingVoiceConfirmationDispatchRef/);
   assert.match(hook, /tryDispatchPendingVoiceDocumentConfirmation/);
   assert.match(hook, /confirmationDispatchedRef/);
-  assert.match(hook, /shouldMarkVoiceConfirmationPlaybackStarted/);
   assert.match(hook, /pendingVoiceConfirmationDispatchRef\.current = \{[\s\S]*tryDispatchPendingVoiceDocumentConfirmation\(\)/);
   assert.match(hook, /tryDispatchPendingVoiceDocumentConfirmation\(\);[\s\S]*reconcileVoiceListenMode\(\)/);
   assert.doesNotMatch(hook, /voiceDocumentDeliveryCompletedTurnsRef\.current\.add\(turnBoundary\);[\s\S]{0,220}confirmationSpeechActiveRef\.current = true[\s\S]{0,220}dispatchVoiceDocumentConfirmation/);
@@ -434,6 +430,16 @@ test("Voice document confirmation has a failsafe when Live never completes the c
   assert.match(hook, /voicePersistenceRecoveryBypassRef\.current = true;[\s\S]*finalizePendingVoiceDocument\(\)/);
   assert.match(hook, /pendingVoicePersistence: voicePersistencePendingRef\.current > 0[\s\S]*!voicePersistenceRecoveryBypassRef\.current/);
   assert.match(hook, /confirmationDispatchSequenceRef\.current !== dispatchSequence/);
+  assert.match(hook, /prepareVoiceDocumentConfirmation\(turnBoundary, confirmationSpeech\)/);
+  assert.match(hook, /\/voice\/speak/);
+  assert.match(hook, /playback\?\.port\.postMessage\(\{ type: "begin-stream" \}\)/);
+  assert.match(hook, /playback\?\.port\.postMessage\(\{ type: "finish-stream" \}\)/);
+  const confirmationDispatch = hook.slice(
+    hook.indexOf("const tryDispatchPendingVoiceDocumentConfirmation"),
+    hook.indexOf("const finishVoiceDocumentConfirmation")
+  );
+  assert.doesNotMatch(confirmationDispatch, /dispatchVoiceDocumentConfirmation|sendClientContent/);
+  assert.match(confirmationDispatch, /scheduleAudioRef\.current\(audio\.data, audio\.mimeType\)/);
   assert.match(hook, /acknowledgedTurnRef\.current !== turnBoundary[\s\S]*dispatchVoiceDocumentAcknowledgement/);
   assert.match(hook, /recordVoiceDocumentCapability[\s\S]*shouldApplyVoiceDraftUpdate/);
   assert.match(hook, /data\.capabilityMetadata\?\.document && shouldApplyDraft\(\)/);
@@ -483,7 +489,7 @@ test("spoken document instructions start drafting in parallel without blocking L
   assert.match(assistant, /id: "voice-live-deliverable"/);
 });
 
-test("Voice acknowledgement and confirmation use the same Live session while the speech endpoint remains isolated", async () => {
+test("Voice acknowledgement stays Live while one prepared Kore confirmation uses the isolated speech endpoint", async () => {
   const [server, hook, voiceMode] = await Promise.all([
     readFile(new URL("../server.ts", import.meta.url), "utf8"),
     readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8"),
@@ -505,12 +511,14 @@ test("Voice acknowledgement and confirmation use the same Live session while the
 
   const toolHandler = hook.slice(hook.indexOf("const handleServerMessage"), hook.indexOf("const ensureVoiceToken"));
   assert.match(toolHandler, /await ensureAssistantCapability\(request, turnBoundary\)/);
-  assert.match(voiceMode, /internal Voice Mode document deliverable guidance/);
+  assert.match(voiceMode, /client plays the completed-document confirmation independently/);
   assert.match(toolHandler, /tryDispatchPendingVoiceDocumentConfirmation/);
-  assert.match(hook, /dispatchVoiceDocumentConfirmation/);
+  assert.match(hook, /prepareVoiceDocumentConfirmation/);
+  assert.match(hook, /fetchVoiceSpeech/);
+  assert.match(hook, /\/voice\/speak/);
   assert.match(toolHandler, /voiceConfirmationSpeechFromRequest\(request\)/);
   assert.match(toolHandler, /suppressDocumentTranscriptRef/);
-  assert.doesNotMatch(toolHandler, /fetchVoiceSpeech|playPreparedVoiceConfirmation|playAcknowledgement|playDocumentConfirmation|voice\/speak/);
+  assert.doesNotMatch(toolHandler, /dispatchVoiceDocumentConfirmation|playAcknowledgement|playDocumentConfirmation/);
   assert.match(toolHandler, /scheduleAudio\(inlineData\.data, inlineData\.mimeType\)/);
   assert.match(toolHandler, /voice\/assistant/);
   assert.doesNotMatch(toolHandler, /voice\/lookup/);
@@ -526,7 +534,7 @@ test("Voice acknowledgement and confirmation use the same Live session while the
   assert.doesNotMatch(hook, /playbackRate/);
 });
 
-test("Voice document completion creates the card before one short doc-type Live confirmation", async () => {
+test("Voice document completion creates the card before one short prepared confirmation", async () => {
   const [server, hook, voiceMode, completion, assistant] = await Promise.all([
     readFile(new URL("../server.ts", import.meta.url), "utf8"),
     readFile(new URL("../src/hooks/useVoiceMode.ts", import.meta.url), "utf8"),
@@ -567,9 +575,8 @@ test("Voice document completion creates the card before one short doc-type Live 
   assert.doesNotMatch(voiceMode, /warmupVoiceSpeechAudio|VOICE_MODE_DOCUMENT_CONFIRMATION/);
 
   assert.match(hook, /VOICE_DOCUMENT_DRAFTING_TOOL_ACK/);
-  assert.match(hook, /voiceDocumentConfirmationClientPrompt/);
   assert.match(hook, /finalizePendingVoiceDocument\(\)/);
-  assert.match(hook, /confirmationPlaybackStartedRef\.current = true/);
+  assert.match(hook, /confirmationPlaybackStartedRef\.current = scheduled/);
   assert.match(hook, /dispatchVoiceDocumentAcknowledgement/);
   assert.match(hook, /lockedDocumentUserTranscriptRef/);
   assert.match(hook, /pendingVoiceAcknowledgementSpeechRef/);
@@ -582,7 +589,7 @@ test("Voice document completion creates the card before one short doc-type Live 
   assert.match(finishConfirmation, /confirmationPlaybackStartedRef\.current/);
   assert.match(hook, /finishVoiceDocumentConfirmation/);
   assert.match(hook, /voiceConfirmationSpeechFromRequest\(request\)/);
-  assert.match(hook, /requestAnimationFrame\(\(\) => \{[\s\S]*dispatchVoiceDocumentConfirmation/);
+  assert.match(hook, /requestAnimationFrame\(\(\) => \{[\s\S]*prepareVoiceDocumentConfirmation/);
   assert.match(server, /result: completion\.content/);
   assert.match(server, /draftContent/);
   assert.doesNotMatch(server, /result: draftContent/);
@@ -597,7 +604,7 @@ test("Voice document completion creates the card before one short doc-type Live 
   assert.match(documentToolCall, /output: VOICE_DOCUMENT_DRAFTING_TOOL_ACK/);
   assert.match(hook, /deliverVoiceDocumentCapability[\s\S]*tryDispatchPendingVoiceDocumentConfirmation\(\)/);
   assert.match(documentToolCall, /dispatchVoiceDocumentAcknowledgement\(session, acknowledgementSpeech\)/);
-  assert.match(hook, /dispatchVoiceDocumentConfirmation\(session, confirmationSpeech\)/);
+  assert.match(hook, /scheduleAudioRef\.current\(audio\.data, audio\.mimeType\)/);
   assert.match(documentToolCall, /voiceConfirmationSpeechFromRequest\(request\)/);
   assert.ok(documentToolCall.indexOf("session.sendToolResponse") < documentToolCall.indexOf("void ensureAssistantCapability"));
   const documentBranch = documentToolCall.slice(
@@ -612,9 +619,10 @@ test("Voice document completion creates the card before one short doc-type Live 
   assert.match(hook, /completedVoiceCapabilityResultsRef/);
   assert.match(hook, /recordVoiceDocumentCapability/);
   assert.match(hook, /shouldStartVoiceDocumentDraftOnTurnComplete/);
-  assert.match(hook, /voiceDocumentConfirmationClientPrompt|dispatchVoiceDocumentConfirmation/);
+  assert.match(hook, /prepareVoiceDocumentConfirmation|fetchVoiceSpeech/);
   assert.match(hook, /voiceDocumentDraftingFailedClientPrompt|dispatchVoiceDocumentDraftingFailedNotice/);
-  assert.doesNotMatch(hook, /DOCUMENT_CONFIRMATION|fetchVoiceSpeech|playPreparedVoiceConfirmation|voice\/speak/);
+  assert.doesNotMatch(hook, /DOCUMENT_CONFIRMATION|dispatchVoiceDocumentConfirmation|playPreparedVoiceConfirmation/);
+  assert.match(hook, /\/voice\/speak/);
   assert.match(toolHandler, /beginVoiceDocumentSpeechSuppression/);
   assert.match(toolHandler, /voiceDocumentSpokenOnlyRef/);
   assert.match(toolHandler, /voiceDocumentTurnActiveRef/);
@@ -761,19 +769,7 @@ test("Voice document acknowledgement is dispatched through sendClientContent on 
   );
 });
 
-test("Voice document confirmation is dispatched through sendClientContent after drafting", () => {
-  const calls: unknown[] = [];
-  const session = {
-    sendClientContent: (params: unknown) => { calls.push(params); },
-  };
-  dispatchVoiceDocumentConfirmation(session, "I've finished preparing the NDA.");
-  assert.deepEqual(calls, [{
-    turns: [{
-      role: "user",
-      parts: [{ text: voiceDocumentConfirmationClientPrompt("I've finished preparing the NDA.") }],
-    }],
-    turnComplete: true,
-  }]);
+test("Voice document confirmation wording is exact while only failure notices return to Live", () => {
   assert.match(
     voiceDocumentConfirmationClientPrompt("I've finished preparing the NDA."),
     /Say exactly once: "I've finished preparing the NDA\."/
@@ -936,7 +932,10 @@ test("Voice playback uses a worklet jitter buffer so late packets cannot punch h
   assert.match(playback, /this.queued < this.prebuffer/);
   assert.match(playback, /output.fill\(0, filled\)/);
   assert.match(playback, /postMessage\(\{ type: "drained" \}\)/);
-  assert.doesNotMatch(playback, /begin-stream|finish-stream|streamOpen/);
+  assert.match(playback, /data\.type === "begin-stream"/);
+  assert.match(playback, /data\.type === "finish-stream"/);
+  assert.match(playback, /this\.priming < this\.prebuffer/);
+  assert.match(playback, /&& !this\.streamOpen/);
   assert.match(capture, /Math.floor\(combined.length \/ this.ratio\)/);
   assert.match(capture, /this.leftover = combined.slice\(consumed\)/);
   assert.doesNotMatch(capture, /this.phase \+= this.step/);
@@ -946,6 +945,62 @@ test("Voice playback uses a worklet jitter buffer so late packets cannot punch h
   assert.match(hook, /playbackWorkletRef.current\?\.port.postMessage\(\{ type: "stop" \}\)/);
   assert.match(hook, /createStreamingDownsampler\(context.sampleRate, VOICE_CAPTURE_TARGET_RATE\)/);
   assert.doesNotMatch(hook, /playbackRate/);
+});
+
+test("Voice playback flushes a prepared clip once and cannot strand a late sub-prebuffer tail", () => {
+  const posted: Array<{ type?: string }> = [];
+  let RegisteredProcessor: (new (options: unknown) => {
+    port: { onmessage: ((event: { data: unknown }) => void) | null };
+    process: (inputs: unknown[], outputs: Float32Array[][]) => boolean;
+  }) | null = null;
+
+  class MockAudioWorkletProcessor {
+    port = {
+      onmessage: null as ((event: { data: unknown }) => void) | null,
+      postMessage: (message: { type?: string }) => posted.push(message),
+    };
+  }
+
+  runInNewContext(VOICE_PLAYBACK_WORKLET_SOURCE, {
+    AudioWorkletProcessor: MockAudioWorkletProcessor,
+    Float32Array,
+    Int16Array,
+    Math,
+    JSON,
+    sampleRate: 1_000,
+    registerProcessor: (name: string, processor: typeof RegisteredProcessor) => {
+      assert.equal(name, VOICE_PLAYBACK_PROCESSOR_NAME);
+      RegisteredProcessor = processor;
+    },
+  });
+
+  assert.ok(RegisteredProcessor);
+  const processor = new RegisteredProcessor({
+    processorOptions: { prebufferSeconds: 0.004, drainSeconds: 0.002 },
+  });
+  const send = (data: unknown) => processor.port.onmessage?.({ data });
+  const render = () => {
+    const output = new Float32Array(2);
+    processor.process([], [[output]]);
+    return output;
+  };
+
+  send({ type: "begin-stream" });
+  send({ type: "push", samples: new Int16Array([8_000]), sampleRate: 1_000 });
+  send({ type: "finish-stream" });
+  assert.ok(render()[0] > 0);
+  render();
+  assert.deepEqual(posted.map((message) => message.type), ["drained"]);
+
+  // This is the former permanent freeze: after a drain, one late sample can
+  // never reach the four-sample startup prebuffer. It must start after bounded
+  // priming and produce a second drained notification without a stop/restart.
+  send({ type: "push", samples: new Int16Array([6_000]), sampleRate: 1_000 });
+  assert.equal(render()[0], 0);
+  assert.equal(render()[0], 0);
+  assert.ok(render()[0] > 0);
+  render();
+  assert.deepEqual(posted.map((message) => message.type), ["drained", "drained"]);
 });
 
 test("Voice Mode lifecycle is separate from standard send and releases microphone, audio, animation, and socket resources", async () => {
