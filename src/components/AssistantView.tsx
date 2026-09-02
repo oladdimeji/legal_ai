@@ -301,9 +301,14 @@ export default function AssistantView({
     const persistedKeys = new Set(
       messages.map((message) => `${message.role}:${message.content.trim()}`)
     );
-    const filteredLive = liveTranscriptMessages.filter(
-      (message) => !persistedKeys.has(`${message.role}:${message.content.trim()}`)
-    );
+    const filteredLive = liveTranscriptMessages.filter((message) => {
+      const key = `${message.role}:${message.content.trim()}`;
+      if (persistedKeys.has(key)) return false;
+      if (message.id !== "voice-live-deliverable") return true;
+      return !messages.some((item) => item.role === "assistant"
+        && item.metadata?.document
+        && item.content.trim() === message.content.trim());
+    });
     return [...messages, ...filteredLive];
   }, [messages, liveTranscriptMessages]);
 

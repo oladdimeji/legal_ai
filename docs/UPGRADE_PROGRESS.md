@@ -1,5 +1,11 @@
 # Compact Upgrade Progress
 
+## Voice post-document chat ordering fix
+
+- Fixed document cards pinning to the bottom of Voice chat after the first draft: `finalizePendingVoiceDocument()` called `persistFinalTranscript()` while document-speech suppression was still active, so the assistant document card was dropped and `liveDeliverable` never retired. Subsequent turns only showed live user bubbles above the stale preview card and hid assistant streaming until each turn completed.
+- Document cards now persist even with suppression active, `liveDeliverable` is cleared before persistence, and `displayMessages` dedupes any already-saved live deliverable preview.
+- Changed files: `src/hooks/useVoiceMode.ts`, `src/components/AssistantView.tsx`, `tests/assistant-voice-mode.test.ts`.
+
 ## Voice confirmation listen recovery fix
 
 - Fixed document turns staying frozen after confirmation audio: `finishVoiceDocumentConfirmation` no longer depends on `liveTurnCompleteRef`, which any later Live audio packet could reset to `false` before playback drained. Confirmation completion now uses a dedicated `confirmationTurnCompleteRef` set only on the confirmation turn's `turnComplete`.

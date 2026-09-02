@@ -48,6 +48,7 @@ import {
   shouldClearVoiceDocumentTranscriptSuppression,
   shouldDropVoiceAssistantTranscript,
   shouldFilterAssistantVoiceTranscript,
+  shouldSkipVoiceAssistantPersistence,
   canOpenVoiceListenMode,
   shouldRunVoiceDocumentConfirmationFailsafe,
   shouldHoldVoiceCapture,
@@ -299,6 +300,9 @@ test("a completed turn cannot retire an Assistant capability boundary while its 
     suppressDocumentSpeech: true,
     expectedConfirmationSpeech: null,
   }), true);
+  assert.equal(shouldSkipVoiceAssistantPersistence("assistant", true, false), true);
+  assert.equal(shouldSkipVoiceAssistantPersistence("assistant", true, true), false);
+  assert.equal(shouldSkipVoiceAssistantPersistence("user", true, false), false);
   assert.equal(canOpenVoiceListenMode({
     playbackActive: false,
     playbackSourceCount: 0,
@@ -386,6 +390,8 @@ test("spoken document instructions start drafting in parallel without blocking L
     /stopPlayback\(\)/
   );
   assert.match(hook, /persistFinalTranscript\("user", pendingUser\)/);
+  assert.match(hook, /shouldSkipVoiceAssistantPersistence/);
+  assert.match(hook, /setLiveDeliverable\(null\)[\s\S]*persistFinalTranscript\("assistant", documentContent, capabilityMetadata\)/);
   assert.doesNotMatch(hook, /persistFinalTranscript\("user", pendingUser\)[\s\S]{0,200}transcriptRef\.current = \{ \.\.\.transcriptRef\.current, user: "" \}/);
   assert.match(assistant, /voiceMode\.liveDeliverable/);
   assert.match(assistant, /id: "voice-live-deliverable"/);
@@ -1101,6 +1107,7 @@ test("live Voice transcriptions render as temporary messages and yield to saved 
   assert.match(hook, /finally\(\(\) => \{[\s\S]*voicePersistencePendingRef\.current = Math\.max\(0[\s\S]*maybeOpenListenModeRef\.current\(\)/);
   assert.match(assistant, /const displayMessages = useMemo\(\(\) => \{/);
   assert.match(assistant, /persistedKeys/);
+  assert.match(assistant, /voice-live-deliverable[\s\S]*item\.metadata\?\.document/);
   assert.match(assistant, /messageStableKey/);
   assert.match(assistant, /displayMessages\.length > 0/);
   assert.match(assistant, /displayMessages\.map/);

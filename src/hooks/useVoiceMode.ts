@@ -356,6 +356,14 @@ export function shouldDropVoiceAssistantTranscript(
   return isVoiceDocumentSpokenContent(content, input.expectedConfirmationSpeech);
 }
 
+export function shouldSkipVoiceAssistantPersistence(
+  role: "user" | "assistant",
+  dropAssistantTranscript: boolean,
+  hasDocumentCapability: boolean
+): boolean {
+  return role === "assistant" && !hasDocumentCapability && dropAssistantTranscript;
+}
+
 export function inFlightVoiceCapabilityCount(
   inFlightTurns: Map<number, number> | Iterable<number>
 ): number {
@@ -703,10 +711,11 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     const sessionId = sessionIdRef.current;
     const normalized = content.trim();
     if (!threadId || !sessionId || !normalized) return;
-    if (role === "assistant" && shouldDropVoiceAssistantTranscript(normalized, {
+    const dropAssistantTranscript = role === "assistant" && shouldDropVoiceAssistantTranscript(normalized, {
       suppressDocumentSpeech: suppressDocumentTranscriptRef.current,
       expectedConfirmationSpeech: pendingVoiceConfirmationSpeechRef.current,
-    })) {
+    });
+    if (shouldSkipVoiceAssistantPersistence(role, dropAssistantTranscript, Boolean(capabilityMetadata?.document))) {
       return;
     }
     const eventId = `${role}_${++eventSequenceRef.current[role]}`;
@@ -817,6 +826,10 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
 
     cancelTranscriptFlush();
     const pendingUser = transcriptRef.current.user.trim();
+    suppressDocumentTranscriptRef.current = false;
+    pendingVoiceConfirmationSpeechRef.current = null;
+    liveDeliverableRef.current = null;
+    setLiveDeliverable(null);
     if (pendingUser) {
       persistFinalTranscript("user", pendingUser);
     }
@@ -825,8 +838,6 @@ export function useVoiceMode({ onTranscript }: UseVoiceModeOptions) {
     setLiveTranscripts({ user: "", assistant: "" });
     pendingCapabilityMetadataRef.current = null;
     pausedAssistantCapabilityTurnRef.current = null;
-    suppressDocumentTranscriptRef.current = false;
-    pendingVoiceConfirmationSpeechRef.current = null;
     assistantCapabilityPromisesRef.current.delete(turnBoundaryRef.current);
     turnBoundaryRef.current += 1;
     voiceDocumentTurnActiveRef.current = false;
